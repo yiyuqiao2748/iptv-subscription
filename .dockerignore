@@ -1,0 +1,7 @@
+# IPTV Subscription
+output/
+cache/
+logs/
+*.pyc
+__pycache__/
+.env

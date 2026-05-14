@@ -1,0 +1,18 @@
+services:
+  iptv:
+    build: .
+    container_name: iptv-subscription
+    ports:
+      - "8899:8899"
+    volumes:
+      - ./output:/app/output
+      - ./cache:/app/cache
+      - ./logs:/app/logs
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8899/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
