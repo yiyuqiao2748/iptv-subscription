@@ -111,9 +111,11 @@ def deduplicate(entries: list) -> list:
             groups[entry.name] = [entry]
             canonical_order.append(entry.name)
 
-    # 4. Within each group, limit copies
+    # 4. Within each group, sort trusted first, then limit copies
     final_entries = []
     hunan_groups = 0
+    trusted_kept = 0
+    untrusted_kept = 0
     for canon in canonical_order:
         group = groups[canon]
         is_hunan = is_hunan_channel(canon)
@@ -123,12 +125,23 @@ def deduplicate(entries: list) -> list:
         else:
             max_copies = OTHER_MAX_DUPES
 
-        # Keep best entries (we'll test later; for now just take first N)
-        kept = group[:max_copies]
+        # Trusted (vbskycn verified) entries always come first
+        trusted = [e for e in group if e.trusted]
+        untrusted = [e for e in group if not e.trusted]
+        # Within same trust level, prefer entries WITH group-title (better metadata)
+        trusted.sort(key=lambda e: 0 if e.attrs.get("group-title") else 1)
+        untrusted.sort(key=lambda e: 0 if e.attrs.get("group-title") else 1)
+
+        kept = trusted + untrusted
+        kept = kept[:max_copies]
+        trusted_kept += sum(1 for e in kept if e.trusted)
+        untrusted_kept += sum(1 for e in kept if not e.trusted)
         final_entries.extend(kept)
 
     logger.info(f"  Channel groups formed: {len(canonical_order)}")
     logger.info(f"  Hunan channel groups: {hunan_groups}")
+    logger.info(f"  Trusted (vbskycn) kept: {trusted_kept}")
+    logger.info(f"  Untrusted kept: {untrusted_kept}")
     logger.info(f"  After group dedup: {len(final_entries)} streams")
     logger.info(f"  Total removed: {initial_count - len(final_entries)}")
 

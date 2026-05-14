@@ -137,7 +137,8 @@ def inject_fallback_streams(entries: list) -> list:
                 name=channel_name,
                 url=url,
                 source=fallback_source,
-                attrs={"group-title": group}
+                attrs={"group-title": group},
+                trusted=True
             )
             fallback_entries.append(entry)
 

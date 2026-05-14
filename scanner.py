@@ -32,16 +32,20 @@ HEADERS = {
 }
 
 
+# Sources whose streams are pre-verified (domestic server tested)
+TRUSTED_SOURCE_DOMAINS = {"zbds.top", "vbskycn"}
+
 class StreamEntry:
     """Represents a single stream entry with metadata."""
 
-    __slots__ = ("name", "url", "source", "attrs")
+    __slots__ = ("name", "url", "source", "attrs", "trusted")
 
-    def __init__(self, name, url, source, attrs=None):
+    def __init__(self, name, url, source, attrs=None, trusted=False):
         self.name = name.strip()
         self.url = url.strip()
         self.source = source
         self.attrs = attrs or {}
+        self.trusted = trusted
 
     def url_hash(self):
         return hashlib.md5(self.url.encode()).hexdigest()
@@ -50,7 +54,7 @@ class StreamEntry:
         return f"StreamEntry({self.name!r}, {self.url[:60]}...)"
 
 
-def parse_m3u_content(text: str, source_label: str) -> list:
+def parse_m3u_content(text: str, source_label: str, trusted: bool = False) -> list:
     """
     Parse raw M3U content and return a list of StreamEntry objects.
     Handles both standard M3U and simple TXT (one URL per line).
@@ -70,7 +74,7 @@ def parse_m3u_content(text: str, source_label: str) -> list:
         if extinf_match:
             current_name = extinf_match.group(1).strip()
             current_attrs = {}
-            # Parse optional attributes after comma
+            # Parse optional attributes (group-title, tvg-name, tvg-logo, etc.)
             raw = extinf_match.group(0)
             attr_parts = raw.split(" ", 1)
             for part in attr_parts:
@@ -83,7 +87,7 @@ def parse_m3u_content(text: str, source_label: str) -> list:
         if RE_URL.match(line):
             url = line.strip()
             name = current_name or extract_name_from_url(url)
-            entries.append(StreamEntry(name=name, url=url, source=source_label, attrs=current_attrs))
+            entries.append(StreamEntry(name=name, url=url, source=source_label, attrs=current_attrs, trusted=trusted))
             current_name = None
             current_attrs = {}
             continue
@@ -100,12 +104,12 @@ def parse_m3u_content(text: str, source_label: str) -> list:
             line = line.strip()
             if RE_URL.match(line):
                 name = extract_name_from_url(line)
-                entries.append(StreamEntry(name=name, url=line, source=source_label))
+                entries.append(StreamEntry(name=name, url=line, source=source_label, trusted=trusted))
 
     return entries
 
 
-def parse_txt_content(text: str, source_label: str) -> list:
+def parse_txt_content(text: str, source_label: str, trusted: bool = False) -> list:
     """Parse simple TXT format: one URL per line, or 'name,url' per line."""
     entries = []
     lines = text.splitlines()
@@ -113,16 +117,15 @@ def parse_txt_content(text: str, source_label: str) -> list:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # Check for "name,url" format
         if "," in line and RE_URL.search(line):
             parts = line.split(",", 1)
             name = parts[0].strip()
             url = parts[1].strip()
             if RE_URL.match(url):
-                entries.append(StreamEntry(name=name, url=url, source=source_label))
+                entries.append(StreamEntry(name=name, url=url, source=source_label, trusted=trusted))
         elif RE_URL.match(line):
             name = extract_name_from_url(line)
-            entries.append(StreamEntry(name=name, url=line, source=source_label))
+            entries.append(StreamEntry(name=name, url=line, source=source_label, trusted=trusted))
     return entries
 
 
@@ -155,10 +158,13 @@ def fetch_source(url: str, timeout: int = 15) -> list:
         is_m3u = "#EXTM3U" in text[:100] or "#EXTINF" in text[:200]
         source_label = url.rsplit("/", 2)[-2] + "/" + url.rsplit("/", 1)[-1] if "/" in url else url
 
+        # Mark trusted sources (pre-verified by their own servers)
+        trusted = any(d in url for d in TRUSTED_SOURCE_DOMAINS)
+
         if is_m3u:
-            entries = parse_m3u_content(text, source_label)
+            entries = parse_m3u_content(text, source_label, trusted)
         else:
-            entries = parse_txt_content(text, source_label)
+            entries = parse_txt_content(text, source_label, trusted)
 
         logger.info(f"  [{source_label}] -> {len(entries)} streams")
         return entries
