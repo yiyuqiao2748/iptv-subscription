@@ -149,14 +149,15 @@ def inject_fallback_streams(entries: list) -> list:
 # ------------------------------------------------------------
 # Pipeline
 # ------------------------------------------------------------
-async def run_pipeline() -> dict:
+async def run_pipeline(skip_test: bool = False) -> dict:
     """
     Execute the full pipeline.
+    If skip_test is True, all deduped streams pass connectivity check.
     Returns stats dict with channel counts.
     """
     from scanner import scan_all_sources
     from dedup import deduplicate
-    from tester import test_all_streams
+    from tester import test_all_streams, TestResult, STATUS_ALIVE
     from filter import filter_streams
     from generator import generate
     from server import update_stats as update_server_stats
@@ -173,10 +174,13 @@ async def run_pipeline() -> dict:
     # Step 2: Dedup
     deduped_entries = deduplicate(raw_entries)
 
-    # Step 3: Test (async)
-    results = await test_all_streams(deduped_entries)
+    # Step 3: Test (or skip)
+    if skip_test:
+        logger.info("STEP 3: SKIPPED (--skip-test)")
+        results = [TestResult(entry=e, status=STATUS_ALIVE) for e in deduped_entries]
+    else:
+        results = await test_all_streams(deduped_entries)
 
-    # Update alive count in server stats
     alive_count = sum(1 for r in results if r.is_alive)
     update_server_stats({
         "total_channels": len(results),
@@ -186,8 +190,7 @@ async def run_pipeline() -> dict:
     # Step 4: Filter (dead + foreign removal, category assignment)
     filtered_entries = filter_streams(results)
 
-    # Step 4.5: Inject fallback streams for must-have channels
-    # (checks against ALIVE entries only, so dead scanner results don't block fallbacks)
+    # Step 4.5: Inject fallback streams
     fallback_entries = inject_fallback_streams(filtered_entries)
     filtered_entries.extend(fallback_entries)
 
@@ -196,7 +199,7 @@ async def run_pipeline() -> dict:
 
     total_elapsed = time.monotonic() - total_start
     logger.info("=" * 60)
-    logger.info(f"✅ FULL PIPELINE COMPLETE in {total_elapsed:.1f}s")
+    logger.info(f"FULL PIPELINE COMPLETE in {total_elapsed:.1f}s")
     logger.info(f"   Source URLs scanned: {len(raw_entries)}")
     logger.info(f"   After dedup:         {len(deduped_entries)}")
     logger.info(f"   Alive streams:       {alive_count}")
@@ -242,6 +245,8 @@ Examples:
                         help="Enable debug logging")
     parser.add_argument("--no-scheduler", action="store_true",
                         help="Don't start scheduler (server only)")
+    parser.add_argument("--skip-test", action="store_true",
+                        help="Skip connectivity testing (all streams pass)")
     args = parser.parse_args()
 
     # Setup
@@ -271,7 +276,7 @@ Examples:
 
     # Scan-only mode
     if args.scan_only:
-        asyncio.run(run_pipeline())
+        asyncio.run(run_pipeline(skip_test=args.skip_test))
         logger.info("Scan-only complete. Exiting.")
         return
 

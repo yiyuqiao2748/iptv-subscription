@@ -1,0 +1,49 @@
+name: IPTV Auto Update
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'   # every 6 hours at :23
+  workflow_dispatch:           # manual trigger from Actions tab
+  push:
+    branches: [master]
+    paths:
+      - 'config.py'
+      - 'scanner.py'
+      - 'dedup.py'
+      - 'filter.py'
+      - 'generator.py'
+      - 'main.py'
+      - '.github/workflows/update.yml'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline
+        run: python main.py --scan-only --skip-test
+
+      - name: Copy M3U to root
+        run: |
+          cp output/iptv.m3u iptv.m3u
+          cp output/iptv.txt iptv.txt
+
+      - name: Commit & Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/iptv.m3u output/iptv.txt iptv.m3u iptv.txt
+          git diff --staged --quiet || git commit -m "[auto] update IPTV playlist"
+          git push
