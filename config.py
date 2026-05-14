@@ -41,34 +41,21 @@ UPDATE_CRON = None  # if set, overrides interval, e.g. "0 */6 * * *"
 # Priority: vbskycn (tested live) > high-volume aggregators > speciality
 # ============================================================
 KNOWN_SOURCES = [
-    # ---- vbskycn IPTV (tested live sources, China-direct) ----
-    # This project runs its own verification server. 550+ verified channels.
-    # Primary domain (domestic direct):
+    # === PRIMARY: vbskycn IPTV — 550+ verified China-direct channels ===
+    # Self-hosted verification server, domestic direct access, EPG + logos
     "https://live.zbds.top/tv/iptv4.m3u",
-    # TXT format with multiple backup URLs:
-    "https://live.zbds.top/tv/iptv4.txt",
-    # GitHub raw mirror:
-    "https://raw.githubusercontent.com/vbskycn/iptv/refs/heads/master/tv/iptv4.m3u",
-    # IPv6 source:
-    "https://live.zbds.top/tv/iptv6.m3u",
 
-    # ---- Primary aggregators (verified active) ----
-    # YueChan - comprehensive collection
+    # === SUPPLEMENTARY: curated Chinese aggregators ===
+    # YueChan — comprehensive, good Chinese naming
     "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
-    # Kimentanm aptv source
+    # Kimentanm — APTV compatible source
     "https://raw.githubusercontent.com/Kimentanm/aptv/master/m3u/iptv.m3u",
-    # suxuang myIPTV - large collection
-    "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv6.m3u",
-    # BurningC4 Chinese-IPTV
+    # BurningC4 — IPv4 focused, clean names
     "https://raw.githubusercontent.com/BurningC4/Chinese-IPTV/master/TV-IPV4.m3u",
-    # YanG-1989 Gather
+    # YanG-1989 — well-maintained Chinese playlist
     "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u",
-    # iptv-org China subset (large collection)
+    # iptv-org China subset
     "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u",
-
-    # ---- txt format sources ----
-    "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.txt",
-    "https://raw.githubusercontent.com/joevess/IPTV/main/sources/iptv_sources.m3u",
 ]
 
 # ============================================================
@@ -250,64 +237,124 @@ EXCLUDE_KEYWORDS = [
 
 # ============================================================
 # CATEGORY KEYWORDS for group-title assignment
+# Chinese / Pinyin / English / EPG name patterns
+# Checked in order: CCTV > Hunan > Kids > Sports > Satellite > Local > Other
 # ============================================================
 CATEGORY_KEYWORDS = {
     "📺 央视频道": [
+        # CCTV numbered (all naming variants)
         "CCTV-", "CCTV ", "CCTV1", "CCTV2", "CCTV3", "CCTV4", "CCTV5",
         "CCTV6", "CCTV7", "CCTV8", "CCTV9", "CCTV10",
         "CCTV11", "CCTV12", "CCTV13", "CCTV14", "CCTV15",
         "CCTV16", "CCTV17",
-        "央视", "CGTN", "CETV", "中国教育",
         "CCTV 综合", "CCTV 财经", "CCTV 综艺", "CCTV 中文",
         "CCTV 体育", "CCTV 电影", "CCTV 军事", "CCTV 电视剧",
         "CCTV 纪录", "CCTV 科教", "CCTV 戏曲", "CCTV 社会",
         "CCTV 新闻", "CCTV 少儿", "CCTV 音乐", "CCTV 奥林匹",
-        "CCTV 农业",
+        "CCTV 农业", "CCTV 国防",
+        # Chinese
+        "央视", "中央", "央视频道", "中国教育",
+        # EPG variants
+        "CGTN", "CETV", "CETV-", "CCTV4K",
+        # Full Chinese names
+        "综合频道", "财经频道", "综艺频道", "中文国际",
+        "体育频道", "电影频道", "国防军事", "电视剧频道",
+        "纪录频道", "科教频道", "戏曲频道", "社会与法",
+        "新闻频道", "少儿频道", "音乐频道", "奥林匹克",
+        "农业农村",
     ],
     "🏠 湖南频道": [
-        # 上星频道
+        # 上星 (Chinese)
         "湖南卫视", "湖南经视", "金鹰纪实", "金鹰卡通",
-        # 地面频道
-        "湖南都市", "湖南娱乐",
-        "湖南电视剧", "湖南电影",
-        "爱晚", "快乐购",
-        "超高清", "4K 超高清",
-        # 国际频道
+        # 地面 (Chinese)
+        "湖南都市", "湖南娱乐", "湖南电视剧", "湖南电影",
+        "爱晚", "快乐购", "茶频道", "快乐垂钓",
         "湖南卫视国际", "湖南国际",
-        # 付费频道
-        "茶频道", "快乐垂钓",
-        # 长沙市台
+        # 长沙
         "长沙新闻", "长沙政法", "长沙女性", "长沙公共",
-        "长沙台", "长沙",
+        "长沙台", "长沙", "长沙经贸", "长沙地铁",
         # 湖南各地市
-        "株洲", "湘潭", "衡阳", "邵阳", "岳阳",
-        "常德", "张家界", "益阳", "郴州", "永州",
-        "怀化", "娄底", "湘西",
-        "Hunan", "HNTV", "芒果",
+        "株洲", "湘潭", "衡阳", "邵阳", "岳阳", "常德",
+        "张家界", "益阳", "郴州", "永州", "怀化", "娄底", "湘西",
+        # Pinyin / English
+        "Hunan", "HNTV", "芒果", "HNWS", "HNJS", "HNDS",
+        "HNYL", "HNGG", "HNGJ", "JYKT", "JYJS", "KLQD", "KLCU",
+        "TeaPD", "TEA",
+    ],
+    "👶 少儿卡通": [
+        # Chinese
+        "少儿", "卡通", "动漫", "儿童", "亲子",
+        # Pinyin / English
+        "Kids", "Toon", "Cartoon", "Baby", "Child",
+        # Specific channels
+        "CCTV-14", "CCTV14",
+        "金鹰卡通", "卡酷", "炫动", "优漫",
+        "CN卡通", "CN ",
+    ],
+    "⚽ 体育频道": [
+        # Chinese
+        "体育", "运动", "足球", "篮球", "高尔夫", "赛车", "搏击",
+        "电竞", "游戏",
+        # Pinyin / English
+        "Sport", "NBA", "ESPN", "F1", "Golf", "Tennis", "Fight",
+        "Game", "Gaming",
+        # Specific
+        "CCTV-5", "CCTV5", "CCTV-16", "CCTV16",
+        "北京体育", "上海体育", "广东体育",
+        "风云足球", "高尔夫网球",
     ],
     "📡 卫视频道": [
-        # Only match non-Hunan 卫视 here (Hunan matched above)
+        # ---- Chinese province 卫视 (non-Hunan, Hunan matched above) ----
         "北京卫视", "上海卫视", "东方卫视", "天津卫视", "重庆卫视",
         "广东卫视", "浙江卫视", "江苏卫视", "四川卫视", "安徽卫视",
         "湖北卫视", "河南卫视", "山东卫视", "福建卫视", "深圳卫视",
         "河北卫视", "山西卫视", "陕西卫视", "吉林卫视", "辽宁卫视",
         "黑龙江卫视", "内蒙古卫视", "云南卫视", "海南卫视",
         "广西卫视", "贵州卫视", "青海卫视", "宁夏卫视", "甘肃卫视",
-        "新疆卫视", "西藏卫视", "厦门卫视",
-        "凤凰中文", "凤凰资讯", "凤凰香港",
-        "翡翠台", "明珠台",
+        "新疆卫视", "西藏卫视", "厦门卫视", "三沙卫视", "兵团卫视",
+        "延边卫视", "东南卫视", "江西卫视", "旅游卫视",
+        # ---- Pinyin / English province satellite ----
+        "BJTV", "SHTV", "Tianjin", "Chongqing",
+        "Guangdong", "Zhejiang", "Jiangsu", "Sichuan", "Anhui",
+        "Hubei", "Henan", "Shandong", "Fujian", "Shenzhen",
+        "Hebei", "Shanxi", "Shaanxi", "Jilin", "Liaoning",
+        "Heilongjiang", "InnerMongolia", "Yunnan", "Hainan",
+        "Guangxi", "Guizhou", "Qinghai", "Ningxia", "Gansu",
+        "Xinjiang", "Tibet", "Xizang", "Xiamen", "Jiangxi",
+        # Pinyin patterns
+        "Weishi", "SAT TV", "Satellite",
+        # ---- Hong Kong / Macau / Taiwan ----
+        "凤凰中文", "凤凰资讯", "凤凰香港", "凤凰卫视",
+        "翡翠台", "明珠台", "TVB", "ATV",
+        "澳门", "台湾", "中视", "华视", "民视", "台视",
+        "Phoenix", "Jade", "Pearl",
     ],
     "🗺 地方频道": [
+        # ---- Province ground channels (Chinese) ----
         "北京台", "上海台", "天津台", "重庆台",
         "广东台", "浙江台", "江苏台", "四川台", "安徽台", "湖北台",
         "河南台", "山东台", "福建台", "深圳台", "河北台", "山西台",
         "陕西台", "吉林台", "辽宁台", "黑龙江台",
         "内蒙古台", "云南台", "海南台", "广西台", "贵州台",
         "青海台", "宁夏台", "甘肃台", "新疆台", "西藏台",
-        "厦门台", "三沙台", "兵团", "延边",
-        # City-level TV stations
-        "苏州", "杭州", "南京", "成都", "武汉",
-        "西安", "广州", "青岛", "大连", "宁波",
+        "厦门台", "三沙台", "兵团", "延边", "江西台",
+        # ---- Province name + channel type ----
+        "北京频道", "上海频道", "天津频道",
+        # ---- City names (Chinese) ----
+        "苏州", "杭州", "南京", "成都", "武汉", "西安",
+        "广州", "青岛", "大连", "宁波", "郑州", "长沙",
+        "济南", "沈阳", "哈尔滨", "昆明", "贵阳", "兰州",
+        "西宁", "银川", "南宁", "太原", "拉萨",
+        # ---- Pinyin city/region ----
+        "Beijing ", "Shanghai ", "Tianjin ",
+        "Guangzhou", "Shenzhen", "Suzhou", "Hangzhou",
+        "Nanjing", "Chengdu", "Wuhan", "Xi'an",
+        "Qingdao", "Dalian", "Ningbo", "Zhengzhou",
+        "Jinan", "Shenyang", "Harbin", "Kunming",
+        # ---- Public / News / Life / etc. ----
+        "都市频道", "公共频道", "新闻频道", "生活频道",
+        "经济频道", "影视", "法制", "科教", "文旅",
+        "交通", "移动", "地铁",
     ],
 }
 

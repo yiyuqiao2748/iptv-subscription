@@ -33,7 +33,7 @@ def generate_m3u(entries: list, output_path: str = None) -> str:
     lines.append(f'#PLAYLIST:国内IPTV直播源')
     lines.append(f'# Generated: {now} (UTC+8)')
     lines.append(f'# Total channels: {len(entries)}')
-    lines.append(f'# Groups: 湖南频道 | 央视频道 | 卫视频道 | 地方频道 | 其他频道')
+    lines.append(f'# Groups: 湖南 | 央视 | 卫视 | 少儿 | 体育 | 影视 | 纪录 | 地方 | 其他')
 
     current_group = None
 
