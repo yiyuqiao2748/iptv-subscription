@@ -37,54 +37,38 @@ UPDATE_INTERVAL_HOURS = 6
 UPDATE_CRON = None  # if set, overrides interval, e.g. "0 */6 * * *"
 
 # ============================================================
-# SOURCE SCANNING - Domestic ONLY (verified active repos)
+# SOURCE SCANNING - Domestic ONLY (verified active repos 2026-05)
+# Priority: vbskycn (tested live) > high-volume aggregators > speciality
 # ============================================================
 KNOWN_SOURCES = [
-    # ---- Primary aggregators (verified active 2026-05) ----
-    # YueChan - one of the most comprehensive
+    # ---- vbskycn IPTV (tested live sources, China-direct) ----
+    # This project runs its own verification server. 550+ verified channels.
+    # Primary domain (domestic direct):
+    "https://live.zbds.top/tv/iptv4.m3u",
+    # TXT format with multiple backup URLs:
+    "https://live.zbds.top/tv/iptv4.txt",
+    # GitHub raw mirror:
+    "https://raw.githubusercontent.com/vbskycn/iptv/refs/heads/master/tv/iptv4.m3u",
+    # IPv6 source:
+    "https://live.zbds.top/tv/iptv6.m3u",
+
+    # ---- Primary aggregators (verified active) ----
+    # YueChan - comprehensive collection
     "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
     # Kimentanm aptv source
     "https://raw.githubusercontent.com/Kimentanm/aptv/master/m3u/iptv.m3u",
-    # suxuang myIPTV - large IPv6 collection
+    # suxuang myIPTV - large collection
     "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv6.m3u",
     # BurningC4 Chinese-IPTV
     "https://raw.githubusercontent.com/BurningC4/Chinese-IPTV/master/TV-IPV4.m3u",
     # YanG-1989 Gather
     "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u",
-
-    # ---- CCTV & Satellite focused ----
-    # whpsky iptv (new location)
-    "https://raw.githubusercontent.com/whpsky/iptv/main/IPTV.m3u",
-    # Meroser IPTV main
-    "https://raw.githubusercontent.com/Meroser/IPTV/main/m3u/IPTV.m3u",
-    # vbskycn iptv
-    "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv.m3u",
-
-    # ---- Regional / Hunan focused ----
-    # qwerttvv Beijing-IPTV (Unicom)
-    "https://raw.githubusercontent.com/qwerttvv/Beijing-IPTV/master/IPTV-Unicom-M3U.m3u",
-    # Beijing unicom iptv (wuwentao)
-    "https://raw.githubusercontent.com/wuwentao/bj-unicom-iptv/main/iptv.m3u",
-    # SPX372928 MyIPTV
-    "https://raw.githubusercontent.com/SPX372928/MyIPTV/main/IPTV.m3u",
-    # shengboli myiptv
-    "https://raw.githubusercontent.com/shengboli/myiptv/main/tv.m3u",
+    # iptv-org China subset (large collection)
+    "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u",
 
     # ---- txt format sources ----
     "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.txt",
     "https://raw.githubusercontent.com/joevess/IPTV/main/sources/iptv_sources.m3u",
-
-    # ---- Additional domestic mirrors ----
-    "https://raw.githubusercontent.com/dd1655629/iptv/main/tv.m3u",
-    "https://raw.githubusercontent.com/taksssss/EPG-Server/main/iptv.m3u",
-    "https://raw.githubusercontent.com/hakluke/wechat-iptv/main/iptv.m3u",
-
-    # ---- New/alternative sources ----
-    "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u",
-    "https://raw.githubusercontent.com/linmm/M3U/master/IPTV-China.m3u",
-    "https://raw.githubusercontent.com/xiaolindeguo/IPTV/main/ipv4.m3u",
-    "https://raw.githubusercontent.com/gaotianliuyun/gao/master/0822.m3u",
-    "https://raw.githubusercontent.com/onger231/iptv/master/iptv.m3u",
 ]
 
 # ============================================================
