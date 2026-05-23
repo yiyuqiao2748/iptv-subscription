@@ -63,12 +63,11 @@ def parse_channels():
         return channels
 
     current_group = ""
-    for line in lines:
-        line = line.strip()
+    for idx, raw_line in enumerate(lines):
+        line = raw_line.rstrip("\n")
         if line.startswith("# ===== ") and line.endswith(" ====="):
             current_group = line[7:-7].strip()
         elif line.startswith("#EXTINF:"):
-            # #EXTINF:-1 group-title="xx",ChannelName
             name = ""
             group = current_group
             if 'group-title="' in line:
@@ -77,8 +76,7 @@ def parse_channels():
             if "," in line:
                 name = line.rsplit(",", 1)[-1].strip()
             # Get URL from next line
-            idx = lines.index(line + "\n") if (line + "\n") in lines else -1
-            if idx >= 0 and idx + 1 < len(lines):
+            if idx + 1 < len(lines):
                 url = lines[idx + 1].strip()
                 if url.startswith("http"):
                     channels.append({

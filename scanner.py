@@ -177,34 +177,65 @@ def fetch_source(url: str, timeout: int = 15) -> list:
         return []
 
 
+def _get_repo_m3u_files(repo_full_name: str, default_branch: str) -> list:
+    """
+    Use GitHub Trees API to find actual M3U/TXT files in a repo.
+    Returns list of raw GitHub URLs for files that exist.
+    """
+    urls = []
+    try:
+        tree_url = f"https://api.github.com/repos/{repo_full_name}/git/trees/{default_branch}?recursive=1"
+        headers = HEADERS.copy()
+        headers["Accept"] = "application/vnd.github+json"
+        resp = requests.get(tree_url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return urls
+        tree = resp.json().get("tree", [])
+        for item in tree:
+            if item["type"] != "blob":
+                continue
+            path = item["path"]
+            if path.lower().endswith((".m3u", ".m3u8", ".txt")):
+                # Only include files that look like IPTV playlists
+                if any(kw in path.lower() for kw in ["iptv", "tv", "live", "m3u", "channel", "hunan", "cctv", "china"]):
+                    raw_url = f"https://raw.githubusercontent.com/{repo_full_name}/{default_branch}/{path}"
+                    urls.append(raw_url)
+    except Exception as e:
+        logger.debug(f"  Trees API error for {repo_full_name}: {e}")
+    return urls
+
+
 def search_github_hunan() -> list:
     """
     Use GitHub's REST API to search for repos containing Hunan IPTV sources.
-    Returns additional source URLs found.
+    Uses Trees API to find actual files (no blind guessing).
     """
     discovered_urls = []
     headers = HEADERS.copy()
     headers["Accept"] = "application/vnd.github+json"
+    seen_repos = set()
 
     for query in HUNAN_SEARCH_QUERIES:
         try:
             api_url = f"https://api.github.com/search/repositories?q={query}&sort=updated&per_page=5"
             resp = requests.get(api_url, headers=headers, timeout=15)
             if resp.status_code != 200:
+                logger.debug(f"  GitHub search '{query}' returned {resp.status_code}")
                 continue
             data = resp.json()
+            found = 0
             for repo in data.get("items", []):
-                # Look for M3U files in the repo
                 repo_full_name = repo["full_name"]
+                if repo_full_name in seen_repos:
+                    continue
+                seen_repos.add(repo_full_name)
                 default_branch = repo.get("default_branch", "main")
-                # Try common paths
-                for subpath in ["iptv.m3u", "tv.m3u", "live.m3u", "iptv.txt", "tv.txt",
-                                "m3u/iptv.m3u", "m3u/tv.m3u", "china.m3u",
-                                "sources/iptv_sources.m3u"]:
-                    raw_url = f"https://raw.githubusercontent.com/{repo_full_name}/{default_branch}/{subpath}"
-                    if raw_url not in discovered_urls:
-                        discovered_urls.append(raw_url)
-            logger.info(f"  GitHub search '{query}' -> {len(discovered_urls)} potential URLs")
+                file_urls = _get_repo_m3u_files(repo_full_name, default_branch)
+                for u in file_urls:
+                    if u not in discovered_urls:
+                        discovered_urls.append(u)
+                        found += 1
+            logger.info(f"  GitHub search '{query}' -> {found} files found ({len(discovered_urls)} total)")
         except Exception as e:
             logger.debug(f"  GitHub search error for '{query}': {e}")
 
