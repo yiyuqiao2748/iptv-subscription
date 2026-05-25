@@ -7,8 +7,15 @@ No foreign channels.
 """
 
 import os
+import sys
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller 打包后，__file__ 指向临时解压目录
+# 可写目录应为 exe 所在目录
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 

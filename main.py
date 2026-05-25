@@ -226,6 +226,7 @@ def main():
         epilog="""
 Examples:
   python main.py                    # Full pipeline + server + scheduler
+  python main.py --desktop          # Desktop mode: tray icon + auto browser
   python main.py --scan-only        # Run once and exit
   python main.py --port 9999        # Custom port
   python main.py --interval 12      # Update every 12 hours
@@ -248,7 +249,13 @@ Examples:
                         help="Don't start scheduler (server only)")
     parser.add_argument("--skip-test", action="store_true",
                         help="Skip connectivity testing (all streams pass)")
+    parser.add_argument("--desktop", action="store_true",
+                        help="Desktop mode: system tray + auto-open browser")
     args = parser.parse_args()
+
+    # Auto-enable desktop mode when running as PyInstaller exe
+    if getattr(sys, 'frozen', False) and not args.scan_only:
+        args.desktop = True
 
     # Setup
     level = logging.DEBUG if args.debug else logging.INFO
@@ -280,6 +287,15 @@ Examples:
         asyncio.run(run_pipeline(skip_test=args.skip_test))
         logger.info("Scan-only complete. Exiting.")
         return
+
+    # --------------------------------------------------------
+    # Desktop mode: single instance check
+    # --------------------------------------------------------
+    if args.desktop:
+        from desktop import check_single_instance, IPTVDesktop
+        if not check_single_instance():
+            logger.error("IPTV 订阅服务已在运行中！请勿重复启动。")
+            sys.exit(1)
 
     # --------------------------------------------------------
     # Full mode: Server + Scheduler
@@ -315,16 +331,22 @@ Examples:
         logger.info("Running one-time pipeline...")
         asyncio.run(run_pipeline())
 
-    # Keep main thread alive
-    try:
-        logger.info("Service running. Press Ctrl+C to stop.")
-        while True:
-            time.sleep(10)
-    except KeyboardInterrupt:
-        logger.info("\nShutting down...")
-        scheduler.stop()
-        logger.info("Goodbye! 👋")
-        sys.exit(0)
+    # Desktop mode: GUI window + tray icon (blocks main thread)
+    if args.desktop:
+        logger.info("Desktop mode active.")
+        app = IPTVDesktop(port=args.port, update_cb=scheduler.run_now)
+        app.run()
+    else:
+        # Keep main thread alive
+        try:
+            logger.info("Service running. Press Ctrl+C to stop.")
+            while True:
+                time.sleep(10)
+        except KeyboardInterrupt:
+            logger.info("\nShutting down...")
+            scheduler.stop()
+            logger.info("Goodbye! 👋")
+            sys.exit(0)
 
 
 if __name__ == "__main__":
