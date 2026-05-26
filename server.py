@@ -171,7 +171,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>IPTV Subscription</title>
+<title>小柚TV - 频道助手</title>
 <style>
 :root {
   --bg: #0b0e14; --card: #141821; --border: #1e2430;
@@ -319,7 +319,7 @@ tr:hover td { background: #1a1f2b; }
 <body>
 
 <div class="header">
-  <h1><span>📡</span> IPTV Subscription</h1>
+  <h1><span>📡</span> 小柚TV 频道助手</h1>
   <div style="font-size:13px;color:var(--muted)">
     <span class="status-dot" id="statusDot"></span>
     <span id="statusText">Loading...</span>
@@ -369,7 +369,7 @@ tr:hover td { background: #1a1f2b; }
 
 </div>
 
-<div class="footer">IPTV Subscription Service · Auto-update · CCTV / Hunan / SAT / Local</div>
+<div class="footer">小柚TV 频道助手 · 自动更新</div>
 <div class="toast" id="toast"></div>
 
 <script>

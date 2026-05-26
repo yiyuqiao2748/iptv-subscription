@@ -19,7 +19,7 @@ logger = logging.getLogger("scanner")
 # Regex to extract EXTINF lines: #EXTINF:-1 ... ,ChannelName
 RE_EXTINF = re.compile(r'^#EXTINF:\s*-?\d+[^,]*,(.+)$', re.IGNORECASE)
 # Regex to extract URLs (http/https/rtmp/rtsp etc.)
-RE_URL = re.compile(r'^(https?|rtmp|rtsp|mms|rtp|udp)://\S+', re.IGNORECASE)
+RE_URL = re.compile(r'(https?|rtmp|rtsp|mms|rtp|udp)://\S+', re.IGNORECASE)
 
 # Headers to mimic a browser
 HEADERS = {
@@ -198,7 +198,7 @@ def _get_repo_m3u_files(repo_full_name: str, default_branch: str) -> list:
             if path.lower().endswith((".m3u", ".m3u8", ".txt")):
                 # Only include files that look like IPTV playlists
                 if any(kw in path.lower() for kw in ["iptv", "tv", "live", "m3u", "channel", "hunan", "cctv", "china"]):
-                    raw_url = f"https://raw.githubusercontent.com/{repo_full_name}/{default_branch}/{path}"
+                    raw_url = f"https://cdn.jsdelivr.net/gh/{repo_full_name}@{default_branch}/{path}"
                     urls.append(raw_url)
     except Exception as e:
         logger.debug(f"  Trees API error for {repo_full_name}: {e}")

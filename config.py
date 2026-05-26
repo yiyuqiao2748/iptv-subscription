@@ -23,6 +23,12 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 # ============================================================
+# BRAND
+# ============================================================
+BRAND_NAME = "小柚TV"
+BRAND_VERSION = "1.0.0"
+
+# ============================================================
 # OUTPUT PATHS
 # ============================================================
 OUTPUT_M3U = os.path.join(OUTPUT_DIR, "iptv.m3u")
@@ -52,17 +58,49 @@ KNOWN_SOURCES = [
     # Self-hosted verification server, domestic direct access, EPG + logos
     "https://live.zbds.top/tv/iptv4.m3u",
 
-    # === SUPPLEMENTARY: curated Chinese aggregators ===
+    # === SUPPLEMENTARY: curated Chinese aggregators (via jsDelivr CDN) ===
     # YueChan — comprehensive, good Chinese naming
-    "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
+    "https://cdn.jsdelivr.net/gh/YueChan/Live@main/IPTV.m3u",
     # Kimentanm — APTV compatible source
-    "https://raw.githubusercontent.com/Kimentanm/aptv/master/m3u/iptv.m3u",
+    "https://cdn.jsdelivr.net/gh/Kimentanm/aptv@master/m3u/iptv.m3u",
     # BurningC4 — IPv4 focused, clean names
-    "https://raw.githubusercontent.com/BurningC4/Chinese-IPTV/master/TV-IPV4.m3u",
+    "https://cdn.jsdelivr.net/gh/BurningC4/Chinese-IPTV@master/TV-IPV4.m3u",
     # YanG-1989 — well-maintained Chinese playlist
-    "https://raw.githubusercontent.com/YanG-1989/m3u/main/Gather.m3u",
+    "https://cdn.jsdelivr.net/gh/YanG-1989/m3u@main/Gather.m3u",
     # iptv-org China subset
-    "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u",
+    "https://cdn.jsdelivr.net/gh/iptv-org/iptv@master/streams/cn.m3u",
+    # tianunusual — Hunan-focused, 165+ channels via IPv6
+    "https://cdn.jsdelivr.net/gh/tianunusual/IPTV@main/IPTv.m3u",
+
+    # === MASSIVE AGGREGATOR: xisohi/CHINA-IPTV — 1300+ channels ===
+    # TV/live.txt — 汇总各省直播源，按频道名+分类组织
+    "https://cdn.jsdelivr.net/gh/xisohi/CHINA-IPTV@main/TV/live.txt",
+    # TV/sources.txt — 汇总源地址列表
+    "https://cdn.jsdelivr.net/gh/xisohi/CHINA-IPTV@main/TV/sources.txt",
+
+    # === PROVINCE MULTICAST: xisohi — 按省份运营商分类 ===
+    # 湖南电信 (Hunan Telecom)
+    "https://cdn.jsdelivr.net/gh/xisohi/CHINA-IPTV@main/Multicast/hunan/telecom.txt",
+    # 广东电信 (Guangdong Telecom)
+    "https://cdn.jsdelivr.net/gh/xisohi/CHINA-IPTV@main/Multicast/guangdong/telecom.txt",
+    # 上海电信 (Shanghai Telecom)
+    "https://cdn.jsdelivr.net/gh/xisohi/CHINA-IPTV@main/Multicast/shanghai/telecom.txt",
+    # 浙江电信 (Zhejiang Telecom)
+    "https://cdn.jsdelivr.net/gh/xisohi/CHINA-IPTV@main/Multicast/zhejiang/telecom.txt",
+    # 四川移动 (Sichuan Mobile)
+    "https://cdn.jsdelivr.net/gh/xisohi/CHINA-IPTV@main/Multicast/sichuan/mobile.txt",
+
+    # === MAOWEI: spider-iptv — 酒店源 + 组播源 ===
+    # 湖南电信组播
+    "https://cdn.jsdelivr.net/gh/maowei1125/spider-iptv@main/source/multicast/%E6%B9%96%E5%8D%97-%E7%94%B5%E4%BF%A1-239.1.0.m3u",
+    # 广东电信组播
+    "https://cdn.jsdelivr.net/gh/maowei1125/spider-iptv@main/source/multicast/%E5%B9%BF%E4%B8%9C-%E7%94%B5%E4%BF%A1-239.77.0.m3u",
+    # 江苏电信组播
+    "https://cdn.jsdelivr.net/gh/maowei1125/spider-iptv@main/source/multicast/%E6%B1%9F%E8%8B%8F-%E7%94%B5%E4%BF%A1-239.49.8.m3u",
+    # 浙江电信组播
+    "https://cdn.jsdelivr.net/gh/maowei1125/spider-iptv@main/source/multicast/%E6%B5%99%E6%B1%9F-%E7%94%B5%E4%BF%A1-233.50.200.m3u",
+    # 上海酒店源
+    "https://cdn.jsdelivr.net/gh/maowei1125/spider-iptv@main/source/hotels/%E4%B8%8A%E6%B5%B7%E5%B8%82.m3u",
 ]
 
 # ============================================================
@@ -206,6 +244,7 @@ TEST_TIMEOUT = 8            # seconds per stream (increased for bandwidth test)
 TEST_CONCURRENT = 50        # max concurrent connections
 TEST_RETRY = 1              # retries per stream
 TEST_MIN_BITRATE = 100      # kbps minimum (streams slower than this are rejected)
+MAX_SEGMENT_DURATION = 6    # max HLS segment duration in seconds (higher = more latency)
 
 # ============================================================
 # FILTER PARAMETERS

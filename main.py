@@ -73,6 +73,10 @@ def setup_logging(level=logging.INFO):
 
 TZ_CN = timezone(timedelta(hours=8))
 
+# Activation state (set by main() in desktop mode)
+_UNACTIVATED_LIMIT = 50
+_is_activated = True  # default: unlimited for non-desktop mode
+
 
 def inject_fallback_streams(entries: list) -> list:
     """
@@ -195,6 +199,11 @@ async def run_pipeline(skip_test: bool = False) -> dict:
     fallback_entries = inject_fallback_streams(filtered_entries)
     filtered_entries.extend(fallback_entries)
 
+    # Step 4.8: Limit channels for unactivated users
+    if not _is_activated and len(filtered_entries) > _UNACTIVATED_LIMIT:
+        logger.warning(f"  未激活版本：频道数限制为 {_UNACTIVATED_LIMIT}（共 {len(filtered_entries)} 个）")
+        filtered_entries = filtered_entries[:_UNACTIVATED_LIMIT]
+
     # Step 5: Generate M3U + TXT
     generate(filtered_entries)
 
@@ -289,13 +298,22 @@ Examples:
         return
 
     # --------------------------------------------------------
-    # Desktop mode: single instance check
+    # Desktop mode: single instance check + activation
     # --------------------------------------------------------
+    _activated = False
     if args.desktop:
-        from desktop import check_single_instance, IPTVDesktop
+        from desktop import check_single_instance, IPTVDesktop, show_activation_dialog, show_first_run_guide
         if not check_single_instance():
             logger.error("IPTV 订阅服务已在运行中！请勿重复启动。")
             sys.exit(1)
+        # Show first-run guide (no-op if already shown)
+        show_first_run_guide()
+        # Show activation dialog (returns immediately if already activated)
+        _activated = show_activation_dialog()
+
+    # Set module-level activation state for pipeline channel limiting
+    global _is_activated
+    _is_activated = _activated if args.desktop else True
 
     # --------------------------------------------------------
     # Full mode: Server + Scheduler
@@ -334,7 +352,7 @@ Examples:
     # Desktop mode: GUI window + tray icon (blocks main thread)
     if args.desktop:
         logger.info("Desktop mode active.")
-        app = IPTVDesktop(port=args.port, update_cb=scheduler.run_now)
+        app = IPTVDesktop(port=args.port, update_cb=scheduler.run_now, activated=_activated)
         app.run()
     else:
         # Keep main thread alive

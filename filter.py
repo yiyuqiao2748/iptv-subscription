@@ -4,17 +4,21 @@ Stream Filter
 Filters test results:
 1. Keep only alive streams
 2. Remove foreign/excluded channels
-3. Assign group-title categories (Chinese / Pinyin / English patterns)
-4. Preserve source group-title from trusted sources (vbskycn)
+3. Latency-based dedup: same channel keep fastest source
+4. Assign group-title categories (Chinese / Pinyin / English patterns)
+5. Preserve source group-title from trusted sources (vbskycn)
 """
 
 import logging
+import re
 
 from config import (
     EXCLUDE_KEYWORDS,
     ALWAYS_KEEP_KEYWORDS,
     CATEGORY_KEYWORDS,
     DEFAULT_GROUP,
+    HUNAN_KEYWORDS,
+    MAX_SEGMENT_DURATION,
 )
 from scanner import StreamEntry
 from tester import TestResult, STATUS_ALIVE, STATUS_SLOW
@@ -71,6 +75,75 @@ def assign_group(name: str, source_group: str = "") -> str:
     return DEFAULT_GROUP
 
 
+def _normalize_for_dedup(name: str) -> str:
+    """Normalize channel name for latency dedup grouping."""
+    cleaned = re.sub(r'[\s_\-]+', '', name)
+    cleaned = cleaned.upper()
+    cleaned = re.sub(r'(高清|超清|HD|SD|4K|1080P|720P|标清|流畅|IPV6|IPV4)$', '', cleaned)
+    return cleaned
+
+
+def _is_hunan(name: str) -> bool:
+    for kw in HUNAN_KEYWORDS:
+        if kw in name:
+            return True
+    return False
+
+
+def _is_cctv(name: str) -> bool:
+    upper = name.upper()
+    return "CCTV" in upper or "央视" in name
+
+
+def latency_dedup(alive_results: list) -> list:
+    """
+    For channels with the same name, keep only the fastest source(s).
+    - Hunan channels: keep top 2 fastest (backup)
+    - CCTV channels: keep top 2 fastest (backup)
+    - Others: keep 1 fastest
+    Sorts by response_time_ms ascending, then by bandwidth descending as tiebreaker.
+    """
+    # Group by normalized name
+    groups: dict[str, list] = {}
+    order: list[str] = []
+
+    for result in alive_results:
+        norm = _normalize_for_dedup(result.entry.name)
+        matched = False
+        for key in order:
+            if norm == key or (len(norm) >= 3 and norm in key) or (len(key) >= 3 and key in norm):
+                groups[key].append(result)
+                matched = True
+                break
+        if not matched:
+            groups[norm] = [result]
+            order.append(norm)
+
+    # Within each group, sort by estimated latency (fastest first), keep top N
+    kept = []
+    for key in order:
+        group = groups[key]
+        # Sort: trusted first, then lowest estimated latency, then highest bandwidth
+        group.sort(key=lambda r: (
+            0 if r.entry.trusted else 1,
+            r.estimated_latency_s,
+            -r.bandwidth_kbps,
+        ))
+
+        name = group[0].entry.name
+        if _is_hunan(name) or _is_cctv(name):
+            max_keep = 2
+        else:
+            max_keep = 1
+
+        kept.extend(group[:max_keep])
+
+    removed = len(alive_results) - len(kept)
+    logger.info(f"  Latency dedup: kept {len(kept)} fastest, removed {removed} slower duplicates")
+
+    return kept
+
+
 def filter_streams(test_results: list) -> list:
     """
     Filter test results:
@@ -93,6 +166,20 @@ def filter_streams(test_results: list) -> list:
     logger.info(f"  Dead removed: {dead_count}")
     logger.info(f"  Slow removed: {len(slow_results)}")
     logger.info(f"  Alive: {len(alive_results)}")
+
+    # 0.5: Reject HLS sources with very long segments (high inherent latency)
+    if MAX_SEGMENT_DURATION > 0:
+        before = len(alive_results)
+        alive_results = [
+            r for r in alive_results
+            if not r.is_hls or r.segment_duration_s <= 0 or r.segment_duration_s <= MAX_SEGMENT_DURATION
+        ]
+        high_latency_removed = before - len(alive_results)
+        if high_latency_removed:
+            logger.info(f"  High-latency HLS removed (>{MAX_SEGMENT_DURATION}s segment): {high_latency_removed}")
+
+    # 0.6: Latency-based dedup — keep only fastest source per channel
+    alive_results = latency_dedup(alive_results)
 
     filtered = []
     excluded_count = 0
