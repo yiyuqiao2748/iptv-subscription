@@ -1,7 +1,7 @@
 #EXTM3U
 #PLAYLIST:国内IPTV直播源
-# Generated: 2026-07-06 19:11:07 (UTC+8)
-# Total channels: 2127
+# Generated: 2026-07-06 23:58:48 (UTC+8)
+# Total channels: 2128
 # Groups: 湖南 | 央视 | 卫视 | 少儿 | 体育 | 影视 | 纪录 | 地方 | 其他
 
 # ===== 🏠 湖南频道 =====
@@ -905,6 +905,8 @@ http://183.237.95.108:9901/tsfile/live/1008_1.m3u8?key=txiptv&playlive=0&authid=
 http://[2409:8087:7000:20:1000::22]:6060/yinhe/2/ch00000090990000002065/index.m3u8?virtualDomain=yinhe.live_hls.zte.com
 #EXTINF:-1 group-title="🎬 影视剧场",CHD爱电影
 rtp://239.10.0.191:5140
+#EXTINF:-1 group-title="🎬 影视剧场",CND Film Middle School Channel
+http://live-play.zxstv.com.cn/zhongxuesheng/zhongxuesheng.m3u8
 #EXTINF:-1 group-title="🎬 影视剧场",NEWTV动作电影
 rtp://239.11.0.142:5140
 #EXTINF:-1 group-title="🎬 影视剧场",NewTV海外剧场
