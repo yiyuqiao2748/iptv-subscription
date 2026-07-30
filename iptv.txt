@@ -1,5 +1,5 @@
-# 国内IPTV直播源 - Generated: 2026-07-30 11:40:20 (UTC+8)
-# Total: 2103 channels
+# 国内IPTV直播源 - Generated: 2026-07-30 17:10:28 (UTC+8)
+# Total: 2105 channels
 
 # ===== 🏠 湖南频道 =====
 # Hunan TV (2160p)
@@ -304,6 +304,8 @@ rtp://239.10.0.117:5140
 # ===== 📡 卫视频道 =====
 # Hebei TV (2160p)
 https://event.pull.hebtv.com/live/live101.m3u8
+# Jiangsu Public & News Channel
+https://jiangning-tv-playing-t.cm.jstv.com/jiangning-tv/jnxwzh.m3u8
 # Jiangxi City Channel
 https://play-live-hls.jxtvcn.com.cn/live-city/tv_jxtv2.m3u8
 # Jiangxi Economy & Life Channel
@@ -320,6 +322,8 @@ https://lsfb.avap.jilintv.cn/zqvk7vpj/channel/0a76740c72b74fabae611845aa21e06a/i
 https://lsfb.avap.jilintv.cn/zqvk7vpj/channel/906341e6f19b4c4bacdc89941eb85d12/index.m3u8
 # Jilin Rural Channel
 https://lsfb.avap.jilintv.cn/zqvk7vpj/channel/3ffc4824dce54b92be185555923ce382/index.m3u8
+# Qinghai TV
+https://hls-qhmh.lanzhousobey.cn/qhmh/mhds.m3u8
 # Shaanxi Satelital TV
 http://stream.snrtv.com/sxbc-star-cdxWY0.m3u8
 # Shenzhen Satellite TV (2160p)
