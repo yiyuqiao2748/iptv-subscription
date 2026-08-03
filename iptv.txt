@@ -1,5 +1,5 @@
-# 国内IPTV直播源 - Generated: 2026-08-03 12:04:42 (UTC+8)
-# Total: 2108 channels
+# 国内IPTV直播源 - Generated: 2026-08-03 18:11:18 (UTC+8)
+# Total: 2090 channels
 
 # ===== 🏠 湖南频道 =====
 # 娄底公共
@@ -46,9 +46,9 @@ rtp://239.76.252.234:9000
 http://drive.mxmy.net:8888/udp/239.3.1.164:8001
 # 快乐垂钓
 http://[2409:8087:1e03:21::2]:6060/cms001/ch00000090990000001235/index.m3u8
-# 快乐购高清
+# 快乐购
 rtp://239.76.252.125:9000
-# 快乐购高清
+# 快乐购
 rtp://239.76.253.112:9000
 # 怀化新闻
 http://175.0.104.143:8888/rtp/239.1.0.164:1025
@@ -77,12 +77,12 @@ http://hlsal-ldvt.qing.mgtv.com/nn_live/nn_x64/dWlwPTEyNy4wLjAuMSZ1aWQ9cWluZy1jb
 # 湖南卫视
 rtp://239.3.1.112:3002
 # 湖南国际
-http://175.0.104.143:8888/rtp/239.1.0.114:1025
+rtp://239.76.252.124:9000
 # 湖南国际
-http://175.0.104.143:8888/rtp/239.1.0.249:1025
-# 湖南娱乐高清
+rtp://239.76.253.102:9000
+# 湖南娱乐
 rtp://239.76.252.121:9000
-# 湖南娱乐高清
+# 湖南娱乐
 rtp://239.76.253.105:9000
 # 湖南张家界天门山西线玻璃栈道
 https://gcalic.v.myalicdn.com/gc/tms05_1/index.m3u8
@@ -100,21 +100,21 @@ https://gcalic.v.myalicdn.com/gc/zjjmht_1/index.m3u8
 http://192.168.10.1:5140/rtp/239.76.245.123:1234?fcc=218.76.213.41:8027
 # 湖南爱晚
 http://124.232.231.172:8089/000000002000/201500000222/index.m3u8?zte_offset=0&starttime=
-# 湖南电影高清
+# 湖南电影
 rtp://239.76.252.119:9000
-# 湖南电影高清
+# 湖南电影
 rtp://239.76.253.106:9000
-# 湖南电视剧高清
+# 湖南电视剧
 rtp://239.76.252.118:9000
-# 湖南电视剧高清
+# 湖南电视剧
 rtp://239.76.253.108:9000
-# 湖南经视高清
+# 湖南经视
 rtp://239.76.252.116:9000
-# 湖南经视高清
+# 湖南经视
 rtp://239.76.253.103:9000
-# 湖南都市高清
+# 湖南都市
 rtp://239.76.252.117:9000
-# 湖南都市高清
+# 湖南都市
 rtp://239.76.253.104:9000
 # 湘潭公共
 rtp://239.76.255.5:9000
@@ -164,8 +164,8 @@ http://175.0.104.143:8888/rtp/239.1.0.219:1025
 http://175.0.104.143:8888/rtp/239.1.0.240:1025
 # 茶频道
 http://[2409:8087:1e03:21::2]:6060/cms001/ch00000090990000001234/index.m3u8
-# 茶频道高清
-rtp://239.76.252.239:9000
+# 茶频道台高清
+rtp://233.50.201.188:5140
 # 衡阳公共[1920*1080]
 http://175.0.104.143:8888/rtp/239.1.0.211:1025
 # 衡阳县电视台
@@ -208,18 +208,18 @@ http://175.0.104.143:8888/rtp/239.1.0.141:1025
 http://35848.hlsplay.aodianyun.com/guangdianyun_35848/tv_channel_356.m3u8
 # 长沙女性 [Geo-blocked]
 http://35848.hlsplay.aodianyun.com/guangdianyun_35848/tv_channel_349.m3u8
-# 长沙影视高清
+# 长沙影视
 rtp://239.76.252.204:9000
+# 长沙政法
+rtp://239.76.253.122:9000
 # 长沙政法 [Geo-blocked]
 http://35848.hlsplay.aodianyun.com/guangdianyun_35848/tv_channel_348.m3u8
-# 长沙政法高清
-rtp://239.76.253.122:9000
 # 长沙文旅
 http://192.168.10.1:5140/rtp/239.76.255.42:9000?fcc=218.76.213.41:8027
+# 长沙新闻
+rtp://239.76.253.121:9000
 # 长沙新闻综合
 http://ls.qingting.fm/live/4877.m3u8
-# 长沙新闻高清
-rtp://239.76.253.121:9000
 # 长沙经贸 [Geo-blocked]
 http://35848.hlsplay.aodianyun.com/guangdianyun_35848/tv_channel_350.m3u8
 
@@ -233,9 +233,9 @@ http://198.204.240.250:82/live/cctv4k.m3u8
 # CCTV-6 电影
 rtp://239.3.1.174:8001
 # CCTV1
-http://123.130.84.106:8154/tsfile/live/0001_1.m3u8
+http://112.46.85.60:8009/hls/501/index.m3u8
 # CCTV2
-http://112.27.235.94:8000/hls/2/index.m3u8
+http://218.13.170.98:9901/tsfile/live/0002_1.m3u8
 # CCTV3
 http://121.57.88.206:898/hls/3/index.m3u8
 # CCTV4K50p
@@ -247,15 +247,15 @@ rtp://239.77.0.174:5146
 # CCTV4欧洲
 rtp://239.76.253.95:9000
 # CCTV5
-http://183.11.239.36:808/hls/93/index.m3u8
+http://124.116.183.146:9901/tsfile/live/0005_1.m3u8
 # CCTV6超清 (CAVS)
 http://113.78.252.188:8888/rtp/239.77.0.178:5146
 # CCTV7
-http://183.11.239.36:808/hls/25/index.m3u8
+http://124.116.183.146:9901/tsfile/live/0007_1.m3u8
 # CCTV8
-http://gmxw.7766.org:808/hls/96/index.m3u8
+http://124.116.183.146:9901/tsfile/live/0008_1.m3u8
 # CCTV9
-http://183.11.239.36:808/hls/27/index.m3u8
+http://124.116.183.146:9901/tsfile/live/0009_1.m3u8
 # CCTV国防军事
 http://180.102.252.109:8000/rtp/239.49.0.160:9274#http://180.102.252.109:8000/rtp/239.49.1.64:6000
 # CETV-1
@@ -268,8 +268,6 @@ http://ott.mobaibox.com/PLTV/3/224/3221227018/index.m3u8
 http://192.168.10.1:5140/rtp/239.76.245.254:1234?fcc=218.76.213.41:8027
 # CETV4[785*576]
 http://175.0.104.143:8888/rtp/239.1.0.199:1025
-# CETV早期教育
-rtp://233.18.204.187:5140
 # CGTN
 https://0472.org/hls/cgtn.m3u8
 # 中国教育
@@ -286,8 +284,6 @@ https://gcalic.v.myalicdn.com/gc/ztd_1/index.m3u8
 https://gcalic.v.myalicdn.com/gc/ztn_1/index.m3u8
 # 中央购物
 rtp://239.45.3.79:5140
-# 天府财经频道
-rtp://239.10.0.194:5140
 # 央视台球
 http://[2409:8087:7001:20:2::3]:80/dbiptv.sn.chinamobile.com/PLTV/88888893/224/3221226956/index.m3u8
 # 央视文化精品
@@ -296,8 +292,6 @@ http://124.232.231.172:8089/000000002000/201500000523/index.m3u8?zte_offset=0&st
 http://192.168.10.1:5140/rtp/239.76.255.9:9000?fcc=218.76.213.41:8027
 # 滁州市广播电视台 新闻综合频道 (1080p)
 http://live.cztv.cc:85/live/xwpd.m3u8
-# 自贡综合频道
-rtp://239.10.0.117:5140
 
 # ===== 📡 卫视频道 =====
 # Hebei TV (2160p)
@@ -334,40 +328,42 @@ https://play-qukan.cztv.com/live/1758879019692345.m3u8
 https://ali-m-l.cztv.com/channels/lantian/channel10/1080p.m3u8
 # 三沙卫视
 http://221.226.51.220:50081/newlive/live/hls/38/live.m3u8
-# 上海卫视
-http://112.27.235.94:8000/hls/28/index.m3u8
 # 东南卫视
 http://112.27.235.94:8000/hls/38/index.m3u8
 # 东方卫视
 https://txmov2.a.kwimgs.com/bs3/video-hls/5219953535631090825_hlsb.m3u8
 # 云南卫视
-http://183.11.239.36:808/hls/52/index.m3u8
+http://123.130.84.106:8154/tsfile/live/0119_1.m3u8
 # 兵团卫视
 http://218.13.170.98:9901/tsfile/live/0115_1.m3u8
 # 内蒙古卫视
-http://cssbyd.imwork.net:8082/hls/44/index.m3u8
+http://222.134.245.16:9901/tsfile/live/0109_1.m3u8
 # 凤凰中文
 http://101.35.240.114:88/phenix.php?id=fhzw
 # 凤凰卫视?
 http://180.102.252.109:8000/rtp/239.49.1.144:6000
+# 凤凰卫视中文台
+rtp://239.76.246.7:1234
+# 凤凰卫视资讯台
+rtp://239.76.246.8:1234
 # 凤凰资讯
 http://101.35.240.114:88/phenix.php?id=fhzx
 # 凤凰香港
 http://101.35.240.114:88/phenix.php?id=fhhk
 # 北京卫视
-http://183.11.239.36:808/hls/41/index.m3u8
+http://124.116.183.146:9901/tsfile/live/0122_1.m3u8
 # 厦门卫视
 http://183.11.239.36:808/hls/17/index.m3u8
 # 吉林卫视
 http://cssbyd.imwork.net:8082/hls/41/index.m3u8
 # 四川卫视
-http://183.11.239.36:808/hls/50/index.m3u8
+http://182.150.23.74:808/hls/38/index.m3u8
 # 天津卫视
-http://124.116.183.146:9901/tsfile/live/0135_1.m3u8
+http://112.46.85.60:8009/hls/44/index.m3u8
 # 宁夏卫视
 http://cssbyd.imwork.net:8082/hls/45/index.m3u8
 # 安徽卫视
-http://59.39.89.130:60901/tsfile/live/0125_6.m3u8?key=txiptv&playlive=1&authid=0
+http://222.134.245.16:9901/tsfile/live/0130_1.m3u8
 # 山东卫视
 http://123.130.84.106:8154/tsfile/live/0131_1.m3u8
 # 山西卫视
@@ -385,19 +381,19 @@ http://180.102.252.109:8000/rtp/239.49.0.57:8448#http://180.102.252.109:8000/rtp
 # 明珠台
 http://r.jdshipin.com/GeWKr?id=mzt720
 # 江苏卫视
-http://183.223.157.33:9901/tsfile/live/0127_1.m3u8?key=txiptv&playlive=1&authid=0
+http://218.13.170.98:9901/tsfile/live/1003_1.m3u8
 # 江西卫视
-http://61.136.172.236:9901/tsfile/live/0138_1.m3u8
+http://192.151.150.154/live/jxwshd.m3u8
 # 河北卫视
-http://61.136.172.236:9901/tsfile/live/0117_1.m3u8
+http://123.130.84.106:8154/tsfile/live/0117_1.m3u8
 # 河南卫视
-http://61.136.172.236:9901/tsfile/live/0139_1.m3u8
+http://123.130.84.106:8154/tsfile/live/0139_1.m3u8
 # 浙江卫视
-http://ali-xwl.cztv.com/live/channel011080Plxw.m3u8
+http://ali-m-l.cztv.com/channels/lantian/channel01/1080p.m3u8
 # 海南卫视
-http://cssbyd.imwork.net:8082/hls/31/index.m3u8
+http://183.223.157.33:9901/tsfile/live/1008_1.m3u8?key=txiptv&playlive=1&authid=0
 # 深圳卫视
-http://183.11.239.36:808/hls/45/index.m3u8
+http://182.150.23.74:808/hls/20/index.m3u8
 # 湖北卫视
 http://124.116.183.146:9901/tsfile/live/0132_1.m3u8
 # 甘肃卫视
@@ -409,13 +405,13 @@ http://cssbyd.imwork.net:8082/hls/46/index.m3u8
 # 贵州卫视
 http://182.150.23.74:808/hls/26/index.m3u8
 # 辽宁卫视
-http://123.130.84.106:8154/tsfile/live/0121_1.m3u8
+http://61.136.172.236:9901/tsfile/live/0121_1.m3u8
 # 重庆卫视
-http://123.130.84.106:8154/tsfile/live/0142_1.m3u8
+http://124.116.183.146:9901/tsfile/live/0142_1.m3u8
 # 陕西卫视
-https://live.264788.xyz/channel/shaanxiweishi?streamid=9dc887dba8ecb4e4143baf4f2373800c&livekey=01WgOR41rriMmMkzNsd0UoaxJRwetZdxIvtVk
+http://112.27.235.94:8000/hls/43/index.m3u8
 # 青海卫视
-http://123.130.84.106:8154/tsfile/live/0140_1.m3u8?key=txiptv&playlive=1&authid=0
+http://123.130.84.106:8154/tsfile/live/0140_1.m3u8
 # 黑龙江卫视
 https://idclive.hljtv.com:4430/live/hljws_own.m3u8
 
@@ -433,7 +429,7 @@ http://61.173.144.157:9901/tsfile/live/1000_1.m3u8?authid=0&key=txiptv&playlive=
 # 七台河新闻综合
 http://live.qthnews.org.cn:1935/live/live1/800k/tzwj_video.m3u8
 # 三明新闻综合
-http://ls.qingting.fm/live/4885.m3u8
+https://ls.qingting.fm/live/5022100/64k.m3u8
 # 上海新闻综合
 http://[2409:8087:1e03:21::2]:6060/cms001/ch00000090990000001014/index.m3u8
 # 上虞1新闻综合 (720p) [Not 24/7]
@@ -495,7 +491,7 @@ http://live.zohi.tv/video/s10001-fztv-1/index.m3u8
 # 固镇新闻
 http://www.guzhenm.com:7001/hls/hd-live.m3u8
 # 太谷新闻综合
-https://p2.vzan.com/slowlive/596867413819827251/live.m3u8?zbid=1725814272&tpid=1516989100&type=0
+https://p2.vzan.com/slowlive/596867413819827251/live.m3u8?zbid=1725814272&amp;amp;tpid=1516989100&amp;amp;type=0
 # 夹江新闻综合
 http://tvfile.jjrm.org.cn/nmip-media/channellive/channel106282/playlist.m3u8?zsicd
 # 安乡新闻综合
@@ -512,10 +508,10 @@ https://livestream-bt.nmtv.cn/nmtv/2348general.m3u8?txSecret=6a4ddce077e41b976fe
 http://180.102.252.109:8000/rtp/239.49.1.134:6000
 # 平湖新闻综合
 http://l.cztvcloud.com/channels/lantian/SXpinghu1/720p.m3u8?zzhed
+# 平遥新闻综合
+https://tntgjhjb.live.sxmty.com/live/hls/3a4585ac11ec4e1bb07b419101b370c3/baf63e2b313440c2a25d7859f9b73b05-1.m3u8?zshanxd
 # 广东新闻
 rtp://239.77.0.4:5146
-# 广西新闻
-http://192.151.150.154/live/gxxw.m3u8
 # 庆元新闻综合
 http://l.cztvcloud.com/channels/lantian/SXqingyuan1/720p.m3u8?fbl=
 # 开化新闻综合
@@ -531,7 +527,7 @@ http://live.xysrmt.cn/xwzh/sd/live.m3u8?zjiangsd"
 # 新田新闻综合
 http://192.168.10.1:5140/rtp/239.76.255.44:9000?fcc=218.76.213.41:8027
 # 无锡新闻综合
-http://stream.thmz.com/wxtv1/playlist.m3u8
+http://stream.thmz.com/wxtv1/sd/live.m3u8
 # 无锡都市资讯
 http://stream.thmz.com/wxtv3/playlist.m3u8
 # 旺苍新闻综合
@@ -550,7 +546,7 @@ http://l.cztvcloud.com/channels/lantian/SXwuyi1/720p.m3u8
 http://uzoiczhh.live.sxmty.com/live/hls/0d41f1480c4042d49927858f01fde707/53130407737b417b9a6259b57246bae3.m3u8?zshanxd
 # 武冈新闻综合
 http://192.168.10.1:5140/rtp/239.76.255.29:9000?fcc=218.76.213.41:8027
-# 武进新闻 (576p) [Not 24/7]
+# 武进新闻
 https://live.wjyanghu.com/live/CH1.m3u8
 # 民生资讯广播
 rtp://233.50.201.86:5140
@@ -576,12 +572,12 @@ http://lxfile.lxxcb.cn/nmip-media/channellive/channel103799/playlist.m3u8
 http://192.168.10.1:5140/rtp/239.76.255.34:9000?fcc=218.76.213.41:8027
 # 洪雅新闻综合 (1080p)
 http://117.172.215.250:8083/videos/live/35/39/GQVbrgob5CGJM/GQVbrgob5CGJM.m3u8
-# 浏阳新闻高清
+# 浏阳新闻
 rtp://239.76.255.6:9000
 # 浙江公共新闻
 https://ali-m-l.cztv.com/channels/lantian/channel007/1080p.m3u8
 # 浙江新闻
-https://ali-m-l.cztv.com/channels/lantian/channel07/1080p.m3u8
+https://ali-m-l.cztv.com/channels/lantian/channel007/1080p.m3u8?
 # 海南新闻
 http://ls.qingting.fm/live/1861.m3u8
 # 海宁新闻综合
@@ -678,8 +674,6 @@ rtp://233.50.201.161:5140
 http://live.jinchuanrmt.com:90/live/zhxw.m3u8?zsicd
 # 铜陵新闻综合
 https://ls.qingting.fm/live/21303/64k.m3u8
-# 镇江新闻综合
-http://cm-wshls.homecdn.com/live/2aa50.m3u8
 # 陕西新闻咨询
 http://112.46.105.20:8009/hls/18/index.m3u8
 # 雅安新闻综合
@@ -725,11 +719,9 @@ https://cdn-3.ttvb.eu.org/huya/19757963
 # 动漫秀场
 http://[2409:8087:1e03:21::2]:6060/cms001/ch00000090990000001196/index.m3u8
 # 北京KAKU少儿
-rtp://239.77.0.79:5146
+rtp://239.76.252.111:9000
 # 南京少儿 (720p) [Not 24/7]
 https://live.nbs.cn/channels/njtv/sepd/m3u8:500k/live.m3u8
-# 卡酷动画
-rtp://239.76.252.111:9000
 # 卡酷少儿
 http://218.13.170.98:9901/tsfile/live/1021_1.m3u8
 # 哆啦A梦「动漫」
@@ -761,7 +753,7 @@ rtp://239.76.252.244:9000
 # 江苏优漫卡通
 rtp://239.77.0.222:5146
 # 浙江少儿
-https://ali-m-l.cztv.com/channels/lantian/channel008/1080p.m3u8
+http://ali-m-l.cztv.com/channels/lantian/channel008/1080p.m3u8
 # 深圳少儿
 rtp://239.77.1.38:5146
 # 炫动卡通 (576p)
@@ -790,9 +782,9 @@ rtp://239.11.0.235:5140
 rtp://239.253.43.12:5146
 # HOT爱体育
 rtp://239.10.0.170:5140
-# NewTV搏击
+# NEWTV搏击
 rtp://239.11.0.146:5140
-# PP体育直播-1
+# PP体育直播1
 rtp://239.10.0.232:5140
 # UTV风云体育
 rtp://239.11.0.184:5140
@@ -802,7 +794,7 @@ http://175.0.104.143:8888/rtp/239.1.0.229:1025
 http://101.35.240.114:88/live.php?id=五星体育
 # 体育休闲
 rtp://239.3.1.243:8000
-# 体育赛事高清
+# 体育赛事
 rtp://239.76.253.72:9000
 # 体育转播1?-BESTV
 http://180.102.252.109:8000/rtp/239.49.1.205:6000
@@ -859,9 +851,9 @@ rtp://239.3.1.126:8001
 # 篮球资讯 (576p)
 http://223.110.245.139/PLTV/4/224/3221227023/index.m3u8
 # 精品体育
-https://epg.pw/stream/866a097a0907c9832440f8df38272dd555abf05200dfbafcc137e214c9b30ca7.m3u8
+https://epg.pw/stream/94ed0232b61ce8d89883160a4cdfbfc8f3225cae70ef8e17d93eec249a3c8ad6.m3u8
 # 纬来体育
-https://epg.pw/stream/8855a9936e37e608a0ec8a014cce1673dee9c5d68d560da376cc92e5edef2b25.m3u8
+https://epg.pw/stream/ab6df63b64d0cc44a1f4f029ed847a26fa54a7aebd455578fb05a63f02c22f4b.m3u8
 # 超级体育2
 rtp://239.11.0.232:5140
 # 足球
@@ -886,10 +878,10 @@ rtp://239.10.0.187:5140
 http://61.221.215.25:8800/hls/43/index.m3u8
 # AMC音乐
 https://AMChls.wns.live/hls/stream.m3u8
+# BESTV4K电影
+rtp://233.18.204.169:5140
 # BESTV鼎级剧场(高清)
 http://180.102.252.109:8000/rtp/239.49.8.180:6000
-# BesTV 4K电影
-rtp://233.18.204.169:5140
 # CCTV怀旧剧场
 https://live.264788.xyz/channel/huaijiujuchang?streamid=7e5d1abdddde08f588234f3f640f75ff&livekey=01WgOR41rriMmMkzNsd0UoaxJRwetZdxIvtVk
 # CCTV第一剧场
@@ -910,7 +902,7 @@ rtp://239.10.0.191:5140
 http://live2.rxip.sc96655.com/live/zxs_4000.m3u8?A=&E=&K=&P=&S=&U=
 # NEWTV动作电影
 rtp://239.11.0.142:5140
-# NewTV海外剧场
+# NEWTV海外剧场
 rtp://239.11.0.145:5140
 # UTV优视影院
 rtp://239.11.0.172:5140
@@ -954,7 +946,7 @@ http://jrlive.jrntv.com/live/_definst_/yingshis/chunklist_w1994429382.m3u8?zjian
 rtp://239.3.1.91:4120
 # 四川 Ⅰ 四川影视台 (720p) [Not 24/7]
 http://scgctvshow.sctv.com/hdlive/sctv5/index.m3u8
-# 四川影视文艺频道
+# 四川影视文艺
 rtp://239.11.0.77:5140
 # 国语电影?-BESTV
 http://180.102.252.109:8000/rtp/239.49.1.198:6000
@@ -1020,36 +1012,6 @@ rtp://239.3.1.194:9020
 http://180.102.252.109:8000/rtp/239.49.0.194:9474#http://180.102.252.109:8000/rtp/239.49.1.81:6000
 # 电影•1「解说」
 https://cdn-3.ttvb.eu.org/huya/20289754
-# 电影丧尸片
-http://live.metshop.top/huya/21059578?cdn=alicdn
-# 电影八点档
-http://live.metshop.top/huya/880261?cdn=alicdn
-# 电影刘德华
-http://live.metshop.top/huya/11342424?cdn=alicdn
-# 电影功夫片
-http://live.metshop.top/huya/11352941?cdn=alicdn
-# 电影动作电影
-http://live.metshop.top/huya/11602077?cdn=alicdn
-# 电影周星星
-http://live.metshop.top/huya/11336587?cdn=alicdn
-# 电影嫣然影厅
-http://live.metshop.top/huya/11601977?cdn=alicdn
-# 电影战争片
-http://live.metshop.top/huya/21059574?cdn=alicdn
-# 电影搞笑喜剧
-http://live.metshop.top/huya/11342423?cdn=alicdn
-# 电影梁家辉
-http://live.metshop.top/huya/11342429?cdn=alicdn
-# 电影犯罪片
-http://live.metshop.top/huya/11352974?cdn=alicdn
-# 电影蜘蛛侠
-http://live.metshop.top/huya/21059599?cdn=alicdn
-# 电影谍战
-http://live.metshop.top/huya/21059585?cdn=alicdn
-# 电影贺岁
-http://live.metshop.top/huya/11601971?cdn=alicdn
-# 电影高分动作
-http://live.metshop.top/huya/11352884?cdn=alicdn
 # 电视剧?-BESTV
 http://180.102.252.109:8000/rtp/239.49.1.122:6000
 # 电视剧•1「解说」
@@ -1066,8 +1028,6 @@ http://live.shaoxing.com.cn/video/s10001-sxtv3/index.m3u8?zzhed
 rtp://239.76.252.221:9000
 # 经典电影
 rtp://239.3.1.195:9024
-# 美亚电影
-http://zjrtv.vip/live/?tbs=mydy
 # 都市剧场
 https://satellitepull.cnr.cn/live/wxcqxwgb/playlist.m3u8
 # 金庸武侠
@@ -1088,7 +1048,7 @@ http://[2409:8087:2001:20:2800:0:df6e:eb04]/ott.mobaibox.com/PLTV/3/224/32212255
 # ===== 🎵 音乐娱乐 =====
 # 2021年最火伤感音乐
 https://vdse.bdstatic.com//6d39df48360bdb12f73800397c4a6c02.mp4
-# NewTV金牌综艺
+# NEWTV金牌综艺
 rtp://239.11.0.152:5140
 # UTV时尚音乐
 rtp://239.11.0.188:5140
@@ -1294,15 +1254,15 @@ http://180.102.252.109:8000/rtp/239.49.8.152:6000
 rtp://233.50.200.223:5140
 
 # ===== 🛒 购物频道 =====
-# 东方购物-1HD
+# 东方购物1
 rtp://239.45.3.74:5140
-# 东方购物-2HD
+# 东方购物2
 rtp://239.45.3.75:5140
-# 东方购物-3HD
+# 东方购物3
 rtp://239.45.3.207:5140
-# 东方购物-4HD
+# 东方购物4
 rtp://239.45.3.208:5140
-# 东方购物-5HD
+# 东方购物5
 rtp://239.45.3.253:5140
 # 优购物
 rtp://239.45.1.114:5140
@@ -1406,8 +1366,6 @@ rtp://233.50.201.179:5140
 rtp://233.50.201.178:5140
 # 宁波综合高清
 rtp://233.50.201.168:5140
-# 宜宾公共频道
-rtp://239.10.0.34:5140
 # 宿州科教 (1080p) [Not 24/7]
 http://live.ahsz.tv/video/s10001-kxjy/index.m3u8
 # 广东移动
@@ -1425,7 +1383,7 @@ rtp://239.77.0.23:5146
 # 广州竞赛
 http://113.78.252.188:8888/rtp/239.253.43.70:5146
 # 广州综合
-https://tencentplay.gztv.com/live/zonghes.m3u8?txSecret=f0147ae6453a80f5989f382368b72aad&txTime=18d00acf487
+http://tencentplay.gztv.com/live/zonghes.m3u8?txSecret=c8dbe86d6f86eb1a21999ab479fd5667&txTime=18d3c4690e8
 # 广州课堂
 rtp://239.253.43.76:5146
 # 延边2
@@ -1496,8 +1454,6 @@ http://112.46.105.20:8009/hls/29/index.m3u8
 http://180.102.252.109:8000/rtp/239.49.1.245:6000#http://180.102.252.109:8000/rtp/239.49.0.188:8000
 # 邯郸公共频道
 https://jwcdnqx.hebyun.com.cn/live/hdgg/1500k/tzwj_video.m3u8
-# 都市频道
-rtp://233.18.204.53:5140
 # 青岛崂山八水河
 https://gcalic.v.myalicdn.com/gc/qdls02_1/index.m3u8
 # 青岛崂山双福
@@ -1574,12 +1530,12 @@ http://live-hls-web-aje.getaj.net/AJE/01.m3u8
 http://play.kankanlive.com/live/1711956137852982.m3u8
 # Arirang TV
 https://amdlive-ch01-ctnd-com.akamaized.net/arirang_1ch/smil:arirang_1ch.smil/chunklist_b3256000_sleng.m3u8
+# BESTV4K动画
+rtp://233.18.204.171:5140
+# BESTV4K记录
+rtp://233.18.204.170:5140
 # BEST养生
 rtp://239.10.0.135:5140
-# BesTV 4K动画
-rtp://233.18.204.171:5140
-# BesTV 4K记录
-rtp://233.18.204.170:5140
 # Bread TV面包台 (720p)
 https://video.bread-tv.com:8091/hls-live24/online/index.m3u8
 # CCTV世界地理
@@ -1590,6 +1546,14 @@ http://192.168.10.1:5140/rtp/239.76.246.247:1234?fcc=218.76.213.41:8027
 rtp://239.253.43.8:5146
 # CCTV文化精品
 https://live.264788.xyz/channel/yangshiwenhuajingpin?streamid=bc185d1ef1e528922e83efd845006277&livekey=01WgOR41rriMmMkzNsd0UoaxJRwetZdxIvtVk
+# CDTV1
+rtp://239.10.0.11:5140
+# CDTV2
+rtp://239.10.0.12:5140
+# CDTV3
+rtp://239.10.0.13:5140
+# CDTV5
+rtp://239.10.0.15:5140
 # CNA
 https://d2e1asnsl7br7b.cloudfront.net/7782e205e72f43aeb4a48ec97f66ebbe/index_5.m3u8
 # DJ《心在跳情在烧》
@@ -1694,6 +1658,8 @@ https://liveplus.lzr.com.cn/wlpd/HD/live.m3u8
 http://118.122.2.29:9999/hls/47/index.m3u8
 # MAX极速汽车
 rtp://239.45.3.49:5140
+# NEWTV中国功夫
+rtp://239.11.0.151:5140
 # NEWTV健康有约
 rtp://239.11.0.133:5140
 # NEWTV军事评论
@@ -1702,6 +1668,12 @@ rtp://239.11.0.136:5140
 rtp://239.11.0.137:5140
 # NEWTV惊悚悬疑
 rtp://239.11.0.144:5140
+# NEWTV明星大片
+rtp://239.11.0.147:5140
+# NEWTV爱情喜剧
+rtp://239.11.0.149:5140
+# NEWTV精品大剧
+rtp://239.11.0.150:5140
 # NEWTV精品纪录
 rtp://239.11.0.132:5140
 # NXTV
@@ -1710,14 +1682,6 @@ http://192.168.10.1:5140/rtp/239.76.255.57:9000?fcc=218.76.213.41:8027
 http://play1-qk.nmtv.cn/live/1769652018126032.m3u8
 # Nei Monggol TV 2 Mongolian Culture Channel
 http://1.24.190.98:10080/hls/40/index.m3u8
-# NewTV中国功夫
-rtp://239.11.0.151:5140
-# NewTV明星大片
-rtp://239.11.0.147:5140
-# NewTV爱情喜剧
-rtp://239.11.0.149:5140
-# NewTV精品大剧
-rtp://239.11.0.150:5140
 # PPTV-1
 http://113.78.252.188:8888/rtp/239.77.1.183:5146
 # PPTV-2
@@ -1756,14 +1720,6 @@ rtp://239.11.0.182:5140
 rtp://239.11.0.185:5140
 # VOA美国之音 (1080p)
 https://voa-ingest.akamaized.net/hls/live/2033878/tvmc08/playlist.m3u8
-# cdtv1
-rtp://239.10.0.11:5140
-# cdtv2
-rtp://239.10.0.12:5140
-# cdtv3
-rtp://239.10.0.13:5140
-# cdtv5
-rtp://239.10.0.15:5140
 # group-title="数字" zz-definition="HD",重温经典
 rtp://239.3.1.25:8001
 # iptv
@@ -1901,7 +1857,7 @@ https://gcalic.v.myalicdn.com/gc/ljgcdyhxgjt_1/index.m3u8
 # 举案说法
 http://180.102.252.109:8000/rtp/239.49.0.207:9526#http://180.102.252.109:8000/rtp/239.49.1.94:6000
 # 之江纪录
-https://ali-m-l.cztv.com/channels/lantian/channel012/1080p.m3u8
+https://ali-m-l.cztv.com/channels/lantian/channel12/720p.m3u8
 # 乌镇全景
 https://gcalic.v.myalicdn.com/gc/zjwzblt_1/index.m3u8
 # 乌镇蓝印花布
@@ -2065,7 +2021,7 @@ http://ls.qingting.fm/live/1794199.m3u8
 # 兴隆综合
 https://jwcdnqx.hebyun.com.cn/live/xlzh/1500k/tzwj_video.m3u8
 # 兵器科技
-https://live.264788.xyz/channel/bingqikeji?streamid=6fc55a0966bdad1e1cdf39a4d37dd776&livekey=01WgOR41rriMmMkzNsd0UoaxJRwetZdxIvtVk
+https://live.264788.xyz/channel/bingqikeji?streamid=530cb4e58bbc48b7fc26f5e0a2e47966&livekey=01WgOR41rriMmMkzNsd0UoaxJRwetZdxIvtVk
 # 养生
 http://180.102.252.109:8000/rtp/239.49.0.199:9494#http://180.102.252.109:8000/rtp/239.49.1.91:6000
 # 养生?-BESTV
@@ -2220,8 +2176,6 @@ http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/3bba8da0b6c54771aa0
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/221e94ad951d4001b106d3c5af785537/1200.m3u8
 # 勤奋的捕食者
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/4793c8276c184d03bc3ba5e9b6dc9610/1200.m3u8
-# 北京冬奥纪实
-rtp://239.45.1.14:5140
 # 北京国际
 rtp://239.3.1.235:8000
 # 北京文艺
@@ -2259,7 +2213,7 @@ https://tencentplay.gztv.com/live/nanguodushi.m3u8?txSecret=550af55c0ea34ce49274
 # 南川旅游经济 (360p)
 http://221.5.213.4:30000/2222.m3u8
 # 南方卫视
-rtp://239.76.252.114:9000
+http://113.78.252.188:8888/rtp/239.77.0.9:5146
 # 南美野生世界1
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/35eac4ae4e024654b845f5c7b2221d15/1200.m3u8
 # 南陽公共頻道 (1080p) [Not 24/7]
@@ -2320,7 +2274,7 @@ http://117.156.28.119/270000001111/1110000149/index.m3u8
 rtp://239.10.0.235:5140
 # 哒啵赛事
 http://[2409:8087:1a01:df::7005]/ottrrs.hl.chinamobile.com/PLTV/88888888/224/3221225675/index.m3u8
-# 嘉定频道
+# 嘉定
 rtp://239.45.3.185:5140
 # 嘉峪关综合
 http://play.kankanlive.com/live/1720583434627241.m3u8
@@ -2346,7 +2300,7 @@ https://gcalic.v.myalicdn.com/gc/emswfs_1/index.m3u8
 https://gcalic.v.myalicdn.com/gc/emsyh_1/index.m3u8
 # 四川康巴卫视
 http://124.232.231.172:8089/000000002000/201500000411/index.m3u8?zte_offset=0&starttime=
-# 四川文化旅游频道
+# 四川文化旅游
 rtp://239.10.0.118:5140
 # 四海舞曲DJ
 https://vd2.bdstatic.com/mda-mkp6w1tjw8mz9kpx/sc/cae_h264/1637731815454834601/mda-mkp6w1tjw8mz9kpx.mp4
@@ -2399,7 +2353,7 @@ http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/0e114c18fa084fe5823
 # 大水獭桑丘的故事(上)
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/ffea8bb4f0a04e53a82dab943e32bfb1/1200.m3u8
 # 大湾区卫视
-http://gmxw.7766.org:808/hls/132/index.m3u8
+http://222.128.55.152:9080/live/dwq.m3u8
 # 大爱海外 (720p)
 https://pulltv3.wanfudaluye.com/live/tv3.m3u8
 # 大猫们的世界
@@ -2430,7 +2384,7 @@ http://192.168.10.1:5140/rtp/239.76.246.2:1234?fcc=218.76.213.41:8027
 https://vd2.bdstatic.com/mda-mcibj6pxkwe3x1ji/1080p/cae_h264/1616117049/mda-mcibj6pxkwe3x1ji.mp4
 # 天天围棋
 rtp://239.253.43.98:5146
-# 天府TV-综合
+# 天府TV综合
 rtp://239.10.0.189:5140
 # 天府乐趣综合
 rtp://239.10.0.195:5140
@@ -2448,6 +2402,8 @@ rtp://239.10.0.141:5140
 rtp://239.10.0.157:5140
 # 天府经典再现
 rtp://239.10.0.130:5140
+# 天府财经
+rtp://239.10.0.194:5140
 # 天府辣妈学院
 rtp://239.10.0.137:5140
 # 天府风尚美食
@@ -2524,6 +2480,8 @@ https://gcalic.v.myalicdn.com/gc/yxxdpf_1/index.m3u8
 rtp://239.10.0.208:5140
 # 定襄综合
 http://lbyzztfe.live.sxmty.com/live/hls/645ff4c60e0a49f0a203abbd73dd8be9/0720e665f10f48e98c9639f4f492fb4a-1.m3u8?zshanxd
+# 宜宾公共
+rtp://239.10.0.34:5140
 # 家庭消费
 rtp://239.76.253.55:9000
 # 家庭理*
@@ -2888,16 +2846,18 @@ https://stream.thmz.com/wxtv4/playlist.m3u8
 https://stream.thmz.com/wxtv5/playlist.m3u8
 # 日韩舞曲DJ
 https://vd4.bdstatic.com/mda-mknatf58h2evy18i/sc/cae_h264/1637653930525484478/mda-mknatf58h2evy18i.mp4
+# 早期教育高清
+http://113.78.252.188:8888/rtp/239.77.0.180:5146
 # 旱季冒险故事
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/ac505ca5d2d5469eb21448c300a8c16c/1200.m3u8
 # 旱季极限生存战
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/1b750e952abb452c9f77d44f8d8bae17/1200.m3u8
 # 旱季生存攻略
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/3f34548881664dd6afb01ccdcb677a5d/1200.m3u8
+# 时尚
+rtp://239.76.252.126:9000
 # 时尚女人
 http://180.102.252.109:8000/rtp/239.49.0.208:9530#http://180.102.252.109:8000/rtp/239.49.1.92:6000
-# 时尚频道高清
-rtp://239.76.252.126:9000
 # 昌黎综合
 https://jwcdnqx.hebyun.com.cn/live/clzhpd/1500k/tzwj_video.m3u8
 # 易门综合
@@ -2991,7 +2951,7 @@ http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/003d910853de498299e
 # 来宾综合
 http://zb.gxlbamc.com:1935/live/lbzh.stream/playlist.m3u8
 # 松阳综合
-http://l.cztvcloud.com/channels/lantian/SXsongyang1/720p.m3u8?zzhed?
+http://l.cztvcloud.com/channels/lantian/SXsongyang1/720p.m3u8
 # 林翠萍《麦搁來这套》
 https://vdse.bdstatic.com//5b388a47b1233105831e09b8cadc1edd.mp4
 # 林翠萍情网
@@ -3048,6 +3008,8 @@ http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/508b9a0c8be74d89a43
 rtp://239.10.0.217:5140
 # 歡喜就好
 http://vdown.kuwo.cn:80/resource//t4/33/65/I4Vpjif2dxY.mp4
+# 武进生活
+http://live.wjyanghu.com/live/CH2.m3u8
 # 母爱之路
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/115d481467e04333be047fcebf482b3e/1200.m3u8
 # 母爱的呵护
@@ -3139,7 +3101,7 @@ https://event.pull.hebtv.com:443/live/live101.m3u8
 # 河北公共
 http://121.19.134.246:808/hls/24/index.m3u8
 # 河北农民
-https://jwcdnqx.hebyun.com.cn/live/clzhpd/1500k/tzwj_video.m3u8?zhebd
+https://ls.qingting.fm/live/1650/64k.m3u8
 # 河北经济
 http://121.19.134.246:808/hls/20/index.m3u8
 # 河北都市
@@ -3151,17 +3113,17 @@ rtp://239.77.0.210:5146
 # 河南武术世界
 rtp://239.77.0.216:5146
 # 河源公共
-rtp://239.253.43.214:5146
-# 河源综合 (540p)
-https://tmpstream.hyrtv.cn/xwzh/sd/live.m3u8
+http://tmpstream.hyrtv.cn/hygg/sd/live.m3u8
+# 河源综合
+http://tmpstream.hyrtv.cn/xwzh/sd/live.m3u8
 # 河里的捕食大师(上)
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/bf70f8033ec049f5be4698c3497d3868/1200.m3u8
 # 河龙王出海
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/f352ba97a41146279f5d250cc8c670bb/1200.m3u8
+# 法治
+rtp://239.10.0.180:5140
 # 法治天地
 http://[2409:8087:1e03:21::2]:6060/cms001/ch00000090990000001195/index.m3u8
-# 法治频道
-rtp://239.10.0.180:5140
 # 泗洪综合
 http://180.102.252.109:8000/rtp/239.49.1.125:6000
 # 泗阳综合
@@ -3199,7 +3161,7 @@ rtp://233.50.201.79:5140
 # 浙江休闲台
 http://ali-m-l.cztv.com/channels/lantian/channel006/720p.m3u8
 # 浙江国际
-http://ali-m-l.cztv.com/channels/lantian/channel010/1080p.m3u8
+https://ali-m-l.cztv.com/channels/lantian/channel010/1080p.m3u8
 # 浙江教育
 http://ali-m-l.cztv.com/channels/lantian/channel04/720p.m3u8
 # 浙江民生
@@ -3211,7 +3173,7 @@ http://ali-vl.cztv.com/channels/lantian/channel009/360p.m3u8
 # 浙江纪录高清
 rtp://233.50.202.25:5140
 # 浙江经济
-http://ali-m-l.cztv.com/channels/lantian/channel003/1080p.m3u8
+http://ali-m-l.cztv.com/channels/lantian/channel03/720p.m3u8
 # 浙江经视
 https://ali-m-l.cztv.com/channels/lantian/channel003/1080p.m3u8
 # 浙江舟山东极岛
@@ -3220,7 +3182,7 @@ https://gcalic.v.myalicdn.com/gc/djd01_1/index.m3u8
 http://l.cztvcloud.com/channels/lantian/SXsuichang1/720p.m3u8
 # 浙江钱江
 http://l.cztvcloud.com/channels/lantian/SXyuyao2/720p.m3u8
-# 浦东频道
+# 浦东
 rtp://239.45.3.248:5140
 # 浪子的心情
 http://vdown.kuwo.cn:80/resource/t4/53/44/3Rve23J-sy8.mp4
@@ -3229,7 +3191,7 @@ https://vd3.bdstatic.com/mda-mi0jir5caqx8xtmh/1080p/cae_h264/1630505223203305128
 # 浮诛张杰
 https://vdse.bdstatic.com/1c2dc5580507bc1b0ef507c63b3fc461.mp4?authorization=bce-auth-v1%2Ffb297a5cc0fb434c971b8fa103e8dd7b%2F2017-05-11T09%3A02%3A31Z%2F-1%2F
 # 海峡卫视
-http://38.64.72.148:80/hls/modn/list/4009/chunklist0.m3u8
+http://38.64.72.148:80/hls/modn/list/4009/playlist.m3u8
 # 海底生存战
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/20225ac33ef7408e8c7040cb39d6a595/1200.m3u8
 # 海来阿木《浪子心》DJ沈念版
@@ -3288,11 +3250,9 @@ rtp://233.50.201.87:5140
 http://175.0.104.143:8888/rtp/239.1.0.180:1025
 # 湖南先锋乒羽
 rtp://239.77.1.208:5146
-# 湖南公共高清
+# 湖南公共
 rtp://239.76.252.123:9000
-# 湖南国*高清
-rtp://239.76.252.124:9000
-# 湖南教育高清
+# 湖南教育
 rtp://239.76.252.233:9000
 # 湖南茶
 rtp://239.77.0.15:5146
@@ -3337,8 +3297,6 @@ http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/b0b95c35bce84072b10
 # 熊大熊二
 https://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/1733da751de64e6e910abda889d87a26/1200.m3u8
 # 熊猫
-rtp://239.77.0.151:5146
-# 熊猫频道
 rtp://239.76.252.255:9000
 # 熊的王国
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/ade1b31d23694fba82c9c4f07dba3267/1200.m3u8
@@ -3609,7 +3567,7 @@ http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/aea0ef5ea21c40dea94
 # 绽放的生命4
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/fbb3d1d6ae37458e84f574881778ac7c/1200.m3u8
 # 缙云综合
-http://l.cztvcloud.com/channels/lantian/SXjinyun1/720p.m3u8?zzhed
+http://l.cztvcloud.com/channels/lantian/SXjinyun1/720p.m3u8?zzhed?
 # 网络棋牌
 rtp://239.253.43.38:5146
 # 网络通道3HD
@@ -3668,6 +3626,8 @@ https://vdse.bdstatic.com/d4463cd83c0c47fba7ce65c71ad94bbb.mp4?authorization=bce
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/81a1ad3a661748bfb8560c92d38204ca/1200.m3u8
 # 自然界奥运冠军
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/7b968e9b50984d598d96c6fc5af40b4c/1200.m3u8
+# 自贡综合
+rtp://239.10.0.117:5140
 # 舞曲
 https://txmov2.a.kwimgs.com/upic/2022/03/25/20/BMjAyMjAzMjUyMDUyNTZfMjM0NDc1MTE5N183MDQ0NzkzMTQxOV8wXzM=_b_B383b34c7a7c97f97b5350f622d8da0a6.mp4?tag=1-1648554367-std-1-puqq96jiry-1167f7fd60758f88&clientCacheKey=3x3qtumzyu5rh6w_b.mp4&tt=b&di=79c43beb&bp=12681
 # 舞曲视频
@@ -3713,7 +3673,7 @@ http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/de55f16b130042b1947
 # 荣昌综合 (404p) [Not 24/7]
 http://183.64.181.25:40023/rongchang01.m3u8
 # 荥经综合
-https://file.ysxtv.cn/nmip-media/channellive/channel101492/playlist.m3u8
+https://m3u8channel-yj.yunxya.com/nmip-media/channellive/channel101140/playlist.m3u8
 # 荥阳综合
 http://tvpull.dxhmt.cn:9081/tv/10182-1.m3u8
 # 莒縣圖文頻道 (720p)
@@ -3733,7 +3693,7 @@ http://www.pxitv.com:8099/hls-live/livepkgr/_definst_/pxitvevent/pxtv1stream.m3u
 # 营山电视台
 http://file.ysxtv.cn/cms/videos/nmip-media/channellive/channel4/playlist.m3u8?zsicd#http://file.ysxtv.cn/cms/videos/nmip-media/channellive/channel4/playlist.m3u8
 # 萧山生活
-https://l.cztvcloud.com/channels/lantian/SXxiaoshan2/720p.m3u8
+http://l.cztvcloud.com/channels/lantian/SXxiaoshan2/720p.m3u8?zzhed
 # 萧山综合
 http://l.cztvcloud.com/channels/lantian/SXxiaoshan1/720p.m3u8
 # 萬州三峽移民 (576p)
@@ -3748,6 +3708,8 @@ https://livestream-bt.nmtv.cn/nmtv/2321general.m3u8?txSecret=d9d0fd7a252ef56b515
 http://vd3.bdstatic.com/mda-jm53zq7k0b0kbxch/sc/mda-jm53zq7k0b0kbxch.mp4
 # 蕪湖教育頻道 (576p)
 http://live1.wuhubtv.com/channel4/sd/live.m3u8
+# 蕭山生活頻道 (720p) [Not 24/7]
+https://l.cztvcloud.com/channels/lantian/SXxiaoshan2/720p.m3u8
 # 虎妈妈爱(上)
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/6855ee238c9c4e9893ff342b7dbe5a2b/1200.m3u8
 # 蛇类大观园
@@ -3788,7 +3750,7 @@ http://l.cztvcloud.com/channels/lantian/SXxiangshan1/720p.m3u8?zzhed
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/984cda8d35d544658fbd96b417bdea1f/1200.m3u8
 # 负心的你
 https://vd4.bdstatic.com:443/mda-mcbs0hpjpkpwethe/1080p/h264_cae/1620492489548087433/mda-mcbs0hpjpkpwethe.mp4
-# 财*频道
+# 财*
 rtp://239.76.253.39:9000
 # 财富天下
 rtp://239.76.253.18:9000
@@ -3879,13 +3841,15 @@ http://222.223.119.21:8888/newlive/live/hls/55/live.m3u8
 # 邢台生活
 https://jwcdnqx.hebyun.com.cn/live/xtcsshpd/1500k/tzwj_video.m3u8
 # 邢台综合
-https://jwplay.hebyun.com.cn:443/live/xtsrmtzs/1500k/tzwj_video.m3u8
+http://jwplay.hebyun.com.cn/live/xtsrmtzs/1500k/tzwj_video.m3u8
 # 邯郸科技教育
 https://jwcdnqx.hebyun.com.cn/live/hdkj/1500k/tzwj_video.m3u8
 # 邳州综合
 http://180.102.252.109:8000/rtp/239.49.1.232:6000
 # 郭镐鸣《野摩托》
 https://vd3.bdstatic.com/mda-mekfm7wu6f4rtt99/1080p/cae_h264/1621595318412084671/mda-mekfm7wu6f4rtt99.mp4
+# 都市
+rtp://233.18.204.53:5140
 # 都市里的丛林(上)
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/2e2e0e875d624196af0488f6b07bb2e0/1200.m3u8
 # 都市里的野生家园(上)
@@ -3940,12 +3904,14 @@ https://vdse.bdstatic.com//36ea0ffcf8156a44b9d524d999eb088a.mp4
 http://live.jinchuanrmt.com:90/live/jcxc.m3u8?zsicd
 # 金昌公共頻道 (240p) [Geo-blocked]
 http://stream4.liveyun.hoge.cn/ch01/sd/live.m3u8
+# 金色
+rtp://239.45.1.118:5140
 # 金色夕阳
 http://175.0.104.143:8888/rtp/239.1.0.222:1025
 # 金色学堂
 http://[2409:8087:1e03:21::2]:6060/cms001/ch00000090990000001194/index.m3u8
 # 金色频道
-rtp://239.45.1.118:5140
+http://180.102.252.109:8000/rtp/239.49.1.169:6000
 # 金豺夫妇的故事
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/5b71afacb8eb442d9d4a5844d3ceca15/1200.m3u8
 # 铁血军事
@@ -4036,8 +4002,6 @@ http://112.46.105.20:8009/hls/20/index.m3u8
 http://newcntv.qcloudcdn.com/asp/hls/1200/0303000a/3/default/3f41478fa1f24606bc1bad4725df7b59/1200.m3u8
 # 陶瓷
 rtp://239.45.3.50:5140
-# 陶瓷频道
-rtp://239.10.0.107:5140
 # 随音听乐
 http://180.102.252.109:8000/rtp/239.49.0.204:9514#http://180.102.252.109:8000/rtp/239.49.1.86:6000
 # 隐秘王国里的奇迹1
