@@ -1,0 +1,14 @@
+# 本地运行环境
+.venv/
+__pycache__/
+*.pyc
+
+# 上游快照与生成物：内含约 2000 条第三方流地址，只留在本地，不进公开仓库
+data/
+调研样本/
+
+# 临时/系统文件
+resp.txt
+tmp/
+.DS_Store
+Thumbs.db

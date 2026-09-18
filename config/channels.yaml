@@ -1,0 +1,157 @@
+# 目标频道清单
+#
+# 这个文件是你可以直接编辑的配置。改完重跑一次生成就生效，不用动代码。
+#
+# 匹配优先级：
+#   1. channels 里的 name / aliases 命中 -> 用这里的标准名、分组、顺序（**最高优先级**）
+#   2. 没命中则看 upstream_group_map，按上游分组整体归类
+#   3. 都没有 -> 丢弃，并计入报告的「未匹配」
+#
+# 所以「湖南卫视」虽然在上游属于 📡卫视频道 组，仍会被第 1 条规则抢回「📍 湖南本地」。
+
+version: 1
+
+# ---- 输出分组，顺序即 APTV 侧边栏顺序 ----
+groups:
+  - id: hunan_local
+    title: "📍 湖南本地"
+  - id: changsha
+    title: "📍 长沙"
+  - id: shizhou
+    title: "📍 市州台"
+  - id: jinying
+    title: "🎬 金鹰系"
+  - id: cctv
+    title: "📺 央视"
+  - id: weisheng
+    title: "🌏 卫视"
+
+# ---- 上游分组整体映射（仅在 channels 未命中时生效）----
+# 左侧是上游 group-title 原文，右侧是上面的 groups.id
+upstream_group_map:
+  "📺央视频道": cctv
+  "📡卫视频道": weisheng
+
+# ---- 整组丢弃的上游分组 ----
+excluded_groups:
+  - "🕘️更新时间"      # 上游塞的伪频道，内容是一个时间戳
+
+# ---- 名称黑名单，命中即丢（正则片段，不区分大小写）----
+exclude_patterns:
+  - "测试"
+  - "广告"
+  - "轮播"
+  - "禁用"
+  - "STB"
+  - "加长版"
+  - "纯享"
+
+# ---- 频道定义 ----
+# tvg_id 留空表示沿用上游的 tvg-id（上游 EPG 的 epg.gz 就是按它索引的，沿用命中率最高）。
+# aliases 是上游可能出现的其他写法，实测样本见行内注释。
+channels:
+
+  # ===== 湖南省台 =====
+  - {name: 湖南卫视,   group: hunan_local, aliases: [湖南卫视高清, HNWS, 湖南卫视-高清]}
+  - {name: 湖南经视,   group: hunan_local, aliases: [湖南经视高清, 经视]}
+  - {name: 湖南都市,   group: hunan_local, aliases: [湖南都市频道, 都市频道]}
+  - {name: 湖南娱乐,   group: hunan_local, aliases: [湖南娱乐频道]}
+  - {name: 湖南公共,   group: hunan_local, aliases: [湖南公共频道]}
+  - {name: 湖南电视剧, group: hunan_local, aliases: [湖南电视剧频道]}
+  - {name: 湖南电影,   group: hunan_local, aliases: [湖南电影频道]}
+  - {name: 湖南教育,   group: hunan_local, aliases: [湖南教育电视台]}
+  - {name: 湖南国际,   group: hunan_local, aliases: [湖南国际频道]}
+  - {name: 湖南爱晚,   group: hunan_local, aliases: [爱晚频道, 湖南老干部]}
+
+  # ===== 长沙市台 =====
+  # 上游同时存在「长沙新闻」和「长沙新闻综合」两个写法，合并为一条
+  - {name: 长沙新闻综合, group: changsha, aliases: [长沙新闻, 长沙新闻频道, 长沙一套]}
+  - {name: 长沙政法,     group: changsha, aliases: [长沙政法频道, 长沙二套]}
+  - {name: 长沙女性,     group: changsha, aliases: [长沙女性频道, 长沙三套]}
+  - {name: 长沙文旅,     group: changsha, aliases: [长沙文旅频道, 长沙四套]}
+  - {name: 长沙经贸,     group: changsha, aliases: [长沙经贸频道]}
+
+  # ===== 金鹰系 =====
+  # 金鹰卡通在上游属于 🪁动画频道 组，必须显式抢回来
+  - {name: 金鹰卡通, group: jinying, aliases: [金鹰卡通频道]}
+  - {name: 金鹰纪实, group: jinying, aliases: [金鹰纪实频道, 湖南纪实]}
+
+  # ===== 14 个市州台 =====
+  # 2026-09-18 更新：接入 config/sources.yaml 里的 hn_mobile / hn_unicom 之后，
+  # 13 个市州的「新闻综合」全部有线路，还多出各市的第二频道（下面一并收录）。
+  # 之前的结论「公开聚合源里市州台几乎为零」只对通用聚合源成立，
+  # 运营商口径的湖南源（Tvlist-awesome-m3u-m3u8 仓库）覆盖是齐的。
+  - {name: 娄底新闻综合, group: shizhou, aliases: [娄底综合, 娄底一套]}
+  - {name: 娄底公共,     group: shizhou, aliases: [娄底二套]}
+  - {name: 株洲新闻综合, group: shizhou, aliases: [株洲综合, 株洲一套]}
+  - {name: 湘潭新闻综合, group: shizhou, aliases: [湘潭综合, 湘潭一套]}
+  - {name: 衡阳新闻综合, group: shizhou, aliases: [衡阳综合, 衡阳一套]}
+  - {name: 衡阳文旅法治, group: shizhou, aliases: [衡阳二套]}
+  - {name: 邵阳新闻综合, group: shizhou, aliases: [邵阳综合, 邵阳一套]}
+  - {name: 邵阳文旅民生, group: shizhou, aliases: [邵阳二套]}
+  - {name: 岳阳新闻综合, group: shizhou, aliases: [岳阳综合, 岳阳一套]}
+  - {name: 岳阳文旅都市, group: shizhou, aliases: [岳阳二套]}
+  - {name: 常德新闻综合, group: shizhou, aliases: [常德综合, 常德一套]}
+  - {name: 常德公共,     group: shizhou, aliases: [常德二套]}
+  - {name: 张家界新闻综合, group: shizhou, aliases: [张家界综合, 张家界一套]}
+  - {name: 张家界公共,   group: shizhou, aliases: [张家界公共频道]}
+  - {name: 益阳新闻综合, group: shizhou, aliases: [益阳综合, 益阳一套]}
+  - {name: 益阳公共,     group: shizhou, aliases: [益阳二套]}
+  - {name: 郴州新闻综合, group: shizhou, aliases: [郴州综合, 郴州一套]}
+  - {name: 郴州文旅,     group: shizhou, aliases: [郴州二套]}
+  - {name: 永州新闻综合, group: shizhou, aliases: [永州综合, 永州一套]}
+  - {name: 永州经济生活, group: shizhou, aliases: [永州二套]}
+  - {name: 怀化新闻综合, group: shizhou, aliases: [怀化综合, 怀化一套]}
+  - {name: 湘西新闻综合, group: shizhou, aliases: [湘西综合, 湘西一套]}
+  - {name: 湘西文化旅游, group: shizhou, aliases: [湘西公共频道, 湘西二套]}
+
+  # ===== 央视 =====
+  # tvg_id 留空 = 沿用上游 tvg-id，EPG 命中率最高（P3 再统一校准）。
+  # 别名同时覆盖两种上游写法：iptv-api 的「CCTV-1 综合」与湖南源的「CCTV1」。
+  # 已知限制：归一化会丢掉「+」，所以 CCTV-5+ 与 CCTV-5 会撞成同一个 key，
+  # P0 先不收 CCTV-5+（它走 upstream_group_map 仍会出现在 📺 央视组里）。
+  - {name: CCTV-1综合,  group: cctv, aliases: [CCTV-1, CCTV1]}
+  - {name: CCTV-2综合,  group: cctv, aliases: [CCTV-2, CCTV2]}
+  - {name: CCTV-4中文国际, group: cctv, aliases: [CCTV-4, CCTV4]}
+  - {name: CCTV-5体育,  group: cctv, aliases: [CCTV-5, CCTV5]}
+  - {name: CCTV-6电影,  group: cctv, aliases: [CCTV-6, CCTV6]}
+  - {name: CCTV-8电视剧, group: cctv, aliases: [CCTV-8, CCTV8]}
+  - {name: CCTV-10科教, group: cctv, aliases: [CCTV-10, CCTV10]}
+  - {name: CCTV-12社会与法, group: cctv, aliases: [CCTV-12, CCTV12]}
+  - {name: CCTV-13新闻, group: cctv, aliases: [CCTV-13, CCTV13, 央视新闻]}
+  - {name: CCTV-14少儿, group: cctv, aliases: [CCTV-14, CCTV14]}
+  - {name: CCTV-15音乐, group: cctv, aliases: [CCTV-15, CCTV15]}
+  - {name: CCTV-16奥林匹克, group: cctv, aliases: [CCTV-16, CCTV16, CCTV-16 4K]}
+  - {name: CCTV-17农业农村, group: cctv, aliases: [CCTV-17, CCTV17]}
+
+  # ===== 外省卫视 =====
+  # 非重点，只作为央视之外的补充；不追求全量。
+  - {name: 北京卫视, group: weisheng}
+  - {name: 东方卫视, group: weisheng, aliases: [上海卫视, 东方卫视综合]}
+  - {name: 江苏卫视, group: weisheng}
+  - {name: 浙江卫视, group: weisheng}
+  - {name: 广东卫视, group: weisheng}
+  - {name: 深圳卫视, group: weisheng}
+  - {name: 天津卫视, group: weisheng}
+  - {name: 山东卫视, group: weisheng}
+  - {name: 安徽卫视, group: weisheng}
+  - {name: 湖北卫视, group: weisheng}
+  - {name: 河南卫视, group: weisheng}
+  - {name: 四川卫视, group: weisheng}
+  - {name: 陕西卫视, group: weisheng}
+  - {name: 辽宁卫视, group: weisheng}
+  - {name: 黑龙江卫视, group: weisheng}
+  - {name: 吉林卫视, group: weisheng}
+  - {name: 江西卫视, group: weisheng}
+  - {name: 东南卫视, group: weisheng, aliases: [福建卫视]}
+  - {name: 重庆卫视, group: weisheng}
+  - {name: 广西卫视, group: weisheng}
+  - {name: 云南卫视, group: weisheng}
+  - {name: 贵州卫视, group: weisheng}
+  - {name: 河北卫视, group: weisheng}
+  - {name: 山西卫视, group: weisheng}
+  - {name: 内蒙古卫视, group: weisheng}
+  - {name: 宁夏卫视, group: weisheng}
+  - {name: 青海卫视, group: weisheng}
+  - {name: 甘肃卫视, group: weisheng}
+  - {name: 新疆卫视, group: weisheng}
