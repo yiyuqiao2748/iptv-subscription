@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 import urllib.request
 from collections import Counter, defaultdict
@@ -56,13 +57,14 @@ def load_sources(path: Path, *, fresh: bool) -> list[dict]:
     """
     cfg = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     out = []
-    for s in cfg.get("sources") or []:
+    for i, s in enumerate(cfg.get("sources") or []):
         if not s.get("enabled", True):
             continue
         cache = CACHE_DIR / f"{s['id']}.m3u"
         target = s["url"] if (fresh or not cache.exists()) else str(cache)
-        out.append({"id": s["id"], "target": target, "cache": cache,
-                    "url": s["url"], "probe": bool(s.get("probe", True))})
+        out.append({"id": s["id"], "target": target, "cache": cache, "url": s["url"],
+                    "probe": bool(s.get("probe", True)),
+                    "priority": int(s.get("priority", i + 1))})
     return out
 
 
@@ -100,15 +102,20 @@ def collect(sources: Iterable[dict | str]) -> tuple[list[Entry], list[str]]:
 
 def aggregate(entries: list[Entry], index, max_lines: int, *,
               verify: bool = False, timeout: int = 12, workers: int = 20,
-              max_per_host: int = 2, skip_verify: Iterable[str] = ()):
+              max_per_host: int = 2, skip_verify: Iterable[str] = (),
+              source_priority: dict[str, int] | None = None):
     """归位 + 合并多线路 + 同源收敛 + 排序 + 截断（可选实测过滤）。
 
     max_per_host 用来治「一个频道的 5 条线路其实全来自同一个失效主机」——
     实测湖南线路里 64% 来自 stream1.freetv.fun 这一个已不可用的域名。
 
     skip_verify 里的来源 id 是「开发机测不准」的运营商内网源，实测时原样保留。
+
+    source_priority 决定同一频道里线路的先后：APTV 默认播第一条，所以
+    家里宽带同运营商的源必须排在最前，其次才是清晰度。
     """
     skip_verify = set(skip_verify)
+    prio = source_priority or {}
     buckets: dict[tuple[str, str], dict] = defaultdict(
         lambda: {"lines": [], "seen": set(), "tvg_id": "", "logo": "", "order": 0, "group_title": ""}
     )
@@ -159,7 +166,9 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     for (group, name), b in buckets.items():
         ordered = sorted(
             b["lines"],
-            key=lambda e: (-_RANK.get(quality_hint(f"{e.name} {e.url}"), 0), e.seq),
+            key=lambda e: (prio.get(e.source, 99),
+                           -_RANK.get(quality_hint(f"{e.name} {e.url}"), 0),
+                           e.seq),
         )
         host_used: Counter[str] = Counter()
         kept: list[Entry] = []
@@ -191,6 +200,23 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
 
     channels.sort(key=lambda c: c.order)
     return channels, unmatched, excluded, dead
+
+
+def load_lean_fn():
+    """取 scripts/lean_playlist.lean()：裸订阅表的生成逻辑只保留一份实现。
+
+    scripts/ 不是包，所以按文件路径加载；文件不在就返回 None，
+    主流程照常出 aptv.m3u / hunan.m3u，不因诊断用的附属文件而失败。
+    """
+    path = ROOT / "scripts" / "lean_playlist.py"
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("lean_playlist", path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.lean
 
 
 def cmd_build(argv: list[str]) -> int:
@@ -228,6 +254,7 @@ def cmd_build(argv: list[str]) -> int:
         verify=args.verify, timeout=args.timeout, workers=args.workers,
         max_per_host=args.max_per_host,
         skip_verify=[s["id"] for s in sources if not s.get("probe", True)],
+        source_priority={s["id"]: s.get("priority", i + 1) for i, s in enumerate(sources)},
     )
 
     present = {c.name for c in channels}
@@ -242,7 +269,14 @@ def cmd_build(argv: list[str]) -> int:
 
     hunan_titles = {index.group_title(gid) for gid in HUNAN_GROUPS}
     hunan = [c for c in channels if c.group_title in hunan_titles]
-    (out_dir / "hunan.m3u").write_text(format_m3u(hunan, epg), encoding="utf-8")
+    hunan_text = format_m3u(hunan, epg)
+    (out_dir / "hunan.m3u").write_text(hunan_text, encoding="utf-8")
+
+    # 诊断用副产物：局域网订阅失败时用来区分「网络不通」和「App 抓台标/EPG 卡住」
+    lean = load_lean_fn()
+    if lean:
+        (out_dir / "hunan-lean.m3u").write_text(lean(hunan_text), encoding="utf-8")
+        (out_dir / "test.m3u").write_text(lean(hunan_text, limit=4), encoding="utf-8")
 
     report = format_report(
         sources=[f"{s['id']} ← {s['target']}" for s in sources],
@@ -259,6 +293,8 @@ def cmd_build(argv: list[str]) -> int:
     print(f"\n输出到 {out_dir}")
     print(f"  aptv.m3u  : {len(channels)} 个频道 / {sum(len(c.urls) for c in channels)} 条线路")
     print(f"  hunan.m3u : {len(hunan)} 个频道 / {sum(len(c.urls) for c in hunan)} 条线路")
+    if lean:
+        print("  诊断用副产物：hunan-lean.m3u（无台标无 EPG）、test.m3u（前 4 个台）")
     print(f"  丢弃：黑名单 {excluded} 条，未匹配 {sum(unmatched.values())} 条"
           + (f"，实测失效 {dead} 条" if args.verify else ""))
     if empty:

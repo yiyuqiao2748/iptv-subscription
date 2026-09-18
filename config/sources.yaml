@@ -7,38 +7,41 @@ version: 1
 #   url       上游地址（含中文会自动转义）
 #   enabled   false = 完全不读取，但保留条目作为调研记录
 #   probe     false = 跑 --verify 时不实测、原样保留（运营商内网源用）
+#   priority  同一频道多线路时的排序权重，数字越小越靠前（默认按本节书写顺序）
 #   note      实测结论与适用条件，避免以后重复踩坑
-#
-# 顺序即读取顺序：靠前的源在「同一频道多线路」排序时优先级更高。
 
 sources:
-  - id: iptv_api_gd
-    url: https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u
+  - id: hn_unicom
+    url: https://raw.githubusercontent.com/imDazui/Tvlist-awesome-m3u-m3u8/master/m3u/湖南联通.m3u
     enabled: true
+    probe: false
+    priority: 1
     note: >-
-      通用聚合源，实测 1619 条、整体直连可用率约 75%。央视/省卫视覆盖好，
-      湖南本地只有省台系，市州台几乎为零。头部带 x-tvg-url EPG 声明。
-      注意：只有 gd 分支有产物，master 分支 404。
+      ★ 主力湖南源（家里是湖南联通宽带）。57 条：湖南省台全家桶 +
+      长沙新闻/政法/女性 + 怀化/常德/张家界/湘西。
+      单一直连 IP http://58.20.64.92:9999（湖南联通 IPTV 出口），
+      同网可达性最好，但一条源挂了就全挂，所以后面还得留着别的源兜底。
 
   - id: hn_mobile
     url: https://raw.githubusercontent.com/imDazui/Tvlist-awesome-m3u-m3u8/master/m3u/湖南移动.m3u
     enabled: true
     probe: false
+    priority: 2
     note: >-
-      ★ 目前找到的覆盖最全的湖南源，192 条：10 个省台（含湖南卫视 4K）+
-      长沙 4 套 + 13 个市州台新闻综合 + 市州第二频道 + 县级台。
-      全部指向 tvgslb.hn.chinamobile.com:8089（湖南移动 IPTV 门户），
-      很可能只在湖南移动宽带内可达。开发机侧因走了代理通道无法验证，
-      必须在 Apple TV 上用真实家庭网络实测。
+      覆盖最全的湖南源，192 条：10 省台（含湖南卫视 4K）+ 长沙 4 套 +
+      13 市州新闻综合 + 市州第二频道 + 县级台，比联通源多出株洲/湘潭/岳阳/
+      衡阳/邵阳/永州/娄底/益阳/郴州。指向 tvgslb.hn.chinamobile.com:8089
+      （湖南移动 IPTV 门户），在联通宽带下能否可播待真机验证；
+      但它是那 9 个市州台的唯一来源，所以必须留着。
 
-  - id: hn_unicom
-    url: https://raw.githubusercontent.com/imDazui/Tvlist-awesome-m3u-m3u8/master/m3u/湖南联通.m3u
+  - id: iptv_api_gd
+    url: https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u
     enabled: true
-    probe: false
+    priority: 3
     note: >-
-      57 条：湖南省台全家桶 + 长沙新闻/政法/女性 + 怀化/常德/张家界/湘西。
-      单一直连 IP http://58.20.64.92:9999（湖南联通出口），
-      同 hn_mobile，可达性取决于本机所在运营商网络。
+      通用聚合源，实测 1619 条、本机实测可用率约 69%。央视/卫视覆盖最好，
+      湖南本地只有省台系，市州台几乎为零。头部带 x-tvg-url EPG 声明。
+      注意：只有 gd 分支有产物，master 分支 404。
 
   - id: hn_telecom
     url: https://raw.githubusercontent.com/imDazui/Tvlist-awesome-m3u-m3u8/master/m3u/湖南电信IPTV.m3u
