@@ -27,10 +27,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "output"
 LOG_DIR = ROOT / "data" / "logs"
-ALLOWED = {"aptv.m3u", "hunan.m3u", "hunan-lean.m3u", "test.m3u", "report.md"}
+ALLOWED = {"aptv.m3u", "hunan.m3u", "hunan-lean.m3u", "test.m3u",
+           "probe-pack.m3u", "report.md"}
 PUBLIC_NAMES = {"hunan.m3u": "湖南本地优先（39 个台）",
                 "aptv.m3u": "全量（央视 + 卫视 + 湖南 93 个台）"}
-DIAG_NAMES = {"hunan-lean.m3u": "同一张表去掉台标和 EPG —— 主地址加不上时试它",
+DIAG_NAMES = {"probe-pack.m3u": "试播包：16 条编号线路，逐个点开，回报能动哪几个",
+              "hunan-lean.m3u": "同一张表去掉台标和 EPG —— 主地址加不上时试它",
               "test.m3u": "只有 4 个台的极小表 —— 判断是不是表太大/太复杂"}
 
 _seen_clients: set[str] = set()

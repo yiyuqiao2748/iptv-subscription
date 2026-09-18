@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import sys
 import urllib.request
 from collections import Counter, defaultdict
@@ -44,6 +45,13 @@ SOURCES_FILE = ROOT / "config" / "sources.yaml"
 CACHE_DIR = ROOT / "data" / "cache"
 HUNAN_GROUPS = ("hunan_local", "changsha", "shizhou", "jinying")
 _RANK = {"4K": 4, "FHD": 3, "HD": 2, "SD": 1, "": 0}
+
+# 带签名/鉴权参数的私有流：URL 里绑死了抓取方的 IP、账号哈希和有效期，
+# 别人拿到一定播不了（咪咕那类），而且属于计划书划定的红线（不盗链需鉴权私有流），
+# 一律不进订阅列表。
+_AUTH_URL = re.compile(
+    r"SecurityKey=|ddCalcu=|msisdn=|assertID=|auth_key=|wsTime=|txypb=|"
+    r"token=|[?&]u=[0-9a-f]{16,}", re.I)
 
 
 def load_sources(path: Path, *, fresh: bool) -> list[dict]:
@@ -121,8 +129,12 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     )
     unmatched: Counter[str] = Counter()
     excluded = 0
+    private = 0
 
     for e in entries:
+        if _AUTH_URL.search(e.url):
+            private += 1
+            continue                      # 鉴权私有流：换 IP 换时间必播不动
         res = index.resolve(e)
         if res is None:
             if index.is_excluded(e):
@@ -140,6 +152,9 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
         bucket["logo"] = bucket["logo"] or e.logo
         bucket["group_title"] = index.group_title(res.group)
         bucket["order"] = min(bucket["order"], res.order) if bucket["lines"][:-1] else res.order
+
+    if private:
+        print(f"\n剔除鉴权私有流 {private} 条（URL 里绑了别人的 IP 和时效，红线不收录）")
 
     results: dict[str, ProbeResult] = {}
     if verify:
