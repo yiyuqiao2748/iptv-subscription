@@ -2,6 +2,10 @@
 
 上游同一个频道常见写法：`湖南卫视` / `湖南卫视HD` / `湖南卫视 (1080p)` / `湖南卫视【高清】`。
 归一化后都应收敛到同一个 key，才能把它们的线路合并成多线路。
+
+反过来，收敛过头会把两个台并成一个：`CCTV-5` 和 `CCTV-5+`（赛事版）只差一个加号，
+旧实现把加号当分隔符删掉，于是 5+ 的线路挂到了 CCTV-5体育 名下，
+电视上点「CCTV-5体育」可能播出来的是另一套节目，所以加号现在折成 `plus` 保留。
 """
 
 from __future__ import annotations
@@ -9,10 +13,17 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# 括号内容整体丢弃：（）()【】[]{} 及其内部
-_PAREN_RE = re.compile(r"[（(【\[][^（()）【】\[\]]*[)）】\]]")
+# 括号内容整体丢弃。每种括号自己配对自己，不能写成「任一开括号 … 任一闭括号」：
+# 旧写法的开括号集漏了 `{`，于是 `湖南卫视{SD}` 归一化成 `湖南卫视sd`，
+# 跟 `湖南卫视` 撞不到一起；跨类型配对（`[高清)`) 也会把两条无关的字黏掉。
+_PAREN_RE = re.compile(
+    r"（[^（）]*）|\([^()]*\)|【[^【】]*】|\[[^\[\]]*\]|\{[^{}]*\}"
+)
 # 只保留汉字、字母、数字
 _NON_WORD_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+# 「＋」是频道名的一部分，不是分隔符：CCTV-5+（赛事版）和 CCTV-5 是两个台。
+# NFKC 已把全角＋折成半角，这里统一换成可读的稳定 token，免得被 _NON_WORD_RE 吃掉。
+_PLUS_RE = re.compile(r"\+")
 # 清晰度/制式后缀，从尾部反复剥离
 _QUALITY_SUFFIX_RE = re.compile(
     r"(?:超高清|标清|高清|准高清|蓝光|完整版|纯净版|伴音|试验|备用)+$"
@@ -29,10 +40,29 @@ def normalize(name: str) -> str:
     '湖南卫视'
     >>> normalize("CCTV-1 高清")
     'cctv1'
+    >>> normalize("湖南卫视【高清】")
+    '湖南卫视'
+
+    括号要自己配对自己 —— 旧写法漏了 `{`，这条就会漏匹配：
+
+    >>> normalize("湖南卫视{SD}") == normalize("湖南卫视")
+    True
+    >>> normalize("湖南卫视[超清]") == normalize("湖南卫视")
+    True
+
+    「＋」是另一个台，不是清晰度尾巴，必须和裸数字区分开：
+
+    >>> normalize("CCTV-5+")
+    'cctv5plus'
+    >>> normalize("CCTV5＋ 高清") == normalize("CCTV-5+")
+    True
+    >>> normalize("CCTV-5+") == normalize("CCTV-5")
+    False
     """
     if not name:
         return ""
     s = unicodedata.normalize("NFKC", name).strip().lower()
+    s = _PLUS_RE.sub("plus", s)
     s = _PAREN_RE.sub("", s)
     s = _NON_WORD_RE.sub("", s)
 

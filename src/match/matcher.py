@@ -38,7 +38,47 @@ class MatchResult:
 
 
 class ChannelIndex:
-    """加载 channels.yaml 并提供归位查询。"""
+    """加载 channels.yaml 并提供归位查询。
+
+    一个小配置表就够说明三条规则（别名命中 > 整组映射 > 丢弃）：
+
+    >>> cfg = {
+    ...     "groups": [{"id": "cctv", "title": "📺 央视"}],
+    ...     "upstream_group_map": {"📺央视频道": "cctv"},
+    ...     "excluded_groups": ["🕘️更新时间"],
+    ...     "exclude_patterns": ["测试"],
+    ...     "channels": [
+    ...         {"name": "CCTV-5体育", "group": "cctv", "aliases": ["CCTV-5"]},
+    ...         {"name": "CCTV-5+赛事", "group": "cctv", "tvg_id": "CCTV-5+", "aliases": ["CCTV-5+"]},
+    ...     ],
+    ... }
+    >>> idx = ChannelIndex(cfg)
+
+    带加号和不带加号是两个台，各归各的标准名：
+
+    >>> idx.resolve(Entry(name="CCTV-5+", url="u", group="📺央视频道")).name
+    'CCTV-5+赛事'
+    >>> idx.resolve(Entry(name="CCTV5", url="u")).name
+    'CCTV-5体育'
+
+    tvg_id 写死了就不跟着上游走，没写死的沿用上游的：
+
+    >>> idx.resolve(Entry(name="CCTV5+", url="u")).tvg_id
+    'CCTV-5+'
+    >>> idx.resolve(Entry(name="CCTV-5", url="u", tvg_id="CCTV-5")).tvg_id
+    'CCTV-5'
+
+    名单里没有的，只有整组映射能接住；映射也没有就丢弃：
+
+    >>> idx.resolve(Entry(name="CCTV-3", url="u", group="📺央视频道")).matched_by
+    'group-map'
+    >>> idx.resolve(Entry(name="CCTV-3", url="u")) is None
+    True
+    >>> idx.is_excluded(Entry(name="湖南卫视测试", url="u"))
+    True
+    >>> idx.is_excluded(Entry(name="湖南卫视", url="u", group="🕘️更新时间"))
+    True
+    """
 
     def __init__(self, cfg: dict[str, Any]):
         self.groups: dict[str, dict[str, Any]] = {

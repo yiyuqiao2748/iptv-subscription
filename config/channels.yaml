@@ -108,21 +108,37 @@ channels:
   # ===== 央视 =====
   # tvg_id 留空 = 沿用上游 tvg-id，EPG 命中率最高（P3 再统一校准）。
   # 别名同时覆盖两种上游写法：iptv-api 的「CCTV-1 综合」与湖南源的「CCTV1」。
-  # 已知限制：归一化会丢掉「+」，所以 CCTV-5+ 与 CCTV-5 会撞成同一个 key，
-  # P0 先不收 CCTV-5+（它走 upstream_group_map 仍会出现在 📺 央视组里）。
+  # 数字后面带汉字的（CCTV-1综合）必须写别名，因为归一化只保证「CCTV-1」「CCTV1」互为同义。
+  # tvg_id 显式写死的这几个：湖南源里它们是「CCTV3」这种不带 tvg-id 的裸写法，
+  # 谁先创建频道桶谁就决定输出的 tvg-id，不写死会在「CCTV-3」和「CCTV-3综艺」之间漂。
   - {name: CCTV-1综合,  group: cctv, aliases: [CCTV-1, CCTV1]}
   - {name: CCTV-2综合,  group: cctv, aliases: [CCTV-2, CCTV2]}
+  - {name: CCTV-3综艺,  group: cctv, tvg_id: CCTV-3, aliases: [CCTV-3, CCTV3]}
   - {name: CCTV-4中文国际, group: cctv, aliases: [CCTV-4, CCTV4]}
   - {name: CCTV-5体育,  group: cctv, aliases: [CCTV-5, CCTV5]}
+  # CCTV-5+ 是「赛事」频道，和 CCTV-5 是两个台、两套节目。
+  # 2026-09-21 之前归一化把加号当分隔符删了，5+ 的线路挂进了 CCTV-5体育，
+  # 电视上点「CCTV-5体育」有 1/3 的概率播出另一套节目（详见 normalize 的说明）。
+  - {name: CCTV-5+赛事, group: cctv, tvg_id: "CCTV-5+", aliases: [CCTV-5+, CCTV5+]}
   - {name: CCTV-6电影,  group: cctv, aliases: [CCTV-6, CCTV6]}
+  - {name: CCTV-7国防军事, group: cctv, tvg_id: CCTV-7, aliases: [CCTV-7, CCTV7]}
   - {name: CCTV-8电视剧, group: cctv, aliases: [CCTV-8, CCTV8]}
+  - {name: CCTV-9记录,  group: cctv, tvg_id: CCTV-9, aliases: [CCTV-9, CCTV9]}
   - {name: CCTV-10科教, group: cctv, aliases: [CCTV-10, CCTV10]}
+  - {name: CCTV-11戏曲, group: cctv, tvg_id: CCTV-11, aliases: [CCTV-11, CCTV11]}
   - {name: CCTV-12社会与法, group: cctv, aliases: [CCTV-12, CCTV12]}
   - {name: CCTV-13新闻, group: cctv, aliases: [CCTV-13, CCTV13, 央视新闻]}
   - {name: CCTV-14少儿, group: cctv, aliases: [CCTV-14, CCTV14]}
   - {name: CCTV-15音乐, group: cctv, aliases: [CCTV-15, CCTV15]}
   - {name: CCTV-16奥林匹克, group: cctv, aliases: [CCTV-16, CCTV16, CCTV-16 4K]}
   - {name: CCTV-17农业农村, group: cctv, aliases: [CCTV-17, CCTV17]}
+  # 中国教育台：上游写的就是「CETV-1」，归一化已经把「CETV1」折成同一个 key，不用别名。
+  # 它们原来只靠 📺央视频道 的整组映射进来（见文件头），一旦上游改组名就会整批消失；
+  # 显式登记后顺序也固定在央视组末尾，而不是跟着上游条目序号漂。
+  - {name: CETV-1, group: cctv}
+  - {name: CETV-2, group: cctv}
+  - {name: CETV-3, group: cctv}
+  - {name: CETV-4, group: cctv}
 
   # ===== 外省卫视 =====
   # 非重点，只作为央视之外的补充；不追求全量。
@@ -155,3 +171,16 @@ channels:
   - {name: 青海卫视, group: weisheng}
   - {name: 甘肃卫视, group: weisheng}
   - {name: 新疆卫视, group: weisheng}
+
+  # ===== 上游有公网线路、但挂在各省分组里的上星频道 =====
+  # 2026-09-21 逐个核对过：这 5 个台在 ☘️福建/广东/吉林/青海频道 组下各有 2~5 条公网线路，
+  # 因为不在上面的名单里、又不属于 📡卫视频道 组，之前整条被丢弃。
+  # 只登记「确实是上星频道 + 有公网线路」的：康巴卫视/四川康巴卫视/兵团卫视 上游只有
+  # 运营商内网地址，收进来等于给列表添一个必超时的台，不收（计划书 2.12 同一口径）。
+  # 凤凰卫视、星空卫视 走的是 🌊港·澳·台 / 🎬电影频道 组，境外持牌，超出这个产品划定的范围。
+  # 央视台球、央视文化精品、欢笑剧场4K 是付费频道，不收。
+  - {name: 厦门卫视,     group: weisheng}
+  - {name: 福建海峡卫视,  group: weisheng, tvg_id: 海峡卫视, aliases: [海峡卫视]}
+  - {name: 大湾区卫视,    group: weisheng}
+  - {name: 延边卫视,     group: weisheng}
+  - {name: 安多卫视,     group: weisheng}
