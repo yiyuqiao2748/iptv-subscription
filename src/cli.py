@@ -15,6 +15,11 @@
 同一频道的多条线路按「可达范围」+「实测延迟」排先后（范围规则在 config/reachability.yaml），
 公网且快的排第一，因为 APTV 默认只播第一条；运营商 IPTV 内网地址和电台冒充项退居备选。
 
+每轮 `--verify` 的主机汇总还会追加到 `data/output/probe-history.jsonl`（一行一轮，
+30 分钟内连跑算同一轮）。不带 `--verify` 时靠这份履历排序：上一轮整族连不上的往后压、
+上一轮量到过延迟的按那时补位 —— 否则「这次没实测」会让上一轮确认的官方流被来源优先级挤掉。
+判据只认体检没报警的那些轮，参照出口见 `judgment_egress()` 的说明；`--ignore-history` 可整个关掉。
+
 注意：联网抓取与 --verify 实测都从本机出口出去，所以测量点是谁必须先说清楚。
 代理客户端的 TUN 一开，DNS 就被换成 fake-IP、出口跑到境外机房，对国内运营商类地址
 全是假阴性（计划书 2.8）。跑 --verify 前会先做体检并把警告打在屏幕上，
@@ -32,6 +37,7 @@ import re
 import sys
 import urllib.request
 from collections import Counter, defaultdict
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -47,6 +53,7 @@ sys.path.insert(0, str(ROOT))
 
 import yaml  # noqa: E402
 
+from src.check import history as hist  # noqa: E402
 from src.check.env import egress_hint, measurement_warnings  # noqa: E402
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
@@ -61,6 +68,7 @@ from src.parse.m3u import Entry, parse_m3u  # noqa: E402
 SOURCES_FILE = ROOT / "config" / "sources.yaml"
 LOCAL_SOURCES_FILE = ROOT / "config" / "sources_local.yaml"
 REACH_FILE = ROOT / "config" / "reachability.yaml"
+HISTORY_FILE = ROOT / "data" / "output" / "probe-history.jsonl"
 CACHE_DIR = ROOT / "data" / "cache"
 HUNAN_GROUPS = ("hunan_local", "changsha", "shizhou", "jinying")
 _RANK = {"4K": 4, "FHD": 3, "HD": 2, "SD": 1, "": 0}
@@ -90,6 +98,88 @@ def latency_tier(r: ProbeResult | None) -> int:
         if r.ms < limit:
             return tier
     return 2
+
+
+def judgment_egress(egress: str, warns: list[str], runs: list[dict], *, measured: bool) -> str:
+    """本轮排序该用哪个出口当判据。
+
+    规则之所以不是「当前出口」那么直白：这张表是给电视用的，而电视永远待在家里那张
+    Wi-Fi 上，它不会跟着开发机的代理跑。所以只有一种情况才用当前出口：
+    本轮真在实测（`--verify`）**且**体检没报警。其余一律退回历史里最近一次体检干净的出口；
+    离线生成（不带 `--verify`）时当前出口根本不构成任何测量，用它等于没依据。
+    真发生过：TUN 开着重出一次离线表，上一轮确认 378ms 的湖南广电官方流就整个消失了。
+
+    >>> clean = [{"at": "t1", "egress": "119.39.40.124 CN", "warnings": []}]
+    >>> judgment_egress("119.39.40.124 CN", [], clean, measured=True)  # 本轮体检干净：用本轮
+    '119.39.40.124 CN'
+    >>> judgment_egress("139.x JP", ["TUN 已开启"], clean, measured=True)  # 本轮测了但不可信
+    '119.39.40.124 CN'
+    >>> judgment_egress("139.x JP", [], clean, measured=False)            # 离线：只认历史
+    '119.39.40.124 CN'
+    >>> judgment_egress("139.x JP", ["TUN 已开启"], [], measured=True)     # 没有可信历史：不猜
+    ''
+    """
+    if measured and egress and not warns:
+        return egress
+    return hist.current_egress("", runs)
+
+
+def host_latency(rep: dict[str, hist.HostRep]) -> dict[str, int]:
+    """主机 -> 上一轮可信实测的最好延迟。只收「至少通过过一次」的主机。
+
+    >>> r = hist.HostRep
+    >>> sorted(host_latency({"a": r("a", 1, 1, 3, 3, 210, "x", 0),
+    ...                      "b": r("b", 1, 0, 3, 0, 0, "x", 1)}).items())
+    [('a', 210)]
+    """
+    return {name: rep.best_ms for name, rep in rep.items() if rep.ok_runs and rep.best_ms}
+
+
+def effective_tier(url: str, r: ProbeResult | None, hist_ms: dict[str, int]) -> int:
+    """排序用的延迟档：本轮实测 > 上一轮同主机的实测 > 没听说过。
+
+    为什么需要第二级：离线生成（不带 `--verify`）时所有线路都没有本轮实测，
+    原来全部落在中间档 1，于是 mgtv 那条湖南广电官方流（实测 378ms）会被
+    来源优先级挤到第三条之后 —— 2026-09-21 实测过一轮之后，离线重出一次表，
+    那条线直接从 `aptv.m3u` 里消失了。用上一轮的延迟补位，就是不让表里最好的一条
+    线路因为「这次没空重测」而被换掉。本轮只要测过，就完全不听历史的。
+
+    >>> m = {"fast.example": 210, "slow.example": 1326}
+    >>> effective_tier("http://fast.example/a.m3u8", None, m)      # 上轮 210ms -> 最快档
+    0
+    >>> effective_tier("http://slow.example/a.m3u8", None, m)      # 上轮 1326ms -> 最慢档
+    2
+    >>> effective_tier("http://new.example/a.m3u8", None, m)       # 没历史：不偏袒
+    1
+    >>> effective_tier("http://fast.example/a.m3u8", ProbeResult(True, 200, 1500, 3), m)
+    2
+    """
+    if r is not None:
+        return latency_tier(r)
+    ms = hist_ms.get(urlsplit(url).hostname or "")
+    return latency_tier(ProbeResult(True, 200, ms, 1)) if ms else 1
+
+
+def history_strike(url: str, r: ProbeResult | None, stale: frozenset[str]) -> int:
+    """这一轮没实测、但上一轮整族连不上的主机，往后压一档。
+
+    它存在的唯一理由：`build` 不带 `--verify` 时手里没有任何实测信息，
+    上一轮已经确认 0/35 的 `stream1.freetv.fun` 会凭来源优先级又爬回频道第一位。
+    只要本轮测过（r 不是 None），历史就闭嘴 —— 现场的数永远比记忆可信，
+    中转主机「今天全灭明天全通」两种方向都发生过。
+
+    >>> live = ProbeResult(True, 200, 900, 3)
+    >>> stale = frozenset({"dead.example"})
+    >>> history_strike("http://dead.example/a.m3u8", live, stale)     # 本轮说能播，就听本轮
+    0
+    >>> history_strike("http://dead.example/a.m3u8", None, stale)     # 没实测 + 上轮全灭
+    1
+    >>> history_strike("http://good.example/a.m3u8", None, stale)
+    0
+    """
+    if r is not None:
+        return 0
+    return 1 if (urlsplit(url).hostname or "") in stale else 0
 
 
 def load_sources(path: Path, *, fresh: bool) -> list[dict]:
@@ -150,7 +240,9 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
               verify: bool = False, timeout: int = 12, workers: int = 20,
               max_per_host: int = 2, skip_verify: Iterable[str] = (),
               source_priority: dict[str, int] | None = None,
-              reach: Reachability):
+              reach: Reachability,
+              stale_hosts: frozenset[str] = frozenset(),
+              hist_ms: dict[str, int] | None = None):
     """归位 + 合并多线路 + 同源收敛 + 排序 + 截断（可选实测过滤）。
 
     max_per_host 用来治「一个频道的 5 条线路其实全来自同一个失效主机」——
@@ -172,9 +264,15 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     实测到 txmov2.a.kwimgs.com 有条 1259 分片的录像挂在湖南卫视名下，
     它比真直播还快，只按延迟排会把录像顶到第一位。不删，是因为对只有录像和内网
     地址的台来说，有画可看比超时强；但这类频道会在使用报告里点名。
+
+    stale_hosts / hist_ms 来自实测履历（data/output/probe-history.jsonl），都只影响
+    本轮没测过的线路：前者把上一轮整族连不上的往后压，后者把上一轮量到过的主机按
+    那时的延迟补进档位 —— 否则离线重出表时全部线路同为"未知"，
+    上一轮确认 378ms 的湖南广电官方流会被来源优先级挤掉（见 effective_tier）。
     """
     skip_verify = set(skip_verify)
     prio = source_priority or {}
+    hist_ms = hist_ms or {}
     buckets: dict[tuple[str, str], dict] = defaultdict(
         lambda: {"lines": [], "seen": set(), "tvg_id": "", "logo": "", "order": 0, "group_title": ""}
     )
@@ -228,12 +326,15 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
             print(f"    {src}: {tag}")
 
     dead = 0
+    stale_hits = 0
     channels: list[OutputChannel] = []
     for (group, name), b in buckets.items():
         ordered = sorted(
             b["lines"],
-            key=lambda e: (reach.rank(e.url), is_fake_live(results.get(e.url)),
-                           latency_tier(results.get(e.url)),
+            key=lambda e: (reach.rank(e.url),
+                           history_strike(e.url, results.get(e.url), stale_hosts),
+                           is_fake_live(results.get(e.url)),
+                           effective_tier(e.url, results.get(e.url), hist_ms),
                            prio.get(e.source, 99),
                            -_RANK.get(quality_hint(f"{e.name} {e.url}"), 0),
                            e.seq),
@@ -254,6 +355,8 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
             kept.append(e)
         if not kept:
             continue
+        if history_strike(kept[0].url, results.get(kept[0].url), stale_hosts):
+            stale_hits += 1        # 这个台实在没有更好的选择了，第一线还是那台已死的
 
         channels.append(
             OutputChannel(
@@ -267,7 +370,7 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
         )
 
     channels.sort(key=lambda c: c.order)
-    return channels, unmatched, excluded, dead, results
+    return channels, unmatched, excluded, dead, results, stale_hits
 
 
 def host_summary(results: dict[str, ProbeResult], reach: Reachability) -> list[dict]:
@@ -325,6 +428,11 @@ def cmd_build(argv: list[str]) -> int:
     ap.add_argument("--fresh", action="store_true", help="强制联网抓最新上游，忽略本地缓存")
     ap.add_argument("--skip-local", action="store_true",
                     help="不读 config/sources_local.yaml（排查手工源本身时用）")
+    ap.add_argument("--history", default=str(HISTORY_FILE),
+                    help="实测履历 jsonl：离线生成时靠它给已知失效主机降档、给已知快的主机补位"
+                         "（默认 data/output/probe-history.jsonl）")
+    ap.add_argument("--ignore-history", action="store_true",
+                    help="完全不看履历，只按本轮（或无本轮）的结果排 —— 复现旧行为、排查降档本身时用")
     args = ap.parse_args(argv)
 
     sources = (
@@ -347,11 +455,41 @@ def cmd_build(argv: list[str]) -> int:
 
     index = load_index(args.config)
     reach = load_reachability(REACH_FILE)
+
+    # 实测履历：判据只认「体检没报警」的那些轮，而参照出口由 judgment_egress() 定
+    # （表是给电视用的，开发机代理在哪不影响这个依据）。
+    # 出口身份现查一次就够，屏幕、probe.json、落盘都用它，别重复查。
+    warns = measurement_warnings() if args.verify else []   # 只查一次，后面三处复用
+    history_path = Path(args.history)
+    runs = hist.load_history(history_path)
+    egress = egress_hint()
+    if not runs and not history_path.exists():
+        old = Path(args.out) / "probe.json"
+        try:
+            adopted = hist.adopt_probe(json.loads(old.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            adopted = None
+        if adopted:
+            hist.append_run(history_path, adopted)
+            runs = hist.load_history(history_path)
+            print(f"已把上一版留下的 {old.name} 补为第 1 轮履历（{adopted['at'][:16]}）")
+    point = judgment_egress(egress, warns, runs, measured=bool(args.verify))
+    rep = hist.reputation(runs, current_egress=point) if not args.ignore_history else {}
+    stale = hist.demote_hosts(rep) if not args.ignore_history else frozenset()
+    rep_now = rep            # 落盘新那一轮之后会被换成最新的履历，用来判"该划掉谁"
+    dropped = len(hist.untrusted_runs(runs, current_egress=point))
+
     if args.verify:
-        for warn in measurement_warnings():
+        for warn in warns:
             print(f"⚠️  {warn}")
         print()
-    channels, unmatched, excluded, dead, results = aggregate(
+    if rep and not args.verify:
+        print(f"\n实测履历（{history_path.name}）：{len(runs)} 轮里 {len(rep)} 个主机有"
+              f"「出口 {point}」的可信记录 → {len(stale)} 个整族失效主机往后压、"
+              f"{len(host_latency(rep))} 个按上一轮延迟补位"
+              + (f"，另有 {dropped} 轮因测量点不对未采用" if dropped else "")
+              + ("" if args.verify else "；本轮未实测，这些判据顶上"))
+    channels, unmatched, excluded, dead, results, stale_hits = aggregate(
         entries, index, args.max_lines,
         verify=args.verify, timeout=args.timeout, workers=args.workers,
         max_per_host=args.max_per_host,
@@ -359,6 +497,8 @@ def cmd_build(argv: list[str]) -> int:
         source_priority={**{s["id"]: s.get("priority", i + 1) for i, s in enumerate(sources)},
                          LOCAL_ID: 0},   # 手工源是人工确认过出处的，同条件下优先
         reach=reach,
+        stale_hosts=stale,
+        hist_ms=host_latency(rep),
     )
 
     present = {c.name for c in channels}
@@ -399,19 +539,45 @@ def cmd_build(argv: list[str]) -> int:
         fake_live.append(f"{c.name}（{host} "
                          + (f"{r.segments} 片循环）" if r.segments else "整段视频文件）"))
 
-    # 实测结果落盘：probe.json 是 P2 黑名单/历史趋势的原始数据，
-    # 也是试播包（scripts/probe_pack.py）判「这个主机族值不值得让电视点一下」的依据。
+    # 实测结果落盘：probe.json 是这一轮的快照（会被下一轮覆盖），
+    # probe-history.jsonl 是它攒下来的履历 —— 离线生成、趋势判断都看后者。
+    # 两边都记 egress + 体检警告，因为换一个测量点这些数字就不是同一个意思了。
     hosts = host_summary(results, reach) if args.verify else []
     if args.verify:
+        at = datetime.now().astimezone().isoformat(timespec="seconds")
         (out_dir / "probe.json").write_text(json.dumps({
-            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "egress": egress_hint(),
-            "measurement_warnings": measurement_warnings(),
+            "at": at,
+            "egress": egress,
+            "measurement_warnings": warns,
             "hosts": hosts,
             "lines": {u: {"ok": r.ok, "http": r.http, "ms": r.ms,
                           "segments": r.segments, "kind": r.kind, "error": r.error}
                       for u, r in results.items()},
         }, ensure_ascii=False, indent=1), encoding="utf-8")
+        new_run = hist.append_run(history_path, {
+            "at": at, "egress": egress, "warnings": warns, "hosts": hosts})
+        runs = hist.load_history(history_path)
+        # 判「该划掉谁」用最新这一轮，但报告里"本轮降档/补位了几个主机"说的是
+        # 刚才 aggregate 真正用到的那份履历 —— 本轮实测过的线路根本不看历史，两者不能混。
+        rep_now = hist.reputation(runs, current_egress=point)
+        print(f"\n实测已记入 {history_path.name}："
+              + ("新起一轮" if new_run else "与上一轮同一时段，已合并")
+              + f"（累计 {len(runs)} 轮，判据出口：{point or '未知'}）")
+
+    trend = hist.run_totals(runs, current_egress=point)
+    history_note = {
+        "runs": len(runs),
+        "used": len(trend),
+        "dropped": len(hist.untrusted_runs(runs, current_egress=point)),
+        "egress": point,
+        "build_egress": egress if egress != point else "",
+        "totals": trend,
+        "blacklist": [asdict(r) for r in hist.blacklist(rep_now)],
+        "demote": sorted(stale),
+        "latency_hosts": len(host_latency(rep)),
+        "stale_first_lines": stale_hits,
+        "verified": bool(args.verify),
+    } if runs or args.verify else None
 
     report = format_report(
         sources=[f"{s['id']} ← {s['target']}" for s in sources] + (
@@ -428,6 +594,7 @@ def cmd_build(argv: list[str]) -> int:
         no_public=no_public,
         fake_live=fake_live,
         hosts=hosts,
+        history=history_note,
     )
     (out_dir / "report.md").write_text(report, encoding="utf-8")
 
@@ -445,7 +612,7 @@ def cmd_build(argv: list[str]) -> int:
         print(f"  ⚠️ 第一线是循环录像的频道 {len(fake_live)} 个（有画但不是直播）："
               + "、".join(fake_live))
     if hosts:
-        print(f"  实测出口：{egress_hint() or '未取到'}（详情见 data/output/probe.json）")
+        print(f"  实测出口：{egress or '未取到'}（详情见 data/output/probe.json）")
         bad = [h for h in hosts if h["ok"] < h["total"]]
         for h in bad[:8]:
             print(f"    ⚠️ {h['host']:<34} 可用 {h['ok']}/{h['total']}"
@@ -455,11 +622,26 @@ def cmd_build(argv: list[str]) -> int:
         alive = [h for h in hosts if h["ok"] == h["total"]]
         print(f"    其余 {len(alive)} 个主机全通（合计 {sum(h['total'] for h in alive)} 条），"
               f"最快 {min((h['best_ms'] for h in alive), default=0)}ms")
+    if history_note and history_note["runs"] and not args.verify:
+        h = history_note
+        print(f"  实测履历：{h['runs']} 轮（采用 {h['used']} 轮，判据出口 {h['egress'] or '未知'}）"
+              + (f"，{h['dropped']} 轮因测量点不对未采用" if h["dropped"] else "")
+              + f"；据此往后压 {len(h['demote'])} 个主机、补位 {h['latency_hosts']} 个"
+              + (f"，第一线仍落在已失效主机上的台 {h['stale_first_lines']} 个"
+                 if h["stale_first_lines"] else ""))
+        if h["blacklist"]:
+            print("    ⚠️ 连续两轮以上从没通过过的："
+                  + "、".join(f"{r['host']}（{r['runs']} 轮全灭）" for r in h["blacklist"][:6])
+                  + " —— 它们贡献的「公网线路」等于不存在，"
+                    "考虑从 sources.yaml 候选里划掉或调低 priority")
     print(f"  丢弃：黑名单 {excluded} 条，未匹配 {sum(unmatched.values())} 条"
           + (f"，实测失效 {dead} 条" if args.verify else ""))
     if not args.verify:
-        print("  注意：本次未实测，产物里会混着已知失效的线路，而且会把上一轮"
-              " `--verify` 生成的表覆盖掉。要给电视订阅前，建议补跑一次 `build --verify`。")
+        print("  注意：本次未实测"
+              + ("，已按实测履历排序（只覆盖被测过的主机，新线路按未知处理）；"
+                 "但离线生成不删失效线路，第二三条备选里仍会混着已知连不上的。" if stale else
+                 "，产物里会混着已知失效的线路，而且会把上一轮 `--verify` 生成的表覆盖掉。")
+              + "要给电视订阅前，建议补跑一次 `build --verify`。")
     if empty:
         print(f"  ⚠️ 配置里有但没匹配到线路的频道 {len(empty)} 个：" + "、".join(n for n, _ in empty))
     return 0

@@ -49,6 +49,62 @@ def format_m3u(channels: Iterable[OutputChannel], epg_url: str = "") -> str:
     return "\n".join(out)
 
 
+def _stamp(at: str) -> str:
+    """`2026-09-21T13:00:40+08:00` -> `2026-09-21 13:00`。"""
+    return str(at)[:16].replace("T", " ")
+
+
+def _history_section(h: dict) -> list[str]:
+    """渲染「主机可用性履历」：每轮趋势 + 该从候选里划掉谁。
+
+    单独成函数只为了让 format_report 保持可读；判据都在 src/check/history.py。
+    """
+    out = ["", "## 主机可用性履历（离线生成时靠它排序）", ""]
+    who = f"- 累计 **{h['runs']} 轮**实测，采用 {h['used']} 轮（判据出口 `{h['egress'] or '未知'}`）"
+    if h.get("dropped"):
+        who += f"，另有 {h['dropped']} 轮未采用"
+    if h.get("build_egress"):
+        who += (f"；本轮在 `{h['build_egress']}` 上生成，"
+                "排序依据仍是判据出口那一次 —— 表最终在电视那张网上播，"
+                "开发机的代理不改变这个依据")
+    out.append(who)
+    out.append("")
+    out.append("> 判据只采用「和电视同网、当时体检没报警」的那些轮：换一个测量点，"
+               "同一批数字的含义就变了。代理客户端的 TUN 一开，出口跑到境外机房、"
+               "DNS 换成 fake-IP，那轮对国内源全是假阴性（计划书 2.8/2.10）。"
+               "这种轮次照样存着好看变化，但绝不参与判断。")
+    if h.get("totals"):
+        out += ["", "| 时间 | 出口 | 实测可用 |", "|---|---|---|"]
+        for r in h["totals"]:
+            out.append(f"| {_stamp(r['at'])} | `{r.get('egress', '')}` | "
+                       f"{r['ok']}/{r['total']} |")
+    dead = h.get("blacklist") or []
+    if dead:
+        out += ["", f"### 从来没通过过的主机（{len(dead)} 个，建议从候选里划掉）", "",
+                "| 主机 | 观测轮数 | 最近一轮 |", "|---|---|---|"]
+        for r in dead:
+            out.append(f"| `{r['host']}` | {r['runs']} 轮全灭 | {r['ok_last']}/{r['total']} |")
+        out += ["", "> 只要某一轮里它有一条线路能播，就不算在这里面 —— 中转类主机"
+                "「今天全灭、明天全通」是常态（腾讯云那族公网基准 2026-09-21 就从全通掉到整族失效）。"
+                "所以要两轮以上从没通过过才判它死刑。",
+                "> 划掉的动作是人做的：把 `config/sources.yaml` 里贡献这些主机的源 "
+                "`enabled: false` 或调高 `priority`，代码不自动删源。"]
+    bits = []
+    if h.get("demote"):
+        bits.append(f"把 {len(h['demote'])} 个整族失效的主机往后压了档："
+                    + "、".join(f"`{x}`" for x in h["demote"][:8])
+                    + ("…" if len(h["demote"]) > 8 else ""))
+    if h.get("latency_hosts"):
+        bits.append(f"{h['latency_hosts']} 个主机按上一轮实测延迟补了位"
+                    "（不补的话，本轮没实测，最好的那条会被来源优先级挤掉）")
+    if bits:
+        out += ["", "> 本轮生成用到履历的地方：" + "；".join(bits) + "。"]
+        if h.get("stale_first_lines"):
+            out[-1] += (f"第一线仍落在已知失效主机上的频道 {h['stale_first_lines']} 个 —— "
+                        "那些台只有这一条公网线路，没有更好的可以换。")
+    return out
+
+
 def format_report(
     *,
     sources: list[str],
@@ -62,10 +118,12 @@ def format_report(
     no_public: list[str] | None = None,
     fake_live: list[str] | None = None,
     hosts: list[dict] | None = None,
+    history: dict | None = None,
 ) -> str:
     """生成人读的 markdown 报告，方便你一眼看出哪些台有、哪些台还缺。
 
-    hosts 是 host_summary() 的输出，传了才渲染「实测逐主机」一节：
+    hosts 是 host_summary() 的输出，传了才渲染「实测逐主机」一节；
+    history 是 src/check/history.py 算出来的履历摘要，传了才渲染趋势那一节。
 
     >>> h = [{"host": "dead.example", "scope": "public", "total": 3, "ok": 0, "best_ms": 0},
     ...      {"host": "live.example", "scope": "public", "total": 2, "ok": 2, "best_ms": 480}]
@@ -81,6 +139,31 @@ def format_report(
     >>> [l for l in f.splitlines() if "湖南卫视" in l and "循环" in l]
     ['- 湖南卫视（a.com 1259 片循环）']
     >>> "循环录像" not in format_report(**{**kw, "hosts": [], "fake_live": []})
+    True
+    >>> hist = {"runs": 3, "used": 2, "dropped": 1, "egress": "119.39.40.124 CN",
+    ...         "totals": [{"at": "2026-09-21T13:00:40+08:00", "egress": "U",
+    ...                     "ok": 218, "total": 331}],
+    ...         "blacklist": [{"host": "dead.example", "runs": 2, "ok_runs": 0,
+    ...                        "total": 35, "ok_last": 0, "best_ms": 0,
+    ...                        "last_at": "2026-09-21T13:00:40+08:00", "dead_streak": 2}],
+    ...         "demote": ["dead.example"], "latency_hosts": 7, "stale_first_lines": 4,
+    ...         "verified": False}
+    >>> r = format_report(**{**kw, "hosts": [], "history": hist})
+    >>> "从来没通过过的主机" in r and "dead.example" in r.split("各分组频道")[0]
+    True
+    >>> "1 轮" in r                                    # 被排除的轮次要说明
+    True
+    >>> "补了位" in r and "7 个主机" in r              # 上一轮的延迟拿来补位
+    True
+    >>> r2 = format_report(**{**kw, "hosts": [],
+    ...                        "history": {**hist, "build_egress": "139.x JP"}})
+    >>> "开发机的代理" in r2                    # 本轮出口和判据出口不一致要讲明白
+    True
+    >>> "主机可用性履历" not in format_report(**{**kw, "hosts": [], "history": None})
+    True
+    >>> "主机可用性履历" not in format_report(
+    ...     **{**kw, "hosts": [], "history": {**hist, "runs": 0, "used": 0, "dropped": 0,
+    ...                                      "totals": [], "blacklist": []}})
     True
     """
     lines: list[str] = ["# 生成报告", ""]
@@ -138,6 +221,9 @@ def format_report(
         lines += ["", "> 这一栏决定 P5 的取向：整族失效的主机要从候选里划掉；"
                   "而「跨洋中转全通」说明公网这条路真的能用，"
                   "剩下的缺口就是纯粹的找源问题，不是排序问题。"]
+
+    if history and history.get("runs"):
+        lines += _history_section(history)
 
     lines += ["", "## 各分组频道与线路数", "", "| 分组 | 频道 | 线路数 |", "|---|---|---|"]
     for grp, chs in by_group.items():
