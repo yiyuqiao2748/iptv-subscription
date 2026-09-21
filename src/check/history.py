@@ -56,6 +56,9 @@ class HostRep:
     vod_last: int = 0     # 最近一轮里 L2 判为循环录像（vod / master:vod）的条数
     stuck_last: int = 0   # 其中 L3 隔间隔重取后列表不动的条数（L2 看着像直播）
     fake_streak: int = 0  # 连着几轮「通了的全是录像/不动」，一条真直播都没有
+    # 2.17 加：这个主机族是哪些上游贡献的（sources.yaml 的 id）。放最后并且给默认值，
+    # 老履历里没有这个字段 —— 不能因为 2.16 之前没记来源就把那些轮一笔笔算错。
+    srcs: tuple[str, ...] = ()
 
 
 def should_merge(prev_at: str, new_at: str, minutes: int = 30) -> bool:
@@ -188,6 +191,14 @@ def reputation(runs: list[dict], *, current_egress: str = "") -> dict[str, HostR
     (0, 0, 0)
     >>> rep["dead.one"].last_at       # 取最近一轮的数字，不是第一轮
     '2026-09-21T10:00:00+08:00'
+    >>> src = [r("2026-09-20T10:00:00+08:00", "UNICOM",
+    ...          [h("shared", 3, 0, srcs=["gd", "local"]), h("old", 1, 1)]),
+    ...        r("2026-09-21T10:00:00+08:00", "UNICOM",
+    ...          [h("shared", 3, 0, srcs=["gd"])])]
+    >>> reputation(src, current_egress="UNICOM")["shared"].srcs    # 两轮来的来源取并集
+    ('gd', 'local')
+    >>> reputation(src, current_egress="UNICOM")["old"].srcs        # 没记就是没记，不猜
+    ()
     >>> reputation(runs)              # 不知道现在在哪测的，就一条都不信
     {}
     """
@@ -199,7 +210,9 @@ def reputation(runs: list[dict], *, current_egress: str = "") -> dict[str, HostR
             name = str(h.get("host") or "")
             if not name:
                 continue
-            a = acc.setdefault(name, {"runs": 0, "ok_runs": 0, "streak": 0, "fake": 0})
+            a = acc.setdefault(name, {"runs": 0, "ok_runs": 0, "streak": 0, "fake": 0,
+                                      "srcs": set()})
+            a["srcs"] |= {str(s) for s in (h.get("srcs") or []) if str(s)}
             a["runs"] += 1
             if int(h.get("ok") or 0) > 0:
                 a["ok_runs"] += 1
@@ -218,7 +231,8 @@ def reputation(runs: list[dict], *, current_egress: str = "") -> dict[str, HostR
                           total=a["last"]["total"], ok_last=a["last"]["ok"],
                           best_ms=a["last"]["best_ms"], last_at=a["last"]["at"],
                           dead_streak=a["streak"], vod_last=a["last"]["vod"],
-                          stuck_last=a["last"]["stuck"], fake_streak=a["fake"])
+                          stuck_last=a["last"]["stuck"], fake_streak=a["fake"],
+                          srcs=tuple(sorted(a["srcs"])))
             for name, a in acc.items()}
 
 
@@ -272,6 +286,209 @@ def blacklist(rep: dict[str, HostRep], min_runs: int = 2) -> list[HostRep]:
     """
     return sorted((r for r in rep.values() if r.runs >= min_runs and not r.ok_runs),
                   key=lambda r: (-r.runs, r.host))
+
+
+@dataclass(slots=True)
+class SourceRep:
+    """一个上游源在可信轮次里的账面：它贡献的主机族、线路数、通过情况。"""
+
+    source: str
+    hosts: int          # 它贡献（或参与贡献）的主机族数
+    runs: int           # 这些主机被可信实测看过几轮（取该源下最大的那个值）
+    lines: int          # 最近一轮它挂出来的线路数（共用主机会被两个源各算一次，宁粗不假）
+    ok_last: int        # 最近一轮这些线路里通了几条
+    dead_hosts: int     # 从来没通过过的主机数（不管看过几轮）
+    sentenced: int      # 其中看过 ≥min_runs 轮、因此真被判死刑的
+    fake_hosts: int     # 通了但整族只出录像/不动的主机数
+    best_ms: int        # 该源最快的一条主机族延迟，0 = 没有通过过的
+    shared: int         # 与别的源共用的主机族数（判「划掉这个源会不会连带伤到别人」）
+
+
+def source_reputation(rep: dict[str, HostRep], *, min_runs: int = 2) -> dict[str, SourceRep]:
+    """把主机级履历按上游源摊开 —— 「该划掉谁」从主机那一层升到 sources.yaml 那一层。
+
+    2.16 之前这一步根本做不了：`host_summary()` 只记主机，不记这条地址是从哪个源来的，
+    于是报告能说出「`stream1.freetv.fun` 0/36 整族失效」，却说不出「这是 `iptv_api_gd` 塞进来的」。
+    现在来源跟着履历一起攒（`HostRep.srcs`），2.16 之前那些轮没记，就单列在 `unattributed` 里，
+    不拿猜测充数。
+
+    >>> mk = lambda n, runs, ok_runs, srcs, total=3, best=0: HostRep(
+    ...     n, runs, ok_runs, total, 1 if ok_runs else 0, best, "x", 0, srcs=tuple(srcs))
+    >>> rep = {"a": mk("a", 2, 0, ["gd", "local"]), "b": mk("b", 3, 2, ["gd"], best=420),
+    ...        "c": mk("c", 1, 0, ["legacy"]), "d": HostRep("d", 2, 2, 4, 4, 0, "x", 0,
+    ...                                                     fake_streak=2, srcs=("gd",))}
+    >>> srs = source_reputation(rep, min_runs=2)
+    >>> sorted(srs)                       # `local` 也出来了：它和 gd 共用那一族
+    ['gd', 'legacy', 'local']
+    >>> srs["local"].hosts, srs["local"].shared, srs["local"].sentenced
+    (1, 1, 1)
+    >>> srs["gd"].hosts, srs["gd"].lines, srs["gd"].ok_last, srs["gd"].runs
+    (3, 10, 5, 3)
+    >>> srs["gd"].dead_hosts, srs["gd"].sentenced, srs["gd"].fake_hosts, srs["gd"].shared
+    (1, 1, 1, 1)
+    >>> srs["gd"].best_ms
+    420
+    >>> srs["legacy"].hosts, srs["legacy"].sentenced       # 只看过一轮，判不了死刑
+    (1, 0)
+    """
+    acc: dict[str, dict] = {}
+    for r in rep.values():
+        shared = len(r.srcs) > 1
+        for src in r.srcs:
+            a = acc.setdefault(src, {"hosts": 0, "runs": 0, "lines": 0, "ok_last": 0,
+                                     "dead": 0, "sentenced": 0, "fake": 0, "best": 0,
+                                     "shared": 0})
+            a["hosts"] += 1
+            a["runs"] = max(a["runs"], r.runs)
+            a["lines"] += r.total
+            a["ok_last"] += r.ok_last
+            a["best"] = min((x for x in (a["best"], r.best_ms) if x), default=0)
+            a["shared"] += 1 if shared else 0
+            if not r.ok_runs:
+                a["dead"] += 1
+                if r.runs >= min_runs:
+                    a["sentenced"] += 1
+            if r.fake_streak >= 1:
+                a["fake"] += 1
+    return {src: SourceRep(source=src, hosts=a["hosts"], runs=a["runs"], lines=a["lines"],
+                           ok_last=a["ok_last"], dead_hosts=a["dead"], sentenced=a["sentenced"],
+                           fake_hosts=a["fake"], best_ms=a["best"], shared=a["shared"])
+            for src, a in acc.items()}
+
+
+def unattributed_hosts(rep: dict[str, HostRep]) -> int:
+    """没记下来源的主机族数（2.16 之前那几轮履历的存量）。报告要如实说出这个窟窿有多大。
+
+    >>> rep = {"a": HostRep("a", 1, 1, 2, 2, 0, "x", 0),
+    ...        "b": HostRep("b", 1, 1, 2, 2, 0, "x", 0, srcs=("gd",))}
+    >>> unattributed_hosts(rep)
+    1
+    """
+    return sum(1 for r in rep.values() if not r.srcs)
+
+
+# 判「这个源该不该动」的两条线。为什么是这两个数：APTV 只播第一线，一个源的价值
+# 就是「它顶上来的东西能用吗」。可用率低于 1/5 的源，排得越靠前越坑电视；
+# 而 4/5 以上全通且快到 500ms 以内的，才是应该往前挪的那一类（计划书 2.10 的延迟分档）。
+DROP_RATE = 0.2      # 最近一轮可用率低于这个，且死刑族占多数 → 建议调后 / 关掉
+KEEP_RATE = 0.8      # 高于这个且够快 → 建议往前挪
+# 往前挪和整个关掉都是「拿这个源换别人」的决定，所以它们要比单纯降档多一点证据：
+# 一条线路的源哪怕两轮全通，也不够资格挤到别的源前面去（反过来，一条线路两轮全灭
+# 也不该建议把整源关掉 —— 那只会被 MIN_EVIDENCE_LINES 降成「调后」这种可逆的建议）。
+MIN_EVIDENCE_LINES = 3
+
+
+@dataclass(slots=True)
+class Suggestion:
+    """一条能直接抄进 `config/sources.yaml` 的建议。"""
+
+    source: str
+    verdict: str          # drop / demote / promote / keep / thin
+    from_prio: int
+    to_prio: int          # 与 from_prio 相同 = 不动
+    why: str
+    enabled: bool = True  # False = 建议整源关掉
+    confirmed: bool = True    # False = 只有一轮观测，先别动手
+
+    def yaml_lines(self) -> list[str]:
+        """抄进 `sources.yaml` 的那几行（含缩进，直接贴到对应 `- id:` 块里）。
+
+        >>> s = Suggestion("gd", "demote", 3, 5, "最近一轮 4/41 能播，11 族两轮以上全灭")
+        >>> print("\\n".join(s.yaml_lines()))
+            priority: 5        # 3→5：最近一轮 4/41 能播，11 族两轮以上全灭
+        >>> s2 = Suggestion("gd", "keep", 3, 3, "最近一轮 30/40 能播、最快 600ms", confirmed=False)
+        >>> print("\\n".join(s2.yaml_lines()))
+            priority: 3        # 不动：最近一轮 30/40 能播、最快 600ms  ← 只一轮观测，先别动手
+        >>> s3 = Suggestion("gd", "drop", 3, 3, "3 轮 0/41 能播，12 族全灭", enabled=False)
+        >>> print("\\n".join(s3.yaml_lines()))
+            enabled: false     # 3 轮 0/41 能播，12 族全灭
+            priority: 3        # 关掉之后这条留着，方便哪天想复测
+        """
+        if self.enabled is False:
+            return [f"    enabled: false     # {self.why}",
+                    f"    priority: {self.to_prio}        # 关掉之后这条留着，方便哪天想复测"]
+        tag = (f"{self.from_prio}→{self.to_prio}" if self.to_prio != self.from_prio else "不动")
+        tail = "" if self.confirmed else "  ← 只一轮观测，先别动手"
+        return [f"    priority: {self.to_prio}        # {tag}：{self.why}{tail}"]
+
+
+def priority_suggestions(srs: dict[str, SourceRep], *,
+                         current: dict[str, int], min_runs: int = 2) -> list[Suggestion]:
+    """按可信轮次的趋势，给出 `priority` / `enabled` 的调整建议。
+
+    三条纪律：**只建议不改动**（代码永远不自动删源，划源是人做的事，见计划书 §14）；
+    **一轮不判死刑**（`runs < min_runs` 一律 `confirmed=False`，因为 2.16 已经见过
+    同一批数字在两个出口下差出 11 个主机）；**共用主机不轻判**（一个源死刑族里的主机
+    要是别的源也在用，关掉它并不等于那些线路消失，所以只降 priority 不 drop）。
+
+    `current` 传 `sources.yaml` 里现有的 priority（id -> 数字）；没记录按 99 算。
+
+    >>> S = lambda n, runs, lines, ok, dead=0, sent=0, best=0, shared=0: SourceRep(
+    ...     n, 1, runs, lines, ok, dead, sent, 0, best, shared)
+    >>> srs = {"bad": S("bad", 3, 40, 2, dead=12, sent=11),
+    ...        "fast": S("fast", 3, 10, 10, best=180),
+    ...        "solo": S("solo", 1, 30, 3),
+    ...        "mixed": S("mixed", 2, 40, 30, dead=4, sent=3, best=600, shared=4)}
+    >>> cur = {"bad": 3, "fast": 9, "solo": 5, "mixed": 4}
+    >>> got = {s.source: s for s in priority_suggestions(srs, current=cur, min_runs=2)}
+    >>> (got["bad"].verdict, got["bad"].from_prio, got["bad"].to_prio)
+    ('demote', 3, 5)
+    >>> (got["fast"].verdict, got["fast"].to_prio, got["fast"].confirmed)
+    ('promote', 8, True)
+    >>> got["solo"].verdict, got["solo"].confirmed      # 只有一轮：给数不动手
+    ('thin', False)
+    >>> got["mixed"].verdict                            # 可用率 30/40=0.75，两头都不够，不动
+    'keep'
+    >>> got["mixed"].to_prio
+    4
+    >>> at0 = {"local": SourceRep("local", 1, 3, 4, 4, 0, 0, 0, 40, 0)}
+    >>> s0 = priority_suggestions(at0, current={"local": 0})[0]
+    >>> (s0.verdict, s0.to_prio)     # 手工源已经在最前面（priority 0），不再往前挤
+    ('keep', 0)
+    >>> dead_all = {"x": SourceRep("x", 5, 3, 20, 0, 5, 5, 0, 0, 0)}
+    >>> s = priority_suggestions(dead_all, current={"x": 2})[0]
+    >>> (s.verdict, s.enabled, s.to_prio)               # 一条都不通 → 整源关
+    ('drop', False, 2)
+    >>> tiny = {"y": SourceRep("y", 1, 3, 2, 0, 1, 1, 0, 0, 0)}
+    >>> s = priority_suggestions(tiny, current={"y": 2})[0]
+    >>> (s.verdict, s.enabled, s.to_prio)   # 只挂过 2 条线路就全灭：降档而已，不建议关源
+    ('demote', True, 4)
+    >>> fast_two = {"z": SourceRep("z", 1, 3, 2, 2, 0, 0, 0, 40, 0)}
+    >>> s = priority_suggestions(fast_two, current={"z": 5})[0]
+    >>> (s.verdict, s.to_prio)   # 3 轮 2/2 全通、40ms，但线路太少：不够资格往前挤
+    ('keep', 5)
+    >>> priority_suggestions({}, current={})
+    []
+    """
+    out: list[Suggestion] = []
+    for src, r in sorted(srs.items(), key=lambda kv: (-kv[1].lines, kv[0])):
+        cur = int(current.get(src, 99))
+        rate = (r.ok_last / r.lines) if r.lines else 0.0
+        confirmed = r.runs >= min_runs
+        # 「关掉整源」和「往前挪」都是拿这个源换别人的决定，比单纯降档要多一点证据：
+        # 只挂过 1~2 条线路的源，两轮全灭也只降档（可逆），两轮全通也不往前挤。
+        enough = r.lines >= MIN_EVIDENCE_LINES
+        if r.lines and not r.ok_last and enough:
+            v, to, en = "drop", cur, False
+            why = (f"{r.runs} 轮 {r.ok_last}/{r.lines} 能播，{r.dead_hosts} 族从没通过过"
+                   + (f"（其中 {r.sentenced} 族已两轮以上全灭）" if r.sentenced else ""))
+        elif rate < DROP_RATE and r.sentenced and not r.shared:
+            v, to, en = "demote", cur + 2, True
+            why = (f"最近一轮 {r.ok_last}/{r.lines} 能播，{r.sentenced} 族两轮以上全灭"
+                   f"（共 {r.runs} 轮观测）")
+        elif rate >= KEEP_RATE and r.best_ms and r.best_ms <= 500 and not r.fake_hosts \
+                and cur > 1 and enough:
+            # cur <= 1 就不往前挪了：手工源 `local` 的 priority 是 0（同条件下它最优先），
+            # 再减 1 只会把一个已经在最前面的源挤到别的位置上，方向反了。
+            v, to, en = "promote", cur - 1, True
+            why = f"{r.runs} 轮里 {r.ok_last}/{r.lines} 能播、最快 {r.best_ms}ms"
+        else:
+            v, to, en = ("thin" if not confirmed else "keep"), cur, True
+            why = (f"最近一轮 {r.ok_last}/{r.lines} 能播、最快 {r.best_ms or '—'}ms"
+                   + (f"，{r.dead_hosts} 族没通过过" if r.dead_hosts else ""))
+        out.append(Suggestion(source=src, verdict=v, from_prio=cur, to_prio=to, why=why,
+                              enabled=en, confirmed=confirmed))
+    return out
 
 
 def run_totals(runs: list[dict], *, current_egress: str = "", limit: int = 10) -> list[dict]:

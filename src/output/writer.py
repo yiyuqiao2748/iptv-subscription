@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from src.check.history import Suggestion  # 建议行的格式只有一份实现（2.17）
+
 _M3U_ATTRS = ("tvg-id", "tvg-name", "tvg-logo", "group-title")
 
 # 报告里的可达范围表：key 与 config/reachability.yaml 的分档同名
@@ -54,10 +56,119 @@ def _stamp(at: str) -> str:
     return str(at)[:16].replace("T", " ")
 
 
+_VERDICT_LABEL = {
+    "drop": "**建议关掉**", "demote": "建议往后挪", "promote": "建议往前挪",
+    "keep": "不动", "thin": "先看一轮",
+}
+
+
+def _source_section(h: dict) -> list[str]:
+    """把主机那一层的「该划掉谁」摊到上游源上，并给出能直接抄的 `sources.yaml` 行。
+
+    判据全在 `history.priority_suggestions()`，这里只负责说人话。
+    一条都不建议的时候也要把「为什么没有」讲出来 —— 空表容易被读成「功能没跑」。
+
+    >>> S = dict(source="gd", verdict="demote", from_prio=3, to_prio=5,
+    ...          why="最近一轮 4/41 能播，11 族两轮以上全灭", enabled=True, confirmed=True)
+    >>> h = {"sources": [{"source": "gd", "hosts": 12, "runs": 3, "lines": 41, "ok_last": 4,
+    ...                   "dead_hosts": 12, "sentenced": 11, "fake_hosts": 0, "best_ms": 0,
+    ...                   "shared": 1}],
+    ...      "suggestions": [S], "unattributed": 7}
+    >>> sec = _source_section(h)
+    >>> "按上游源摊开" in "\\n".join(sec)
+    True
+    >>> "3→5" in "\\n".join(sec) and "`gd`" in "\\n".join(sec)
+    True
+    >>> "```yaml" in sec                     # 有可抄的行才开代码块
+    True
+    >>> "# - id: gd" in sec                  # 每段前面点名它属于哪个源
+    True
+    >>> sum(1 for x in sec if x.startswith("    priority"))
+    1
+    >>> "2.17 之前" in "\\n".join(sec)        # 没记来源的那些要如实说出来
+    True
+    >>> keep = {**h, "suggestions": [{**S, "verdict": "keep", "to_prio": 3}]}
+    >>> "没有任何一个源达到动手的标准" in "\\n".join(_source_section(keep))
+    True
+    >>> bfb = {**h, "srcs_backfilled": ["2026-09-21T13:00"]}
+    >>> "事后补记" in "\\n".join(_source_section(bfb))      # 出处是重算的，得说清楚
+    True
+    >>> "事后补记" in "\\n".join(_source_section(keep))     # 没补记就不提
+    False
+    >>> both = {**h, "never_measured": ["gd", "carrier"]}
+    >>> sec = "\\n".join(_source_section(both))
+    >>> "`carrier`" in sec and "`gd`）" not in sec
+    True
+    >>> _source_section({"sources": [], "suggestions": []})
+    []
+    """
+    srs = h.get("sources") or []
+    sugg = h.get("suggestions") or []
+    by_src = {g["source"]: g for g in sugg}
+    out: list[str] = []
+    if srs:
+        out += ["", f"### 按上游源摊开（{len(srs)} 个源在可信轮次里留了记录）", "",
+                "| 源 | 主机族 | 观测轮数 | 最近一轮能播 | 全灭族 | 已判死 | 与他人共用 | 最快 | 建议 |",
+                "|---|---|---|---|---|---|---|---|---|"]
+        for s in srs:
+            g = by_src.get(s["source"]) or {}
+            mark = _VERDICT_LABEL.get(g.get("verdict", ""), "—")
+            if g and not g.get("confirmed", True):
+                mark += "（只一轮，先别动）"
+            out.append(f"| `{s['source']}` | {s['hosts']} | {s['runs']} | "
+                       f"{s['ok_last']}/{s['lines']} | {s['dead_hosts']} | {s['sentenced']} | "
+                       f"{s['shared']} | {str(s['best_ms']) + 'ms' if s['best_ms'] else '—'} | "
+                       f"{mark} |")
+    moves = [g for g in sugg if g["to_prio"] != g["from_prio"] or g.get("enabled") is False]
+    if srs:
+        if moves:
+            out += ["", "要动就照抄这几行（每个源一段，贴回 `config/sources.yaml` 对应 `- id:` "
+                    "那一块，缩进已经对好了）——**代码不会自己改这个文件**，"
+                    "改完重跑一次生成来对账：", "", "```yaml"]
+            for g in moves:
+                out += [f"# - id: {g['source']}"] + Suggestion(**g).yaml_lines()
+            out += ["```"]
+        else:
+            out += ["", "> 没有任何一个源达到动手的标准：要么只看过一轮，"
+                    "要么可用率卡在两头都不够的中间（<1/5 才建议往后挪，≥4/5 且 500ms 内才建议往前挪）。"
+                    "这张表只提建议，划源仍然是人做的事（计划书 §14）。"]
+    bf = h.get("srcs_backfilled") or []
+    if srs and bf:
+        out += ["", f"> 出处这一列有 {len(bf)} 轮（{'、'.join(bf)}）是**事后补记**的："
+                "「这条地址出自哪个上游」不是测出来的，是把当时那份上游缓存重算了一遍"
+                "（`scripts/backfill_srcs.py`，对不上出处的宁可留空）。"
+                "能播几条、几毫秒那些数字仍是当时实测的。"]
+    if h.get("unattributed"):
+        out += ["", f"> 另有 {h['unattributed']} 个主机族在履历里**没有来源记录**"
+                "（2.17 之前那几轮的存量），它们不进上面这张表、也不会被建议动 —— "
+                "在家里补跑一次 `build --verify` 就全补上了。"]
+    # 已经在这张表里的源不再列入「从不实测」：那只可能是它以前开着 probe、后来关掉了，
+    # 同一份报告里不能既说它没数据又说它 49 族全灭。
+    nm = [x for x in (h.get("never_measured") or []) if x not in {s["source"] for s in srs}]
+    if srs and nm:
+        out += ["", f"> `probe: false` 的源（{'、'.join(f'`{x}`' for x in nm)}）**从不实测**，"
+                "所以根本不在这张表里 —— 它们是运营商 IPTV 专网，电脑侧量不到，"
+                "该由真机判（计划书 2.9/2.12）。别把「表里没它」读成「它没问题」。"]
+    return out
+
+
 def _history_section(h: dict) -> list[str]:
     """渲染「主机可用性履历」：每轮趋势 + 该从候选里划掉谁。
 
     单独成函数只为了让 format_report 保持可读；判据都在 src/check/history.py。
+
+    >>> base = {"runs": 2, "used": 2, "egress": "U", "totals": [], "blacklist": [],
+    ...         "sources": [], "suggestions": [], "demote": ["a.example"], "fake": [],
+    ...         "rolls": {"checked": 0, "stuck": 0}, "latency_hosts": 3,
+    ...         "stale_first_lines": 0, "verified": False}
+    >>> off = "\\n".join(_history_section(base))
+    >>> "本轮生成用到履历的地方" in off and "会被来源优先级挤掉" in off
+    True
+    >>> on = "\\n".join(_history_section({**base, "verified": True}))
+    >>> "本轮生成用到履历的地方" in on          # 实测那一轮不能这么写
+    False
+    >>> "每条线路都实测过" in on and "挤掉）" not in on
+    True
     """
     out = ["", "## 主机可用性履历（离线生成时靠它排序）", ""]
     who = f"- 累计 **{h['runs']} 轮**实测，采用 {h['used']} 轮（判据出口 `{h['egress'] or '未知'}`）"
@@ -89,6 +200,10 @@ def _history_section(h: dict) -> list[str]:
                 "所以要两轮以上从没通过过才判它死刑。",
                 "> 划掉的动作是人做的：把 `config/sources.yaml` 里贡献这些主机的源 "
                 "`enabled: false` 或调高 `priority`，代码不自动删源。"]
+    out += _source_section(h)
+    # 这一段在「本轮没实测」时才是排序的真正依据：`--verify` 那一轮每条线路都量过了，
+    # 履历判据只落在 `probe: false` 那几条压根没测的线路上，写成「本轮靠它排序」就是假话。
+    measured = bool(h.get("verified"))
     bits = []
     if h.get("demote"):
         bits.append(f"把 {len(h['demote'])} 个整族失效的主机往后压了档："
@@ -107,9 +222,14 @@ def _history_section(h: dict) -> list[str]:
                     "（整族那一档要求「通了的全是录像」，一条不动不够）")
     if h.get("latency_hosts"):
         bits.append(f"{h['latency_hosts']} 个主机按上一轮实测延迟补了位"
-                    "（不补的话，本轮没实测，最好的那条会被来源优先级挤掉）")
+                    + ("" if measured else
+                       "（不补的话，本轮没实测，最好的那条会被来源优先级挤掉）"))
     if bits:
-        out += ["", "> 本轮生成用到履历的地方：" + "；".join(bits) + "。"]
+        lead = ("> 履历里另有这些判据" if measured else "> 本轮生成用到履历的地方")
+        out += ["", lead + "：" + "；".join(bits) + "。"]
+        if measured:
+            out[-1] += ("（本轮每条线路都实测过，所以它们只作用在 `probe: false` "
+                        "那几条压根没测的线路上）")
         if h.get("stale_first_lines"):
             out[-1] += (f"第一线仍落在已知失效主机上的频道 {h['stale_first_lines']} 个 —— "
                         "那些台只有这一条公网线路，没有更好的可以换。")

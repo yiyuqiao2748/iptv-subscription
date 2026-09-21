@@ -75,12 +75,12 @@ def write_roll_history(pairs: list[tuple[str, dict]], *, path: Path) -> int:
     if not verdicts:
         print("\n  没有一条线路拿到内容结论（全是取不到或没跟到变体），履历不动。")
         return 1
-    warns = measurement_warnings()
     egress = egress_hint()
+    warns = measurement_warnings(egress)   # 传出口：fake-IP 之外还看出口国家码
     if warns:
         print(f"\n⚠️ 没有回写履历：{warns[0]}")
-        print("   代理 TUN 一开，「列表不动」更可能是隧道掐了而不是源停了，"
-              "写进去会把家里能播的主机冤枉掉。要么关掉 TUN 重跑，要么就别加 --to-history。")
+        print("   代理在出口（TUN 或系统代理）一开，「列表不动」更可能是隧道掐了而不是源停了，"
+              "写进去会把家里能播的主机冤枉掉。要么把代理整个关掉重跑，要么就别加 --to-history。")
         return 2
     runs = hist.load_history(path)
     at = datetime.now().astimezone().isoformat(timespec="seconds")

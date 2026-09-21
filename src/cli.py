@@ -26,6 +26,11 @@
 出口身份和逐条结果一起写进 data/output/probe.json。
 2026-09-21 起：TUN 关掉后本机出口就是家里的联通宽带，与 Apple TV 同一张网，
 这时的实测数字可以直接当判据。
+
+体检报警的那一轮 `--verify` 只写履历，产物（两张 m3u + probe.json + report.md）关进
+`data/output/untrusted/`，`data/output/` 保持上一轮可信版本 —— 因为 `--verify` 会删线路，
+而局域网服务正把 `data/output/` 当订阅目录发给电视（见 `artifact_dir()`）。
+确实要在别的测量点上出表就加 `--allow-untrusted`。
 """
 
 from __future__ import annotations
@@ -122,6 +127,42 @@ def judgment_egress(egress: str, warns: list[str], runs: list[dict], *, measured
     if measured and egress and not warns:
         return egress
     return hist.current_egress("", runs)
+
+
+UNTRUSTED = "untrusted"
+
+
+def artifact_dir(out_dir: Path | str, *, warns: list[str], measured: bool,
+                 force: bool = False) -> tuple[Path, bool]:
+    """这一轮的产物该落在哪个目录，以及是不是被隔离了。
+
+    `judgment_egress()` 已经保证「体检报警的轮次不参与排序判据」，但那只管到排序为止：
+    `--verify` 还会**实测剔除失效线路**并覆盖 `aptv.m3u` / `hunan.m3u` / `probe.json` /
+    `report.md`，而 `scripts/serve_lan.py` 正把 `data/output/` 当订阅目录发给电视。
+    于是 2026-09-21 夜发生过一次：TUN 开着补跑一轮实测（73 条被假阴性判死），
+    电视拿到的那张表当场换成了境外机房视角的版本 —— 履历没错，错在产物。
+
+    所以报警的那一轮只写履历（留着看变化），产物关进 `out_dir/untrusted/`，
+    `data/output/` 保持上一轮可信版本原样不动。真要在外网出口上出表就 `force=True`。
+
+    >>> def probe(warns, measured, force=False, out="/o"):
+    ...     d, q = artifact_dir(out, warns=warns, measured=measured, force=force)
+    ...     return (d.name, q)
+    >>> probe([], True)                       # 体检干净的实测：照常落在 data/output
+    ('o', False)
+    >>> probe(["TUN 已开启"], True)             # 报警的实测：隔离
+    ('untrusted', True)
+    >>> probe(["TUN 已开启"], True, force=True)  # 明知故犯的出口
+    ('o', False)
+    >>> probe(["TUN 已开启"], False)            # 离线生成没做实测，无本轮结果可污染
+    ('o', False)
+    >>> str(artifact_dir("/o/sub", warns=["w"], measured=True)[0]).replace("\\\\", "/")
+    '/o/sub/untrusted'
+    """
+    base = Path(out_dir)
+    if measured and warns and not force:
+        return base / UNTRUSTED, True
+    return base, False
 
 
 def host_latency(rep: dict[str, hist.HostRep]) -> dict[str, int]:
@@ -432,7 +473,8 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     return channels, unmatched, excluded, dead, results, stale_hits
 
 
-def host_summary(results: dict[str, ProbeResult], reach: Reachability) -> list[dict]:
+def host_summary(results: dict[str, ProbeResult], reach: Reachability,
+                 src_of: dict[str, list[str]] | None = None) -> list[dict]:
     """把逐条实测按主机汇总：回答「哪个主机族在家里这张网里是死的、哪些是活的但放的是录像」。
 
     这一步是实测真正的产出。只报「可用 215/330」没法定下一步 ——
@@ -443,28 +485,40 @@ def host_summary(results: dict[str, ProbeResult], reach: Reachability) -> list[d
     `vod` 那一列是同一件事的第二半：连着且有分片、内容却是循环录像的条数。
     它决定的是「离线重出表时这个主机还能不能占第一线」，见 history.fake_hosts。
 
-    返回按（可达范围、失效数倒序）排好的行：host/scope/total/ok/best_ms/vod。
+    `src_of` 是 2.17 加的第三半：**这一族是谁塞进来的**。没有它，报告说得出
+    「`stream1.freetv.fun` 0/36 整族失效」却说不出该动 `sources.yaml` 里哪一行。
+    一台主机可以挂在多个源下（聚合源之间互相抄），所以是个列表，原样存进履历。
+
+    返回按（可达范围、失效数倒序）排好的行：host/scope/total/ok/best_ms/vod/srcs。
 
     >>> r = Reachability([".dead.example"])
     >>> res = {"http://a.example/1.m3u8": ProbeResult(True, 200, 100, 3, "", "live"),
     ...        "http://a.example/2.m3u8": ProbeResult(True, 200, 120, 900, "", "vod"),
     ...        "http://dead.example/x.m3u8": ProbeResult(False, 0, 5000, 0, "timeout")}
     >>> for row in host_summary(res, r):
-    ...     print(row["host"], row["scope"], f"{row['ok']}/{row['total']}", row["vod"])
-    a.example public 2/2 1
-    dead.example iptv_intranet 0/1 0
+    ...     print(row["host"], row["scope"], f"{row['ok']}/{row['total']}", row["vod"], row["srcs"])
+    a.example public 2/2 1 []
+    dead.example iptv_intranet 0/1 0 []
+    >>> rows = host_summary(res, r, {"http://a.example/1.m3u8": ["gd"],
+    ...                              "http://dead.example/x.m3u8": ["gd", "local"]})
+    >>> [(x["host"], x["srcs"]) for x in rows]      # 同一主机的来源去重后按名字排
+    [('a.example', ['gd']), ('dead.example', ['gd', 'local'])]
     """
     agg: dict[str, dict] = {}
+    src_of = src_of or {}
     for url, r in results.items():
         host = urlsplit(url).hostname or url[:16]
         a = agg.setdefault(host, {"host": host, "scope": reach.scope(url),
-                                  "total": 0, "ok": 0, "best_ms": 0, "vod": 0})
+                                  "total": 0, "ok": 0, "best_ms": 0, "vod": 0, "srcs": set()})
+        a["srcs"] |= set(src_of.get(url) or [])
         a["total"] += 1
         if r.ok:
             a["ok"] += 1
             a["best_ms"] = r.ms if not a["best_ms"] else min(a["best_ms"], r.ms)
             if is_fake_live(r):
                 a["vod"] += 1
+    for a in agg.values():
+        a["srcs"] = sorted(a["srcs"])
     return sorted(agg.values(),
                   key=lambda a: (RANK[a["scope"]], -a["total"], a["host"]))
 
@@ -506,6 +560,8 @@ def cmd_build(argv: list[str]) -> int:
                          "（默认 data/output/probe-history.jsonl）")
     ap.add_argument("--ignore-history", action="store_true",
                     help="完全不看履历，只按本轮（或无本轮）的结果排 —— 复现旧行为、排查降档本身时用")
+    ap.add_argument("--allow-untrusted", action="store_true",
+                    help="明知故犯：体检报警也照旧覆盖 data/output/（默认会把产物关进 untrusted/）")
     args = ap.parse_args(argv)
 
     sources = (
@@ -531,11 +587,11 @@ def cmd_build(argv: list[str]) -> int:
 
     # 实测履历：判据只认「体检没报警」的那些轮，而参照出口由 judgment_egress() 定
     # （表是给电视用的，开发机代理在哪不影响这个依据）。
-    # 出口身份现查一次就够，屏幕、probe.json、落盘都用它，别重复查。
-    warns = measurement_warnings() if args.verify else []   # 只查一次，后面三处复用
+    # 出口身份现查一次就够，屏幕、probe.json、落盘、体检都用它，别重复查。
     history_path = Path(args.history)
     runs = hist.load_history(history_path)
     egress = egress_hint()
+    warns = measurement_warnings(egress) if args.verify else []   # 只查一次，后面几处复用
     if not runs and not history_path.exists():
         old = Path(args.out) / "probe.json"
         try:
@@ -547,6 +603,14 @@ def cmd_build(argv: list[str]) -> int:
             runs = hist.load_history(history_path)
             print(f"已把上一版留下的 {old.name} 补为第 1 轮履历（{adopted['at'][:16]}）")
     point = judgment_egress(egress, warns, runs, measured=bool(args.verify))
+    # 报警那一轮的产物不进订阅目录（理由见 artifact_dir()）；履历照旧追加。
+    trusted_dir = Path(args.out)
+    out_dir, quarantined = artifact_dir(trusted_dir, warns=warns, measured=bool(args.verify),
+                                        force=args.allow_untrusted)
+    try:
+        trusted_rel = trusted_dir.relative_to(ROOT)
+    except ValueError:
+        trusted_rel = trusted_dir
     rep = hist.reputation(runs, current_egress=point) if not args.ignore_history else {}
     stale = hist.demote_hosts(rep) if not args.ignore_history else frozenset()
     fake = hist.fake_hosts(rep) if not args.ignore_history else frozenset()
@@ -554,6 +618,9 @@ def cmd_build(argv: list[str]) -> int:
     rolls = hist.merge_rolls(runs, current_egress=point) if not args.ignore_history else {}
     rep_now = rep            # 落盘新那一轮之后会被换成最新的履历，用来判"该划掉谁"
     dropped = len(hist.untrusted_runs(runs, current_egress=point))
+    # 来源 -> 现在的 priority：既给频道内排序用，也给 2.17 的「建议调到几」当基准
+    src_prio = {**{s["id"]: s.get("priority", i + 1) for i, s in enumerate(sources)},
+                LOCAL_ID: 0}   # 手工源是人工确认过出处的，同条件下优先
 
     if args.verify:
         for warn in warns:
@@ -573,8 +640,7 @@ def cmd_build(argv: list[str]) -> int:
         verify=args.verify, timeout=args.timeout, workers=args.workers,
         max_per_host=args.max_per_host,
         skip_verify=[s["id"] for s in sources if not s.get("probe", True)],
-        source_priority={**{s["id"]: s.get("priority", i + 1) for i, s in enumerate(sources)},
-                         LOCAL_ID: 0},   # 手工源是人工确认过出处的，同条件下优先
+        source_priority=src_prio,
         reach=reach,
         stale_hosts=stale,
         fake_hosts=fake,
@@ -585,7 +651,6 @@ def cmd_build(argv: list[str]) -> int:
     present = {c.name for c in channels}
     empty = [(r.name, index.group_title(r.group)) for r in index.rules if r.name not in present]
 
-    out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     epg = epg_urls[0] if epg_urls else ""
 
@@ -629,7 +694,14 @@ def cmd_build(argv: list[str]) -> int:
     # 实测结果落盘：probe.json 是这一轮的快照（会被下一轮覆盖），
     # probe-history.jsonl 是它攒下来的履历 —— 离线生成、趋势判断都看后者。
     # 两边都记 egress + 体检警告，因为换一个测量点这些数字就不是同一个意思了。
-    hosts = host_summary(results, reach) if args.verify else []
+    # src_of：这条地址是哪个上游塞进来的，2.17 起跟着履历一起攒，
+    # 不然报告只能说出「这一族全灭」，说不出「所以该动 sources.yaml 里哪一行」。
+    url_srcs: dict[str, set[str]] = defaultdict(set)
+    for e in entries:
+        if e.source:
+            url_srcs[e.url].add(e.source)
+    src_of = {u: sorted(s) for u, s in url_srcs.items()}
+    hosts = host_summary(results, reach, src_of) if args.verify else []
     if args.verify:
         at = datetime.now().astimezone().isoformat(timespec="seconds")
         (out_dir / "probe.json").write_text(json.dumps({
@@ -652,6 +724,9 @@ def cmd_build(argv: list[str]) -> int:
               + f"（累计 {len(runs)} 轮，判据出口：{point or '未知'}）")
 
     trend = hist.run_totals(runs, current_egress=point)
+    # 主机那一层的「该划掉谁」摊到上游源那一层，再落成能抄进 sources.yaml 的一行（2.17）
+    srs = hist.source_reputation(rep_now, min_runs=2)
+    sugg = hist.priority_suggestions(srs, current=src_prio, min_runs=2)
     history_note = {
         "runs": len(runs),
         "used": len(trend),
@@ -660,6 +735,14 @@ def cmd_build(argv: list[str]) -> int:
         "build_egress": egress if egress != point else "",
         "totals": trend,
         "blacklist": [asdict(r) for r in hist.blacklist(rep_now)],
+        "sources": [asdict(x) for x in sorted(srs.values(), key=lambda x: (-x.lines, x.source))],
+        "suggestions": [asdict(x) for x in sugg],
+        "unattributed": hist.unattributed_hosts(rep_now),
+        # 事后补记过来源的那几轮（scripts/backfill_srcs.py）：报告得说清这些出处不是测出来的。
+        # 只数真被采用的轮 —— 报警那轮补没补记过，跟这张表没关系。
+        "srcs_backfilled": sorted({str(r.get("at") or "")[:16] for r in runs
+                                   if r.get("srcs_note") and hist.trustworthy(r, point)}),
+        "never_measured": [str(s["id"]) for s in sources if not s.get("probe", True)],
         "demote": sorted(stale),
         "fake": sorted(fake),
         "rolls": {"checked": len(rolls),
@@ -669,6 +752,12 @@ def cmd_build(argv: list[str]) -> int:
         "verified": bool(args.verify),
     } if runs or args.verify else None
 
+    verify_note = (f"--verify 实测剔除失效 {dead} 条" if args.verify else
+                   "本次未做线路实测，列表里的线路可用性以 Apple TV 实际播放为准")
+    if quarantined:
+        verify_note += (f"。⚠️ 本轮体检报警（出口 {egress or '未取到'}），被剔的那些多半是假阴性，"
+                        f"所以这份表只落在 {UNTRUSTED}/ 里当排查用，"
+                        f"{trusted_rel} 那张仍是上一轮可信版本")
     report = format_report(
         sources=[f"{s['id']} ← {s['target']}" for s in sources] + (
             [f"{LOCAL_ID} ← {LOCAL_SOURCES_FILE.relative_to(ROOT)}"
@@ -678,8 +767,7 @@ def cmd_build(argv: list[str]) -> int:
         unmatched=unmatched,
         defined_but_empty=empty,
         epg_url=epg,
-        verify_note=(f"--verify 实测剔除失效 {dead} 条" if args.verify else
-                     "本次未做线路实测，列表里的线路可用性以 Apple TV 实际播放为准"),
+        verify_note=verify_note,
         line_scope=line_scope,
         no_public=no_public,
         fake_live=fake_live,
@@ -689,6 +777,11 @@ def cmd_build(argv: list[str]) -> int:
     (out_dir / "report.md").write_text(report, encoding="utf-8")
 
     print(f"\n输出到 {out_dir}")
+    if quarantined:
+        print(f"  ⚠️ 体检报警的这一轮不碰订阅目录：上面这些文件写在 {UNTRUSTED}/ 里，"
+              f"{trusted_rel} 保持上一轮可信版本 —— 局域网服务发的还是那张表。")
+        print("  要给电视换表：关掉代理客户端的 TUN/系统代理再跑一次 build --verify"
+              "（明知故犯就加 --allow-untrusted）")
     print(f"  aptv.m3u  : {len(channels)} 个频道 / {sum(len(c.urls) for c in channels)} 条线路")
     print(f"  hunan.m3u : {len(hunan)} 个频道 / {sum(len(c.urls) for c in hunan)} 条线路")
     if lean:
@@ -702,7 +795,7 @@ def cmd_build(argv: list[str]) -> int:
         print(f"  ⚠️ 第一线是循环录像的频道 {len(fake_live)} 个（有画但不是直播）："
               + "、".join(fake_live))
     if hosts:
-        print(f"  实测出口：{egress or '未取到'}（详情见 data/output/probe.json）")
+        print(f"  实测出口：{egress or '未取到'}（详情见 {out_dir / 'probe.json'}）")
         bad = [h for h in hosts if h["ok"] < h["total"]]
         for h in bad[:8]:
             print(f"    ⚠️ {h['host']:<34} 可用 {h['ok']}/{h['total']}"
@@ -724,8 +817,21 @@ def cmd_build(argv: list[str]) -> int:
         if h["blacklist"]:
             print("    ⚠️ 连续两轮以上从没通过过的："
                   + "、".join(f"{r['host']}（{r['runs']} 轮全灭）" for r in h["blacklist"][:6])
-                  + " —— 它们贡献的「公网线路」等于不存在，"
-                    "考虑从 sources.yaml 候选里划掉或调低 priority")
+                  + " —— 它们贡献的「公网线路」等于不存在")
+        moves = [g for g in h["suggestions"]
+                 if g["to_prio"] != g["from_prio"] or g["enabled"] is False]
+        if h["sources"]:
+            print(f"  源级趋势：{len(h['sources'])} 个源在可信轮次里留了记录"
+                  + (f"，{len(moves)} 个够得上动手的标准：" + "、".join(
+                        f"`{g['source']}` "
+                        + ("整源关掉" if g["enabled"] is False
+                           else f"{g['from_prio']}→{g['to_prio']}")
+                        for g in moves[:4]) if moves else "，没有一个够得上动手的标准"))
+            print("    能直接抄进 `config/sources.yaml` 的那几行在 report.md"
+                  " 的「按上游源摊开」那一节 —— 代码不自己改这个文件")
+        elif h["unattributed"]:
+            print(f"  源级趋势：还摊不开 —— 履历里 {h['unattributed']} 个主机族没记来源"
+                  "（2.17 之前的轮次），在家里补跑一次 build --verify 就齐了")
     print(f"  丢弃：黑名单 {excluded} 条，未匹配 {sum(unmatched.values())} 条"
           + (f"，实测失效 {dead} 条" if args.verify else ""))
     if not args.verify:
