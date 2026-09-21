@@ -9,18 +9,27 @@
 
 产物在 data/output/：aptv.m3u（全量）、hunan.m3u（只有湖南本地）、report.md。
 
-注意：联网抓取与 --verify 实测都从本机出口出去。这台开发机的出口被隧道接管，
-对国内运营商内网类地址会给出假阴性，测出来的可用率只能当参考。
+同一频道的多条线路按「可达范围」+「实测延迟」排先后（范围规则在 config/reachability.yaml），
+公网且快的排第一，因为 APTV 默认只播第一条；运营商 IPTV 内网地址和电台冒充项退居备选。
+
+注意：联网抓取与 --verify 实测都从本机出口出去，所以测量点是谁必须先说清楚。
+代理客户端的 TUN 一开，DNS 就被换成 fake-IP、出口跑到境外机房，对国内运营商类地址
+全是假阴性（计划书 2.8）。跑 --verify 前会先做体检并把警告打在屏幕上，
+出口身份和逐条结果一起写进 data/output/probe.json。
+2026-09-21 起：TUN 关掉后本机出口就是家里的联通宽带，与 Apple TV 同一张网，
+这时的实测数字可以直接当判据。
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import re
 import sys
 import urllib.request
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote, urlsplit
@@ -35,23 +44,46 @@ sys.path.insert(0, str(ROOT))
 
 import yaml  # noqa: E402
 
+from src.check.env import egress_hint, measurement_warnings  # noqa: E402
 from src.check.prober import ProbeResult, probe_many  # noqa: E402
+from src.check.scope import (  # noqa: E402
+    AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
 from src.match.matcher import load_index  # noqa: E402
 from src.match.normalize import quality_hint  # noqa: E402
 from src.output.writer import OutputChannel, format_m3u, format_report  # noqa: E402
 from src.parse.m3u import Entry, parse_m3u  # noqa: E402
 
 SOURCES_FILE = ROOT / "config" / "sources.yaml"
+REACH_FILE = ROOT / "config" / "reachability.yaml"
 CACHE_DIR = ROOT / "data" / "cache"
 HUNAN_GROUPS = ("hunan_local", "changsha", "shizhou", "jinying")
 _RANK = {"4K": 4, "FHD": 3, "HD": 2, "SD": 1, "": 0}
+_LATENCY_TIERS = ((400, 0), (1000, 1))    # 毫秒 -> 档位；超过上限算 2
 
 # 带签名/鉴权参数的私有流：URL 里绑死了抓取方的 IP、账号哈希和有效期，
 # 别人拿到一定播不了（咪咕那类），而且属于计划书划定的红线（不盗链需鉴权私有流），
 # 一律不进订阅列表。
 _AUTH_URL = re.compile(
     r"SecurityKey=|ddCalcu=|msisdn=|assertID=|auth_key=|wsTime=|txypb=|"
-    r"token=|[?&]u=[0-9a-f]{16,}", re.I)
+    r"token=|accountinfo=|[?&]u=[0-9a-f]{16,}", re.I)
+
+
+def latency_tier(r: ProbeResult | None) -> int:
+    """把实测延迟压成三档，作为可达范围之后的第二个排序键。
+
+    没实测（返回 None）给中间档 1，不偏袒也不惩罚。
+    只分档不按原始毫秒排，是因为单次抖动几毫秒很常见，直接用毫秒会让整张表顺序乱跳。
+
+    >>> latency_tier(None), latency_tier(ProbeResult(True, 200, 210, 3)), \
+        latency_tier(ProbeResult(True, 200, 1271, 3))
+    (1, 0, 2)
+    """
+    if r is None:
+        return 1
+    for limit, tier in _LATENCY_TIERS:
+        if r.ms < limit:
+            return tier
+    return 2
 
 
 def load_sources(path: Path, *, fresh: bool) -> list[dict]:
@@ -111,7 +143,8 @@ def collect(sources: Iterable[dict | str]) -> tuple[list[Entry], list[str]]:
 def aggregate(entries: list[Entry], index, max_lines: int, *,
               verify: bool = False, timeout: int = 12, workers: int = 20,
               max_per_host: int = 2, skip_verify: Iterable[str] = (),
-              source_priority: dict[str, int] | None = None):
+              source_priority: dict[str, int] | None = None,
+              reach: Reachability):
     """归位 + 合并多线路 + 同源收敛 + 排序 + 截断（可选实测过滤）。
 
     max_per_host 用来治「一个频道的 5 条线路其实全来自同一个失效主机」——
@@ -119,8 +152,15 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
 
     skip_verify 里的来源 id 是「开发机测不准」的运营商内网源，实测时原样保留。
 
-    source_priority 决定同一频道里线路的先后：APTV 默认播第一条，所以
-    家里宽带同运营商的源必须排在最前，其次才是清晰度。
+    排序主键是可达范围，其次才是实测延迟、来源优先级和清晰度：APTV 默认只播第一条线路，
+    所以「电视够不到的地址」必须让位给公网线路。上一版把来源优先级当主键，
+    覆盖最全的 hn_unicom/hn_mobile 于是吃掉了 39/39 个湖南频道的第一顺位，
+    真机观感就是整张表全超时。内网线路不删，只是排到后面当备选。
+
+    延迟档是 2026-09-21 补的第二键。同一批公网线路里，美国机房中转（845~1271ms）
+    和湖南广电官方公网流 hlsal-ldvt.qing.mgtv.com（210ms）当时是并列的，
+    结果 max_lines=3 把那条最该留的官方流挤掉了 —— 只判「通不通」不够，
+    还得让快的排前面，尤其是电视要拿它连续播几个小时。
     """
     skip_verify = set(skip_verify)
     prio = source_priority or {}
@@ -181,7 +221,8 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     for (group, name), b in buckets.items():
         ordered = sorted(
             b["lines"],
-            key=lambda e: (prio.get(e.source, 99),
+            key=lambda e: (reach.rank(e.url), latency_tier(results.get(e.url)),
+                           prio.get(e.source, 99),
                            -_RANK.get(quality_hint(f"{e.name} {e.url}"), 0),
                            e.seq),
         )
@@ -214,7 +255,30 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
         )
 
     channels.sort(key=lambda c: c.order)
-    return channels, unmatched, excluded, dead
+    return channels, unmatched, excluded, dead, results
+
+
+def host_summary(results: dict[str, ProbeResult], reach: Reachability) -> list[dict]:
+    """把逐条实测按主机汇总：回答「哪个主机族在家里这张网里是死的」。
+
+    这一步是实测真正的产出。只报「可用 215/330」没法定下一步 ——
+    2026-09-21 那次汇总才看清：美国中转族 128/131 全活，
+    而 stream1.freetv.fun 0/17 整族失效（DNS 已被换到一个不服务的美图 IP），
+    于是不用电视实测就能断定「湖南经视等台的公网线路其实不存在」。
+
+    返回按（可达范围、失效数倒序）排好的行：host/scope/total/ok/best_ms。
+    """
+    agg: dict[str, dict] = {}
+    for url, r in results.items():
+        host = urlsplit(url).hostname or url[:16]
+        a = agg.setdefault(host, {"host": host, "scope": reach.scope(url),
+                                  "total": 0, "ok": 0, "best_ms": 0})
+        a["total"] += 1
+        if r.ok:
+            a["ok"] += 1
+            a["best_ms"] = r.ms if not a["best_ms"] else min(a["best_ms"], r.ms)
+    return sorted(agg.values(),
+                  key=lambda a: (RANK[a["scope"]], -a["total"], a["host"]))
 
 
 def load_lean_fn():
@@ -264,12 +328,18 @@ def cmd_build(argv: list[str]) -> int:
         return 1
 
     index = load_index(args.config)
-    channels, unmatched, excluded, dead = aggregate(
+    reach = load_reachability(REACH_FILE)
+    if args.verify:
+        for warn in measurement_warnings():
+            print(f"⚠️  {warn}")
+        print()
+    channels, unmatched, excluded, dead, results = aggregate(
         entries, index, args.max_lines,
         verify=args.verify, timeout=args.timeout, workers=args.workers,
         max_per_host=args.max_per_host,
         skip_verify=[s["id"] for s in sources if not s.get("probe", True)],
         source_priority={s["id"]: s.get("priority", i + 1) for i, s in enumerate(sources)},
+        reach=reach,
     )
 
     present = {c.name for c in channels}
@@ -293,6 +363,27 @@ def cmd_build(argv: list[str]) -> int:
         (out_dir / "hunan-lean.m3u").write_text(lean(hunan_text), encoding="utf-8")
         (out_dir / "test.m3u").write_text(lean(hunan_text, limit=4), encoding="utf-8")
 
+    # 可达范围拆分：运营商 IPTV 内网线路要在对应运营商的 IPTV 专网里才连得上，
+    # 家庭 Wi-Fi 上表现为超时；电台地址则是上游挂在电视频道名下的冒充项。
+    scope_stats = Counter(reach.scope(c.urls[0]) for c in channels)
+    line_scope = Counter(reach.scope(u) for c in channels for u in c.urls)
+    no_public = [c.name for c in channels
+                 if all(reach.scope(u) != PUBLIC for u in c.urls)]
+
+    # 实测结果落盘：probe.json 是 P2 黑名单/历史趋势的原始数据，
+    # 也是试播包（scripts/probe_pack.py）判「这个主机族值不值得让电视点一下」的依据。
+    hosts = host_summary(results, reach) if args.verify else []
+    if args.verify:
+        (out_dir / "probe.json").write_text(json.dumps({
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "egress": egress_hint(),
+            "measurement_warnings": measurement_warnings(),
+            "hosts": hosts,
+            "lines": {u: {"ok": r.ok, "http": r.http, "ms": r.ms,
+                          "segments": r.segments, "error": r.error}
+                      for u, r in results.items()},
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+
     report = format_report(
         sources=[f"{s['id']} ← {s['target']}" for s in sources],
         total_entries=len(entries),
@@ -302,6 +393,9 @@ def cmd_build(argv: list[str]) -> int:
         epg_url=epg,
         verify_note=(f"--verify 实测剔除失效 {dead} 条" if args.verify else
                      "本次未做线路实测，列表里的线路可用性以 Apple TV 实际播放为准"),
+        line_scope=line_scope,
+        no_public=no_public,
+        hosts=hosts,
     )
     (out_dir / "report.md").write_text(report, encoding="utf-8")
 
@@ -310,6 +404,22 @@ def cmd_build(argv: list[str]) -> int:
     print(f"  hunan.m3u : {len(hunan)} 个频道 / {sum(len(c.urls) for c in hunan)} 条线路")
     if lean:
         print("  诊断用副产物：hunan-lean.m3u（无台标无 EPG）、test.m3u（前 4 个台）")
+    print(f"  可达范围：公网 {line_scope[PUBLIC]} 条 / 运营商内网 {line_scope[INTRANET]} 条 / "
+          f"电台冒充 {line_scope[AUDIO]} 条；第一线是公网线路的 {scope_stats[PUBLIC]}/{len(channels)} 个频道")
+    if no_public:
+        print(f"  ⚠️ 一条公网线路都没有的频道 {len(no_public)} 个（Wi-Fi 上大概率播不动）："
+              + "、".join(no_public))
+    if hosts:
+        print(f"  实测出口：{egress_hint() or '未取到'}（详情见 data/output/probe.json）")
+        bad = [h for h in hosts if h["ok"] < h["total"]]
+        for h in bad[:8]:
+            print(f"    ⚠️ {h['host']:<34} 可用 {h['ok']}/{h['total']}"
+                  + ("  ← 整族失效，这个主机提供的公网线路等于不存在" if not h["ok"] else ""))
+        if len(bad) > 8:
+            print(f"    …另有 {len(bad) - 8} 个主机有失败线路")
+        alive = [h for h in hosts if h["ok"] == h["total"]]
+        print(f"    其余 {len(alive)} 个主机全通（合计 {sum(h['total'] for h in alive)} 条），"
+              f"最快 {min((h['best_ms'] for h in alive), default=0)}ms")
     print(f"  丢弃：黑名单 {excluded} 条，未匹配 {sum(unmatched.values())} 条"
           + (f"，实测失效 {dead} 条" if args.verify else ""))
     if empty:

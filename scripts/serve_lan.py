@@ -29,11 +29,38 @@ OUT_DIR = ROOT / "data" / "output"
 LOG_DIR = ROOT / "data" / "logs"
 ALLOWED = {"aptv.m3u", "hunan.m3u", "hunan-lean.m3u", "test.m3u",
            "probe-pack.m3u", "report.md"}
-PUBLIC_NAMES = {"hunan.m3u": "湖南本地优先（39 个台）",
-                "aptv.m3u": "全量（央视 + 卫视 + 湖南 93 个台）"}
-DIAG_NAMES = {"probe-pack.m3u": "试播包：16 条编号线路，逐个点开，回报能动哪几个",
+PUBLIC_NAMES = {"hunan.m3u": "湖南本地优先",
+                "aptv.m3u": "全量：央视 + 卫视 + 湖南"}
+DIAG_NAMES = {"probe-pack.m3u": "试播包：每个流主机族挑一条，逐个点开，回报能动哪几个",
               "hunan-lean.m3u": "同一张表去掉台标和 EPG —— 主地址加不上时试它",
-              "test.m3u": "只有 4 个台的极小表 —— 判断是不是表太大/太复杂"}
+              "test.m3u": "只有几个台的极小表 —— 判断是不是表太大/太复杂"}
+
+
+def count_channels(text: str) -> int:
+    """订阅表里有几个不同的台（同名多条线路算一个台）。
+
+    >>> count_channels('#EXTM3U\\n#EXTINF:-1 ,湖南卫视\\nhttp://a/1.m3u8\\n'
+    ...                '#EXTINF:-1 ,湖南卫视\\nhttp://a/2.m3u8\\n#EXTINF:-1 ,湖南经视\\nhttp://a/3.m3u8')
+    2
+    """
+    names = {l.split(",", 1)[1] for l in text.splitlines()
+             if l.startswith("#EXTINF") and "," in l}
+    return len(names)
+
+
+def refresh_labels() -> None:
+    """按当前文件内容把台数填进标签。
+
+    这两个数字曾经硬编码成「39 个台 / 93 个台」，跑一次 --verify 就变成 39 / 90，
+    屏幕上留个旧数字比不写更糟 —— 电视订阅排查时人就是靠这些数字对账的。
+    先按「（」截一刀再拼，重复调用只会换数字，不会叠出两层括号。
+    """
+    for name in PUBLIC_NAMES:
+        path = OUT_DIR / name
+        if not path.exists():
+            continue
+        n = count_channels(path.read_text(encoding="utf-8"))
+        PUBLIC_NAMES[name] = f"{PUBLIC_NAMES[name].split('（')[0]}（{n} 个台）"
 
 _seen_clients: set[str] = set()
 _local_ips: set[str] = {"127.0.0.1"}
@@ -75,7 +102,11 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def _index(self) -> None:
-        ip = lan_ip()
+        """状态页。IP 一律用 main() 里筛过的候选地址，不能用 lan_ip()：
+        挂了代理的机器上 lan_ip() 会返回虚拟网卡地址（实测 172.19.0.1），
+        电视照着填是连不上的。"""
+        candidates = self.server.candidates
+        ip = candidates[0]
 
         def rows(names: dict[str, str]) -> str:
             return "".join(
@@ -83,6 +114,7 @@ class Handler(SimpleHTTPRequestHandler):
                 for n, desc in names.items()
             )
 
+        others = "".join(f"<li><code>{c}</code></li>" for c in candidates[1:])
         body = (
             "<!doctype html><meta charset=utf-8><title>APTV 订阅服务正常</title>"
             "<style>body{font-family:-apple-system;padding:40px;line-height:2}"
@@ -94,8 +126,13 @@ class Handler(SimpleHTTPRequestHandler):
             f"<ul>{rows(PUBLIC_NAMES)}</ul>"
             f"<h2>主地址加不上时，试这两个诊断用的表</h2>"
             f"<ul>{rows(DIAG_NAMES)}</ul>"
-            f"<p>本机局域网 IP：<code>{ip}</code>　"
-            "（电视的 IP 前三段和它不一样，就是不在同一网段，填什么地址都没用）</p>"
+            f"<p>哪些台在 Wi-Fi 上必然播不动（只有运营商 IPTV 专网来源），"
+            f"看<code>http://{ip}:{self.server.port}/report.md</code>里"
+            "「线路的可达范围」那一节。</p>"
+            f"<p>本机在这些网段有地址：<code>{ip}</code>"
+            f"{others and '、' + '、'.join(candidates[1:])}"
+            "。<br>电视的 IP 前三段必须和其中某一个一致；"
+            "都不一样就是不在同一网段（比如电脑连了访客网络），填什么地址都没用。</p>"
         ).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -153,13 +190,34 @@ def local_ipv4s() -> list[str]:
 
 
 def firewall_hint() -> str:
-    """问一句 Windows 防火墙状态。拿不到就算了，不影响起服务。"""
+    """问一句本机防火墙状态。拿不到就算了，不影响起服务。
+
+    这里必须分平台：Windows 的 netsh 在 macOS 上不存在，subprocess 拿不到任何输出，
+    旧代码就顺着走到「全开着」那个分支，等于对着用户编了一条假消息。
+    """
+    if sys.platform.startswith("win"):
+        cmd, shell = ["netsh", "advfirewall", "show", "allprofiles", "state"], True
+    elif sys.platform == "darwin":
+        cmd, shell = ["/usr/libexec/ApplicationFirewall/socketfilterfw",
+                      "--getglobalstate"], False
+    else:
+        return "防火墙状态：这台系统不检查（通常没有拦入站的默认策略）"
     try:
-        r = subprocess.run(["netsh", "advfirewall", "show", "allprofiles", "state"],
-                           capture_output=True, text=True, timeout=8, shell=True)
-        text = r.stdout or ""
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=8, shell=shell)
+        text = (r.stdout or "").lower()
     except (OSError, subprocess.SubprocessError):
         return "防火墙状态：没查到（不影响使用）"
+    if not text:
+        return "防火墙状态：没查到（不影响使用）"
+
+    if sys.platform == "darwin":
+        if "disabled" in text:
+            return "防火墙状态：已关闭，不会拦电视"
+        if "enabled" in text:
+            return ("防火墙状态：开着 —— 若电视连不上，去「系统设置 → 网络 → 防火墙」"
+                    "里给 Python 放行入站连接")
+        return "防火墙状态：没查到（不影响使用）"
+
     off = text.count("off") + text.count("关闭")
     if off >= 3:
         return "防火墙状态：已关闭，不会拦电视"
@@ -213,8 +271,10 @@ def main() -> int:
         return 0
     httpd.port = args.port                     # _index() 要用
     candidates = local_ipv4s() or [lan_ip()]
+    httpd.candidates = candidates              # 状态页要列给电视看的那几个地址
     _local_ips.update(candidates)
 
+    refresh_labels()                           # 屏幕上的台数要跟当前文件一致
     firewall = firewall_hint()                 # 起服务前先问，别在请求中途卡住
     _log_line("=" * 62)
     _log_line("  APTV 局域网订阅服务")
