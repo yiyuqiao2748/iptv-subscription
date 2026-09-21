@@ -182,6 +182,55 @@ def history_strike(url: str, r: ProbeResult | None, stale: frozenset[str]) -> in
     return 1 if (urlsplit(url).hostname or "") in stale else 0
 
 
+def roll_strike(url: str, r: ProbeResult | None, rolls: dict[str, str]) -> int:
+    """L3 验过「隔十几秒重取，分片窗口一动不动」的那条线路，本轮没重测时往后压一档。
+
+    为什么不并入主机那一档（`fake_strike`）：一个主机可以有三十八条线路，
+    L3 一次只盯得住几个台的第一线。整族判断要「通了的全是录像」才成立，
+    而这一条是逐条的确凿证据 —— 少一个精度，那条 2026-09-21 的残留列表就会
+    继续顶着同主机另外几条一起占位。同样只在没重测时生效。
+
+    >>> rolls = {"http://a.example/stuck.m3u8": "stuck", "http://a.example/live.m3u8": "rolling"}
+    >>> roll_strike("http://a.example/stuck.m3u8", None, rolls)
+    1
+    >>> roll_strike("http://a.example/live.m3u8", None, rolls)      # 上次验过在滚：不惩罚
+    0
+    >>> roll_strike("http://a.example/stuck.m3u8",                  # 本轮重测过，听本轮的
+    ...               ProbeResult(True, 200, 90, 4, "", "live"), rolls)
+    0
+    >>> roll_strike("http://a.example/new.m3u8", None, rolls)       # L3 没看过：不猜
+    0
+    """
+    if r is not None:
+        return 0
+    return 1 if rolls.get(url) == "stuck" else 0
+
+
+def fake_strike(url: str, r: ProbeResult | None, fake: frozenset[str]) -> int:
+    """上一轮确认「通了的全是循环录像」的主机，本轮没实测时往后压一档。
+
+    和 `history_strike()` 是两个不同的病：那个是连不上（电视上超时），
+    这个连得上、有画，播出来是几小时前的节目，而且往往比真直播还快 ——
+    2026-09-21 实测到快手 CDN 一条 1259 分片的录像挂在湖南卫视名下，延迟比官方流还低。
+    所以它必须排在真直播后面，但**不删**：一个台只剩录像和够不着的内网地址时，
+    有画可看比超时强，代价是在报告里点名说清楚它不是直播。
+
+    同样地，本轮只要测过就听本轮的（`is_fake_live(r)` 那一档会直接判它）。
+
+    >>> fake = frozenset({"loop.example"})
+    >>> fake_strike("http://loop.example/a.m3u8", None, fake)          # 没实测 + 上轮全是录像
+    1
+    >>> fake_strike("http://loop.example/a.m3u8",                     # 本轮重测：真在滚动
+    ...               ProbeResult(True, 200, 100, 3, "", "live"), fake)
+    0
+    >>> fake_strike("http://other.example/a.m3u8", None, fake)
+    0
+    """
+    if r is not None:
+        return 0
+    return 1 if (urlsplit(url).hostname or "") in fake else 0
+
+
 def load_sources(path: Path, *, fresh: bool) -> list[dict]:
     """读 config/sources.yaml 里启用的源，解析成本地缓存路径或远端 URL。
 
@@ -242,6 +291,8 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
               source_priority: dict[str, int] | None = None,
               reach: Reachability,
               stale_hosts: frozenset[str] = frozenset(),
+              fake_hosts: frozenset[str] = frozenset(),
+              rolls: dict[str, str] | None = None,
               hist_ms: dict[str, int] | None = None):
     """归位 + 合并多线路 + 同源收敛 + 排序 + 截断（可选实测过滤）。
 
@@ -269,9 +320,15 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     本轮没测过的线路：前者把上一轮整族连不上的往后压，后者把上一轮量到过的主机按
     那时的延迟补进档位 —— 否则离线重出表时全部线路同为"未知"，
     上一轮确认 378ms 的湖南广电官方流会被来源优先级挤掉（见 effective_tier）。
+
+    fake_hosts / rolls 是同一份履历里的「内容」判据（history.fake_hosts / merge_rolls）：
+    前者是上一轮这个主机通了的线路全是循环录像，后者是 L3 逐条验过的「列表不动」。
+    它们排在可达范围与「本轮实测是录像」之后、延迟档之前 ——
+    录像通常比真直播快，只用延迟当第二键会被顶到第一位去。
     """
     skip_verify = set(skip_verify)
     prio = source_priority or {}
+    rolls = rolls or {}
     hist_ms = hist_ms or {}
     buckets: dict[tuple[str, str], dict] = defaultdict(
         lambda: {"lines": [], "seen": set(), "tvg_id": "", "logo": "", "order": 0, "group_title": ""}
@@ -334,6 +391,8 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
             key=lambda e: (reach.rank(e.url),
                            history_strike(e.url, results.get(e.url), stale_hosts),
                            is_fake_live(results.get(e.url)),
+                           roll_strike(e.url, results.get(e.url), rolls),
+                           fake_strike(e.url, results.get(e.url), fake_hosts),
                            effective_tier(e.url, results.get(e.url), hist_ms),
                            prio.get(e.source, 99),
                            -_RANK.get(quality_hint(f"{e.name} {e.url}"), 0),
@@ -374,24 +433,38 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
 
 
 def host_summary(results: dict[str, ProbeResult], reach: Reachability) -> list[dict]:
-    """把逐条实测按主机汇总：回答「哪个主机族在家里这张网里是死的」。
+    """把逐条实测按主机汇总：回答「哪个主机族在家里这张网里是死的、哪些是活的但放的是录像」。
 
     这一步是实测真正的产出。只报「可用 215/330」没法定下一步 ——
     2026-09-21 那次汇总才看清：美国中转族 128/131 全活，
     而 stream1.freetv.fun 0/17 整族失效（DNS 已被换到一个不服务的美图 IP），
     于是不用电视实测就能断定「湖南经视等台的公网线路其实不存在」。
 
-    返回按（可达范围、失效数倒序）排好的行：host/scope/total/ok/best_ms。
+    `vod` 那一列是同一件事的第二半：连着且有分片、内容却是循环录像的条数。
+    它决定的是「离线重出表时这个主机还能不能占第一线」，见 history.fake_hosts。
+
+    返回按（可达范围、失效数倒序）排好的行：host/scope/total/ok/best_ms/vod。
+
+    >>> r = Reachability([".dead.example"])
+    >>> res = {"http://a.example/1.m3u8": ProbeResult(True, 200, 100, 3, "", "live"),
+    ...        "http://a.example/2.m3u8": ProbeResult(True, 200, 120, 900, "", "vod"),
+    ...        "http://dead.example/x.m3u8": ProbeResult(False, 0, 5000, 0, "timeout")}
+    >>> for row in host_summary(res, r):
+    ...     print(row["host"], row["scope"], f"{row['ok']}/{row['total']}", row["vod"])
+    a.example public 2/2 1
+    dead.example iptv_intranet 0/1 0
     """
     agg: dict[str, dict] = {}
     for url, r in results.items():
         host = urlsplit(url).hostname or url[:16]
         a = agg.setdefault(host, {"host": host, "scope": reach.scope(url),
-                                  "total": 0, "ok": 0, "best_ms": 0})
+                                  "total": 0, "ok": 0, "best_ms": 0, "vod": 0})
         a["total"] += 1
         if r.ok:
             a["ok"] += 1
             a["best_ms"] = r.ms if not a["best_ms"] else min(a["best_ms"], r.ms)
+            if is_fake_live(r):
+                a["vod"] += 1
     return sorted(agg.values(),
                   key=lambda a: (RANK[a["scope"]], -a["total"], a["host"]))
 
@@ -476,6 +549,9 @@ def cmd_build(argv: list[str]) -> int:
     point = judgment_egress(egress, warns, runs, measured=bool(args.verify))
     rep = hist.reputation(runs, current_egress=point) if not args.ignore_history else {}
     stale = hist.demote_hosts(rep) if not args.ignore_history else frozenset()
+    fake = hist.fake_hosts(rep) if not args.ignore_history else frozenset()
+    # L3 是逐条的结论（分片窗口动不动），单独合成一份，不走主机那一档
+    rolls = hist.merge_rolls(runs, current_egress=point) if not args.ignore_history else {}
     rep_now = rep            # 落盘新那一轮之后会被换成最新的履历，用来判"该划掉谁"
     dropped = len(hist.untrusted_runs(runs, current_egress=point))
 
@@ -484,11 +560,14 @@ def cmd_build(argv: list[str]) -> int:
             print(f"⚠️  {warn}")
         print()
     if rep and not args.verify:
+        n_stuck = sum(1 for v in rolls.values() if v == "stuck")
         print(f"\n实测履历（{history_path.name}）：{len(runs)} 轮里 {len(rep)} 个主机有"
               f"「出口 {point}」的可信记录 → {len(stale)} 个整族失效主机往后压、"
-              f"{len(host_latency(rep))} 个按上一轮延迟补位"
+              f"{len(fake)} 个「只出循环录像」的主机往后压、"
+              + (f"{n_stuck} 条线路按 L3 让位、" if n_stuck else "")
+              + f"{len(host_latency(rep))} 个按上一轮延迟补位"
               + (f"，另有 {dropped} 轮因测量点不对未采用" if dropped else "")
-              + ("" if args.verify else "；本轮未实测，这些判据顶上"))
+              + "；本轮未实测，这些判据顶上")
     channels, unmatched, excluded, dead, results, stale_hits = aggregate(
         entries, index, args.max_lines,
         verify=args.verify, timeout=args.timeout, workers=args.workers,
@@ -498,6 +577,8 @@ def cmd_build(argv: list[str]) -> int:
                          LOCAL_ID: 0},   # 手工源是人工确认过出处的，同条件下优先
         reach=reach,
         stale_hosts=stale,
+        fake_hosts=fake,
+        rolls=rolls,
         hist_ms=host_latency(rep),
     )
 
@@ -529,15 +610,21 @@ def cmd_build(argv: list[str]) -> int:
     no_public = [c.name for c in channels
                  if all(reach.scope(u) != PUBLIC for u in c.urls)]
     # 第一线是循环录像的频道：电视默认就播这一条，必须点名。
-    # segments=0 的那种是「响应体整个就是个 MP4 文件」，同样不是直播。
+    # 证据分三级，写清楚是哪一级看出来的：本轮实测的分片数最硬，L3 的「列表不动」次之，
+    # 整族那种只是「上一轮这主机全是录像」，本轮没重测时才用。
+    stuck_urls = {u for u, v in rolls.items() if v == "stuck"}
     fake_live = []
     for c in channels:
-        r = results.get(c.urls[0])
-        if not is_fake_live(r):
-            continue
-        host = urlsplit(c.urls[0]).hostname or c.urls[0][:20]
-        fake_live.append(f"{c.name}（{host} "
-                         + (f"{r.segments} 片循环）" if r.segments else "整段视频文件）"))
+        first = c.urls[0]
+        host = urlsplit(first).hostname or first[:20]
+        r = results.get(first)
+        if is_fake_live(r):
+            fake_live.append(f"{c.name}（{host} "
+                             + (f"{r.segments} 片循环）" if r.segments else "整段视频文件）"))
+        elif r is None and first in stuck_urls:
+            fake_live.append(f"{c.name}（{host} L3 验过：分片窗口不动）")
+        elif r is None and host in fake:
+            fake_live.append(f"{c.name}（{host} 上一轮整族只出录像，本轮未重测）")
 
     # 实测结果落盘：probe.json 是这一轮的快照（会被下一轮覆盖），
     # probe-history.jsonl 是它攒下来的履历 —— 离线生成、趋势判断都看后者。
@@ -574,6 +661,9 @@ def cmd_build(argv: list[str]) -> int:
         "totals": trend,
         "blacklist": [asdict(r) for r in hist.blacklist(rep_now)],
         "demote": sorted(stale),
+        "fake": sorted(fake),
+        "rolls": {"checked": len(rolls),
+                  "stuck": sum(1 for v in rolls.values() if v == "stuck")},
         "latency_hosts": len(host_latency(rep)),
         "stale_first_lines": stale_hits,
         "verified": bool(args.verify),
@@ -626,7 +716,9 @@ def cmd_build(argv: list[str]) -> int:
         h = history_note
         print(f"  实测履历：{h['runs']} 轮（采用 {h['used']} 轮，判据出口 {h['egress'] or '未知'}）"
               + (f"，{h['dropped']} 轮因测量点不对未采用" if h["dropped"] else "")
-              + f"；据此往后压 {len(h['demote'])} 个主机、补位 {h['latency_hosts']} 个"
+              + f"；据此往后压 {len(h['demote'])} 个整族失效主机"
+              + (f"、{len(h['fake'])} 个只出录像的主机" if h.get("fake") else "")
+              + f"、补位 {h['latency_hosts']} 个"
               + (f"，第一线仍落在已失效主机上的台 {h['stale_first_lines']} 个"
                  if h["stale_first_lines"] else ""))
         if h["blacklist"]:

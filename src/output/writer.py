@@ -94,6 +94,17 @@ def _history_section(h: dict) -> list[str]:
         bits.append(f"把 {len(h['demote'])} 个整族失效的主机往后压了档："
                     + "、".join(f"`{x}`" for x in h["demote"][:8])
                     + ("…" if len(h["demote"]) > 8 else ""))
+    if h.get("fake"):
+        bits.append(f"把 {len(h['fake'])} 个「连得上但只放循环录像」的主机往后压了档："
+                    + "、".join(f"`{x}`" for x in h["fake"][:8])
+                    + ("…" if len(h["fake"]) > 8 else "")
+                    + "（同一个主机在报告里被点名成"
+                      "「第一线是循环录像」时，说明这个台实在没有更好的线路可换）")
+    rolls = h.get("rolls") or {}
+    if rolls.get("checked"):
+        bits.append(f"L3 逐条验过 {rolls['checked']} 条线路的分片窗口，"
+                    f"其中 {rolls.get('stuck', 0)} 条一动不动，已单独让它们让位"
+                    "（整族那一档要求「通了的全是录像」，一条不动不够）")
     if h.get("latency_hosts"):
         bits.append(f"{h['latency_hosts']} 个主机按上一轮实测延迟补了位"
                     "（不补的话，本轮没实测，最好的那条会被来源优先级挤掉）")
@@ -135,6 +146,10 @@ def format_report(
     True
     >>> "实测逐主机" not in format_report(**{**kw, "hosts": []})  # 没实测就不编
     True
+    >>> "其中 2 条是循环录像" in format_report(**{**kw, "hosts": [{**h[1], "vod": 2}]})
+    True
+    >>> "有循环录像的主机" not in format_report(**{**kw, "hosts": h})   # 没这项就不加一节
+    True
     >>> f = format_report(**{**kw, "hosts": [], "fake_live": ["湖南卫视（a.com 1259 片循环）"]})
     >>> [l for l in f.splitlines() if "湖南卫视" in l and "循环" in l]
     ['- 湖南卫视（a.com 1259 片循环）']
@@ -147,9 +162,14 @@ def format_report(
     ...                        "total": 35, "ok_last": 0, "best_ms": 0,
     ...                        "last_at": "2026-09-21T13:00:40+08:00", "dead_streak": 2}],
     ...         "demote": ["dead.example"], "latency_hosts": 7, "stale_first_lines": 4,
+    ...         "fake": ["loop.example"], "rolls": {"checked": 30, "stuck": 3},
     ...         "verified": False}
     >>> r = format_report(**{**kw, "hosts": [], "history": hist})
     >>> "从来没通过过的主机" in r and "dead.example" in r.split("各分组频道")[0]
+    True
+    >>> "只放循环录像" in r and "loop.example" in r      # 连得上但放录像的，单独一档
+    True
+    >>> "L3 逐条验过 30 条" in r and "3 条一动不动" in r   # 逐条那种精度也要说出来
     True
     >>> "1 轮" in r                                    # 被排除的轮次要说明
     True
@@ -198,26 +218,38 @@ def format_report(
         lines += [f"- {c}" for c in fake_live]
         lines += ["", "> 判据：播放列表里有 `#EXT-X-ENDLIST`、分片数以百计"
                   "（阈值见 src/check/prober.py 的 VOD_SEGMENTS），或者响应体根本不是播放列表"
-                  "而是一个 QuickTime/MP4 文件。这类地址 TCP 通、有内容、"
+                  "而是一个 QuickTime/MP4 文件；括号里写「L3 验过」的那几条是另一种 —— "
+                  "分片只有几个、但隔十几秒重取两次窗口一步都没走，L2 那种判据看不穿它。"
+                  "这类地址 TCP 通、有内容、"
                   "往往还比真直播快，L2 只看「有没有分片」时会被当成可用线路 —— "
                   "比超时更坏，因为用户会以为这个台就这样。它们已在本表里被排到真直播后面，"
                   "只剩录像可播的才留在第一位。"]
 
     if hosts:
         dead_all = [h for h in hosts if not h["ok"]]
+        vod_any = [h for h in hosts if h.get("vod")]
         lines += ["", "## 实测逐主机（本机出口直连）", "",
                   "| 主机 | 范围 | 可用 | 最快 |", "|---|---|---|---|"]
         for h in hosts:
             name, _ = _SCOPE_LABEL.get(h["scope"], (h["scope"], ""))
             # ✅ 全通 / ⚠️ 部分失效 / ❌ 整族连不上，三种不能混成一个符号
             mark = "✅" if h["ok"] == h["total"] else ("❌" if not h["ok"] else "⚠️")
-            lines.append(f"| `{h['host']}` | {name} | {h['ok']}/{h['total']} {mark} | "
+            use = f"{h['ok']}/{h['total']} {mark}"
+            if h.get("vod"):
+                use += f"（其中 {h['vod']} 条是循环录像）"
+            lines.append(f"| `{h['host']}` | {name} | {use} | "
                          f"{str(h['best_ms']) + 'ms' if h['best_ms'] else '—'} |")
         if dead_all:
             who = "、".join(f"`{h['host']}`（{h['total']} 条）" for h in dead_all)
             lines += ["", f"> ⚠️ 全部线路失效的主机：{who}。",
                       "> 挂在这些主机上的频道，**公网线路等于不存在**，"
                       "电视上只会看到超时 —— 不用真机再确认一遍。"]
+        if vod_any:
+            who = "、".join(f"`{h['host']}`（{h['vod']}/{h['ok']} 条）" for h in vod_any)
+            lines += ["", f"> ⚠️ 有循环录像的主机：{who}。",
+                      "> 连得上、有画，播出来的却是几个钟头前的节目。通了的线路**全**落在"
+                      "这一栏里的主机，下一轮离线生成会被往后压（`history.fake_hosts`），"
+                      "本轮实测过则当场就压。"]
         lines += ["", "> 这一栏决定 P5 的取向：整族失效的主机要从候选里划掉；"
                   "而「跨洋中转全通」说明公网这条路真的能用，"
                   "剩下的缺口就是纯粹的找源问题，不是排序问题。"]
