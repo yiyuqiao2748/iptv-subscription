@@ -7,7 +7,10 @@
     python -m src.cli build --verify         # 生成前实测线路（probe:false 的源跳过）
     python -m src.cli build --source <url或文件>   # 临时换上游，忽略 sources.yaml
 
-产物在 data/output/：aptv.m3u（全量）、hunan.m3u（只有湖南本地）、report.md。
+产物在 data/output/：aptv.m3u（全量）、hunan.m3u（只有湖南本地）、report.md、probe.json（实测过才有）。
+
+`config/sources.yaml` 是别人维护的聚合源，`config/sources_local.yaml` 是手工核对过的补充线路
+（带出处和有效期），两边都会读；`--skip-local` 只在前者里找问题时用。
 
 同一频道的多条线路按「可达范围」+「实测延迟」排先后（范围规则在 config/reachability.yaml），
 公网且快的排第一，因为 APTV 默认只播第一条；运营商 IPTV 内网地址和电台冒充项退居备选。
@@ -45,15 +48,18 @@ sys.path.insert(0, str(ROOT))
 import yaml  # noqa: E402
 
 from src.check.env import egress_hint, measurement_warnings  # noqa: E402
-from src.check.prober import ProbeResult, probe_many  # noqa: E402
+from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
     AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
 from src.match.matcher import load_index  # noqa: E402
 from src.match.normalize import quality_hint  # noqa: E402
 from src.output.writer import OutputChannel, format_m3u, format_report  # noqa: E402
+from src.parse.local import SOURCE_ID as LOCAL_ID  # noqa: E402
+from src.parse.local import load_local  # noqa: E402
 from src.parse.m3u import Entry, parse_m3u  # noqa: E402
 
 SOURCES_FILE = ROOT / "config" / "sources.yaml"
+LOCAL_SOURCES_FILE = ROOT / "config" / "sources_local.yaml"
 REACH_FILE = ROOT / "config" / "reachability.yaml"
 CACHE_DIR = ROOT / "data" / "cache"
 HUNAN_GROUPS = ("hunan_local", "changsha", "shizhou", "jinying")
@@ -161,6 +167,11 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     和湖南广电官方公网流 hlsal-ldvt.qing.mgtv.com（210ms）当时是并列的，
     结果 max_lines=3 把那条最该留的官方流挤掉了 —— 只判「通不通」不够，
     还得让快的排前面，尤其是电视要拿它连续播几个小时。
+
+    假直播（循环录像）在可达范围同一档内被压到真直播后面，见 prober.is_fake_live：
+    实测到 txmov2.a.kwimgs.com 有条 1259 分片的录像挂在湖南卫视名下，
+    它比真直播还快，只按延迟排会把录像顶到第一位。不删，是因为对只有录像和内网
+    地址的台来说，有画可看比超时强；但这类频道会在使用报告里点名。
     """
     skip_verify = set(skip_verify)
     prio = source_priority or {}
@@ -221,7 +232,8 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     for (group, name), b in buckets.items():
         ordered = sorted(
             b["lines"],
-            key=lambda e: (reach.rank(e.url), latency_tier(results.get(e.url)),
+            key=lambda e: (reach.rank(e.url), is_fake_live(results.get(e.url)),
+                           latency_tier(results.get(e.url)),
                            prio.get(e.source, 99),
                            -_RANK.get(quality_hint(f"{e.name} {e.url}"), 0),
                            e.seq),
@@ -311,6 +323,8 @@ def cmd_build(argv: list[str]) -> int:
     ap.add_argument("--timeout", type=int, default=12)
     ap.add_argument("--workers", type=int, default=20)
     ap.add_argument("--fresh", action="store_true", help="强制联网抓最新上游，忽略本地缓存")
+    ap.add_argument("--skip-local", action="store_true",
+                    help="不读 config/sources_local.yaml（排查手工源本身时用）")
     args = ap.parse_args(argv)
 
     sources = (
@@ -323,6 +337,10 @@ def cmd_build(argv: list[str]) -> int:
         return 1
     print(f"读取 {len(sources)} 个上游：")
     entries, epg_urls = collect(sources)
+    local_lines: list[Entry] = [] if args.skip_local else load_local(LOCAL_SOURCES_FILE)
+    if local_lines:
+        print(f"  {LOCAL_ID}（手工核对）: {len(local_lines)} 条 ← config/sources_local.yaml")
+        entries += local_lines
     if not entries:
         print("没有解析到任何条目，检查网络或上游地址。", file=sys.stderr)
         return 1
@@ -338,7 +356,8 @@ def cmd_build(argv: list[str]) -> int:
         verify=args.verify, timeout=args.timeout, workers=args.workers,
         max_per_host=args.max_per_host,
         skip_verify=[s["id"] for s in sources if not s.get("probe", True)],
-        source_priority={s["id"]: s.get("priority", i + 1) for i, s in enumerate(sources)},
+        source_priority={**{s["id"]: s.get("priority", i + 1) for i, s in enumerate(sources)},
+                         LOCAL_ID: 0},   # 手工源是人工确认过出处的，同条件下优先
         reach=reach,
     )
 
@@ -369,6 +388,16 @@ def cmd_build(argv: list[str]) -> int:
     line_scope = Counter(reach.scope(u) for c in channels for u in c.urls)
     no_public = [c.name for c in channels
                  if all(reach.scope(u) != PUBLIC for u in c.urls)]
+    # 第一线是循环录像的频道：电视默认就播这一条，必须点名。
+    # segments=0 的那种是「响应体整个就是个 MP4 文件」，同样不是直播。
+    fake_live = []
+    for c in channels:
+        r = results.get(c.urls[0])
+        if not is_fake_live(r):
+            continue
+        host = urlsplit(c.urls[0]).hostname or c.urls[0][:20]
+        fake_live.append(f"{c.name}（{host} "
+                         + (f"{r.segments} 片循环）" if r.segments else "整段视频文件）"))
 
     # 实测结果落盘：probe.json 是 P2 黑名单/历史趋势的原始数据，
     # 也是试播包（scripts/probe_pack.py）判「这个主机族值不值得让电视点一下」的依据。
@@ -380,12 +409,14 @@ def cmd_build(argv: list[str]) -> int:
             "measurement_warnings": measurement_warnings(),
             "hosts": hosts,
             "lines": {u: {"ok": r.ok, "http": r.http, "ms": r.ms,
-                          "segments": r.segments, "error": r.error}
+                          "segments": r.segments, "kind": r.kind, "error": r.error}
                       for u, r in results.items()},
         }, ensure_ascii=False, indent=1), encoding="utf-8")
 
     report = format_report(
-        sources=[f"{s['id']} ← {s['target']}" for s in sources],
+        sources=[f"{s['id']} ← {s['target']}" for s in sources] + (
+            [f"{LOCAL_ID} ← {LOCAL_SOURCES_FILE.relative_to(ROOT)}"
+             f"（手工核对 {len(local_lines)} 条）"] if local_lines else []),
         total_entries=len(entries),
         channels=channels,
         unmatched=unmatched,
@@ -395,6 +426,7 @@ def cmd_build(argv: list[str]) -> int:
                      "本次未做线路实测，列表里的线路可用性以 Apple TV 实际播放为准"),
         line_scope=line_scope,
         no_public=no_public,
+        fake_live=fake_live,
         hosts=hosts,
     )
     (out_dir / "report.md").write_text(report, encoding="utf-8")
@@ -409,6 +441,9 @@ def cmd_build(argv: list[str]) -> int:
     if no_public:
         print(f"  ⚠️ 一条公网线路都没有的频道 {len(no_public)} 个（Wi-Fi 上大概率播不动）："
               + "、".join(no_public))
+    if fake_live:
+        print(f"  ⚠️ 第一线是循环录像的频道 {len(fake_live)} 个（有画但不是直播）："
+              + "、".join(fake_live))
     if hosts:
         print(f"  实测出口：{egress_hint() or '未取到'}（详情见 data/output/probe.json）")
         bad = [h for h in hosts if h["ok"] < h["total"]]
@@ -422,6 +457,9 @@ def cmd_build(argv: list[str]) -> int:
               f"最快 {min((h['best_ms'] for h in alive), default=0)}ms")
     print(f"  丢弃：黑名单 {excluded} 条，未匹配 {sum(unmatched.values())} 条"
           + (f"，实测失效 {dead} 条" if args.verify else ""))
+    if not args.verify:
+        print("  注意：本次未实测，产物里会混着已知失效的线路，而且会把上一轮"
+              " `--verify` 生成的表覆盖掉。要给电视订阅前，建议补跑一次 `build --verify`。")
     if empty:
         print(f"  ⚠️ 配置里有但没匹配到线路的频道 {len(empty)} 个：" + "、".join(n for n, _ in empty))
     return 0

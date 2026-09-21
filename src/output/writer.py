@@ -60,6 +60,7 @@ def format_report(
     verify_note: str = "",
     line_scope: dict[str, int] | None = None,
     no_public: list[str] | None = None,
+    fake_live: list[str] | None = None,
     hosts: list[dict] | None = None,
 ) -> str:
     """生成人读的 markdown 报告，方便你一眼看出哪些台有、哪些台还缺。
@@ -75,6 +76,11 @@ def format_report(
     >>> "dead.example" in note and "live.example" not in note   # 只点全灭的那族
     True
     >>> "实测逐主机" not in format_report(**{**kw, "hosts": []})  # 没实测就不编
+    True
+    >>> f = format_report(**{**kw, "hosts": [], "fake_live": ["湖南卫视（a.com 1259 片循环）"]})
+    >>> [l for l in f.splitlines() if "湖南卫视" in l and "循环" in l]
+    ['- 湖南卫视（a.com 1259 片循环）']
+    >>> "循环录像" not in format_report(**{**kw, "hosts": [], "fake_live": []})
     True
     """
     lines: list[str] = ["# 生成报告", ""]
@@ -103,6 +109,16 @@ def format_report(
                       "、".join(no_public), "",
                       "> 这些台目前唯一的来源是运营商 IPTV 内网，或只有电台同播（见 config/reachability.yaml）。"
                       "要在电视上看，只能走 IPTV 机顶盒那个 VLAN，或者等 P5 找到它们的公网视频流。"]
+
+    if fake_live:
+        lines += ["", "### 但第一条线路是循环录像的频道（有画，不是直播）", ""]
+        lines += [f"- {c}" for c in fake_live]
+        lines += ["", "> 判据：播放列表里有 `#EXT-X-ENDLIST`、分片数以百计"
+                  "（阈值见 src/check/prober.py 的 VOD_SEGMENTS），或者响应体根本不是播放列表"
+                  "而是一个 QuickTime/MP4 文件。这类地址 TCP 通、有内容、"
+                  "往往还比真直播快，L2 只看「有没有分片」时会被当成可用线路 —— "
+                  "比超时更坏，因为用户会以为这个台就这样。它们已在本表里被排到真直播后面，"
+                  "只剩录像可播的才留在第一位。"]
 
     if hosts:
         dead_all = [h for h in hosts if not h["ok"]]

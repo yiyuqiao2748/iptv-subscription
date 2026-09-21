@@ -34,7 +34,7 @@ FAMILY = {
     "58.20.64.92": "湖南联通IPTV出口",
     "stream1.freetv.fun": "freetv公网CDN·实测整族失效",
     "php.jdshipin.com": "京东云公网中转",
-    "live.264788.xyz": "264788公网中转",
+    "live.264788.xyz": "264788中转·实测是整段MP4录像",
     "gslbmgsplive.miguvideo.com": "咪咕公网",
     "ottrrs.hl.chinamobile.com": "黑龙江移动",
     "rrs01.hw.gmcc.net": "移动全球 multicast 网关",
@@ -61,6 +61,7 @@ FAMILY = {
     #   延迟 47~210ms，比美国中转（845~1271ms）快一个数量级。
     #   湖南卫视那条就是湖南广电官方流 —— P5 要找的就是这类地址。
     "hlsal-ldvt.qing.mgtv.com": "★湖南广电官方公网",
+    "live.hnxttv.com": "★湘潭广电官方公网",
     "120.76.248.139": "阿里云公网(国内)",
     "ali-m-l.cztv.com": "浙江广电官方公网",
     "play1-qk.nmtv.cn": "内蒙古广电公网",
@@ -75,9 +76,12 @@ PREFERRED = ("湖南卫视", "湖南经视", "长沙新闻综合", "CCTV-1", "CC
 # 不管线路多少都要测的主机族 —— 都是只有 1~2 条线路、按线路数排序会被切掉的关键对照组：
 #   myqcloud：央视内容的腾讯云分发、URL 不带鉴权参数，能动就说明电视出公网没问题
 #             （2026-09-21 它自己实测失效了，已不进订阅表，这里就自然留不下）
-#   mgtv：湖南广电官方公网流，210ms。这台要是电视上能稳播，
+#   mgtv：湖南广电官方公网流，190ms。这台要是电视上能稳播，
 #         P5 的方向就定了 —— 去把湖南各台的官方公网分发一个个挖出来，而不是找中转。
-FORCE = ("cctvtxyh5c.liveplay.myqcloud.com", "hlsal-ldvt.qing.mgtv.com")
+#   hnxttv：湘潭广电官方公网流，47ms，而且是这轮第一个靠手工源补进来的台。
+#           它和 mgtv 一起构成「官方分发」这一档的对照组：国内、快、真直播。
+FORCE = ("cctvtxyh5c.liveplay.myqcloud.com", "hlsal-ldvt.qing.mgtv.com",
+         "live.hnxttv.com")
 
 
 def host_of(url: str) -> str:
@@ -132,6 +136,19 @@ def read_pairs(path: Path) -> list[tuple[str, str]]:
 def build(pairs: list[tuple[str, str]], top: int,
           stats: dict[str, dict] | None = None, keep_dead: bool = False,
           ) -> tuple[str, list[tuple[str, str, str, str]], list[str]]:
+    """按主机族挑代表线路。
+
+    FORCE 里的族只有一两条线路，按线路数取 top 会被切掉，所以取完再补一次。
+    比对要用去端口的主机名 —— 湘潭那条是 `live.hnxttv.com:9601`，
+    拿 `host in FORCE` 直接比会漏，试播包就少了一个对照组。
+
+    >>> pairs = ([("湘潭新闻综合", "http://live.hnxttv.com:9601/live/x.m3u8"),
+    ...           ("湖南卫视", "http://hlsal-ldvt.qing.mgtv.com/a.m3u8")]
+    ...          + [("CCTV-1综合", f"http://1.1.1.1:80/{i}.m3u8") for i in range(20)])
+    >>> _, legend, _ = build(pairs, top=1)
+    >>> sorted(l[2] for l in legend)
+    ['CCTV-1综合', '湖南卫视', '湘潭新闻综合']
+    """
     by_host: dict[str, list[tuple[str, str]]] = {}
     for name, url in pairs:
         by_host.setdefault(host_of(url), []).append((name, url))
@@ -142,8 +159,8 @@ def build(pairs: list[tuple[str, str]], top: int,
         ordered = ordered[:top]
     # 基准主机族哪怕只有 1 条线路也要在表里
     picked = {h for h, _ in ordered}
-    ordered += [(h, by_host[h]) for h in FORCE
-                if h in by_host and h not in picked]
+    ordered += [(h, items) for h, items in by_host.items()
+                if base_of(h) in FORCE and h not in picked]
 
     # 电脑已经实测过的主机族：整族连不上的不必再让电视点一次
     stats = stats or {}
@@ -152,7 +169,7 @@ def build(pairs: list[tuple[str, str]], top: int,
         kept = []
         for host, items in ordered:
             st = stats.get(base_of(host))
-            if st and st["total"] and not st["ok"] and host.split(":")[0] not in FORCE:
+            if st and st["total"] and not st["ok"] and base_of(host) not in FORCE:
                 skipped.append(f"{family_label(host)}（{base_of(host)} 实测 0/{st['total']}）")
                 continue
             kept.append((host, items))
