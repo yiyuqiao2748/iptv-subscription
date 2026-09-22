@@ -9,9 +9,14 @@
 `config/epg.txt` 现在整份被注释掉了（它自己那套「请求失败就把地址前加 `#` 停用」的机制
 把唯一那条地址划掉的）。于是「EPG 对齐」不能靠猜，得有个量尺。
 
-三个数字一个都不能少。只看 HTTP 200 会骗人（那份过期快照照样 200），
-只看「今天有没有节目」也会骗人（erw 那份有今天的节目，但 channel id 是 `1`、`81` 这种数字，
-我们的 `tvg-id="CCTV-1"` 一条都按 id 配不上，全靠 display-name 才救得回来）。
+四个数字一个都不能少。只看 HTTP 200 会骗人（那份过期快照照样 200），
+只看「今天有没有节目」也会骗人（erw 那份有今天的节目，可 2026-09-21 那时我们的 `tvg-id`
+还是 `CCTV-1` 这种写法，一条都按 id 配不上，全靠 display-name 才救得回来）；
+**只看「配上几个台」同样会骗人** —— 2026-09-22 晚上拿同一份缓存量两张表，
+两张都是 `69/98`，可一张是「0 按 id + 69 靠台名」（电视现在订阅的那张，2.19 那一层还没落进去），
+另一张是「69 按 id + 0 靠台名」（对齐之后重出的那一张）。合计数一模一样，来历完全不同。
+所以除了命中率，这里还印两张独立证据：`provenance()`（那个拆分读出来的来历）
+和 `header_url()`（表头部那行 `x-tvg-url`，它由另一条代码路径决定）。
 
 配对的那套规则（归一化、受控前缀）只有一份实现，在 `src/check/epg.py`，
 这里只负责取数据、按订阅表对一遍、把结果打印成人话。
@@ -20,6 +25,7 @@
 
     .venv/bin/python scripts/epg_check.py                       # 查「配置里在用的那条 + 默认候选」
     .venv/bin/python scripts/epg_check.py http://x/e.xml.gz     # 查指定地址（本地文件也行）
+    .venv/bin/python scripts/epg_check.py data/cache/epg.xml    # 只问「现在这张表出自哪一轮」：不发一个请求
     .venv/bin/python scripts/epg_check.py --playlist data/output/hunan.m3u <url>...
 
 出口提醒：这台电脑挂着全局代理时，发出去的请求走的是那条隧道（计划书 2.8 / 2.16），
@@ -146,6 +152,62 @@ def drift(channels: list[tuple[str, str]]) -> dict[str, list[str]]:
     return {n: ids for n, ids in per.items() if len(ids) > 1}
 
 
+def header_url(path: Path) -> str:
+    """这张表头部 `x-tvg-url` 写的是哪条地址（电视自己去取的就是这一行；没写就返回空串）。
+
+    为什么单独取出来印：它是「这张表出自哪一轮」的**第二条证据**，而且和 `tvg-id` 那一列
+    互相独立 —— id 由 `apply_ids()` 改，头部由 `epg_header_url()` 决定，两条代码路径。
+    2026-09-22 晚上磁盘上这张就是这么认出来的：头部还是上游抄来的那条 404，
+    而 id 一列也确实是台名（见 `provenance`）。
+
+    >>> import pathlib, tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "a.m3u"
+    ...     _ = p.write_text('#EXTM3U x-tvg-url="https://e.erw.cc/e.xml.gz"\\n'
+    ...                      '#EXTINF:-1 tvg-id="81",湖南卫视\\nhttp://a/1.m3u8\\n', encoding="utf-8")
+    ...     header_url(p)
+    'https://e.erw.cc/e.xml.gz'
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "b.m3u"
+    ...     _ = p.write_text('#EXTM3U\\n#EXTINF:-1,湖南卫视\\nhttp://a/1.m3u8\\n', encoding="utf-8")
+    ...     header_url(p)
+    ''
+    """
+    return parse_m3u(path.read_text(encoding="utf-8")).x_tvg_url
+
+
+def provenance(by_id: int, by_name: int) -> str:
+    """从「按 id 配上几个 / 靠台名救回几个」这个**拆分**读出这张表出自哪一轮。
+
+    为什么不能只看合计数：2026-09-22 晚上拿同一份节目单缓存量两张表，
+    **合计都是 69/98**，可 `data/output/aptv.m3u` 是 0 按 id + 69 靠台名（2.19 那一层
+    还没落进去的那一轮），`/tmp/r226/aptv.m3u` 是 69 按 id + 0 靠台名（对齐之后重出的那份）。
+    同一个合计数、两种完全不同的来历 —— 光印「69 个台有节目单」，读到的人就会以为
+    电视上那张已经生效了。这一层以前只把两个数分开印在括号里，没人会去读那个括号。
+
+    说的是「相对**这一份**节目单」，不是绝对真理：一张按 112114 那份对齐的表，
+    拿 erw 来量同样会给出「0 按 id」，那也正是这句话的字面意思。
+
+    >>> provenance(69, 0)
+    '这张表的 id 就是这一份节目单那一套（69 个全按 id 配上）—— 2.19 那一层已经落进这张表'
+    >>> provenance(0, 69)
+    '没有一个 id 来自这一份节目单（69 个全靠台名救回）—— 这张表出自 2.19 那一层生效之前，或者它是按另一份节目单出的'
+    >>> provenance(40, 29)
+    '混着的：40 个带这一份的 id、29 个还得靠台名 —— 像是换了节目单之后没重出全'
+    >>> provenance(0, 0)
+    '一个台都没配上，看不出这张表的来历'
+    """
+    if not by_id and not by_name:
+        return "一个台都没配上，看不出这张表的来历"
+    if not by_name:
+        return (f"这张表的 id 就是这一份节目单那一套（{by_id} 个全按 id 配上）"
+                "—— 2.19 那一层已经落进这张表")
+    if not by_id:
+        return (f"没有一个 id 来自这一份节目单（{by_name} 个全靠台名救回）"
+                "—— 这张表出自 2.19 那一层生效之前，或者它是按另一份节目单出的")
+    return f"混着的：{by_id} 个带这一份的 id、{by_name} 个还得靠台名 —— 像是换了节目单之后没重出全"
+
+
 def fetch(target: str, timeout: int = 40) -> bytes:
     """本地文件直接读，URL 走 urllib。"""
     if is_remote(target):
@@ -261,6 +323,29 @@ def exit_code(n_targets: int, ok: int) -> int:
     return 1 if n_targets and not ok else 0
 
 
+def provenance_of(lines: list[str]) -> str:
+    """从一段体检输出里把「来历」那句的**短句**摘出来（结论行要用）。
+
+    为什么要从自己印出来的行里再摘一遍，而不是让 `report()` 顺手返回一个结构：
+    这一支脚本的 `report()` 就是一条“给人看的一段字”，把它改成返回 dict 会牵动
+    `usable()`（它就是读那几行字的）。这里宁可复用那行字，也不要为了少一次字符串处理
+    把“打印格式”和“判定数据”重新搅在一起 —— 2.30 的 `conclusion()` 是同一个取舍。
+
+    >>> provenance_of(["  这张表的来历：没有一个 id 来自这一份节目单（69 个全靠台名救回）"
+    ...                 "—— 这张表出自 2.19 那一层生效之前，或者它是按另一份节目单出的"])
+    '没有一个 id 来自这一份节目单（69 个全靠台名救回）'
+    >>> provenance_of(["  这张表的来历：这张表的 id 就是这一份节目单那一套（69 个全按 id 配上）"
+    ...                 "—— 2.19 那一层已经落进这张表"])
+    '这张表的 id 就是这一份节目单那一套（69 个全按 id 配上）'
+    >>> provenance_of(["## 一个候选", "  ✗ 取不到"])      # 取不到的那段没有这行
+    ''
+    """
+    for line in lines:
+        if line.startswith("  这张表的来历："):
+            return line.split("：", 1)[1].split("——")[0].strip()
+    return ""
+
+
 def report(target: str, channels: list[tuple[str, str]], today: str,
            timeout: int = 40) -> list[str]:
     """一个地址一段话：活没活着、今天有没有、我们的台有几个配得上、靠哪一列配上的。"""
@@ -276,7 +361,8 @@ def report(target: str, channels: list[tuple[str, str]], today: str,
            f"  {note}；generator={doc.generator or '（未声明）'}",
            f"  频道 {doc.n_channels} 个、节目 {doc.progs} 条 —— {coverages(doc, today)}",
            f"  我们这张表 {len(rows)} 个频道：按 tvg-id 配上 {by_id} 个，"
-           f"再靠台名救回 {by_name} 个，合计 {by_id + by_name}/{len(rows)}"]
+           f"再靠台名救回 {by_name} 个，合计 {by_id + by_name}/{len(rows)}",
+           f"  这张表的来历：{provenance(by_id, by_name)}"]
     if changed:
         out.append("  改 id 就能配上的：" + "、".join(
             f"{r['name']}（{r['old_id']}→{r['new_id']}）" for r in changed[:8])
@@ -321,6 +407,8 @@ def main(argv: list[str]) -> int:
         print()
     today = args.today or datetime.now().strftime("%Y%m%d")
     print(f"对表：{path.name}（{len(channels)} 个频道）  今天：{today}")
+    print(f"这张表头部写的节目单地址：{header_url(path) or '（没写）'}"
+          "　—— 电视自己去取的就是这一行，它和下面那行「来历」是两条独立的代码路径")
     if args.targets:
         print(f"候选：命令行给的 {len(targets)} 条（--config 这次没用上）")
     else:
@@ -343,14 +431,19 @@ def main(argv: list[str]) -> int:
               + ("…" if len(bad) > 6 else "")
               + " —— 下面按 (id, 台名) 数，这种台算两个")
     else:
-        print("这张表里每个台名只有一种 tvg-id（对齐之后 id 由节目单说了算，不该再有漂移）")
+        print("这张表里每个台名只有一种 tvg-id（没有 2.14 那种「同名两 id」；"
+              "至于这些 id 是谁定的，看每个候选下面那行「这张表的来历」）")
     print()
     ok = 0
+    prov = ""
     for t in targets:
         lines = report(t, channels, today, timeout=args.timeout)
         print("\n".join(lines))
-        ok += 1 if usable(lines) else 0
-    print(f"结论：{len(targets)} 个候选里，{ok} 个既今天有节目、又配得上我们表里的台。")
+        if usable(lines):
+            ok += 1
+            prov = prov or provenance_of(lines)   # 只认第一个**可用**的候选，取不到的不说
+    print(f"结论：{len(targets)} 个候选里，{ok} 个既今天有节目、又配得上我们表里的台。"
+          + (f" 这张表相对第一个可用的那份：{prov}。" if prov else ""))
     return exit_code(len(targets), ok)
 
 
