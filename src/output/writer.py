@@ -169,6 +169,11 @@ def _history_section(h: dict) -> list[str]:
     False
     >>> "每条线路都实测过" in on and "挤掉）" not in on
     True
+    >>> rep = "\\n".join(_history_section({**base, "replay": "2026-09-21 21:18"}))
+    >>> "沿用 2026-09-21 21:18" in rep and "挤掉）" not in rep   # 逐条判决有了，不需要延迟补位那句
+    True
+    >>> "每条线路都实测过" in rep               # 沿用记录 ≠ 当场测过
+    False
     """
     out = ["", "## 主机可用性履历（离线生成时靠它排序）", ""]
     who = f"- 累计 **{h['runs']} 轮**实测，采用 {h['used']} 轮（判据出口 `{h['egress'] or '未知'}`）"
@@ -203,7 +208,11 @@ def _history_section(h: dict) -> list[str]:
     out += _source_section(h)
     # 这一段在「本轮没实测」时才是排序的真正依据：`--verify` 那一轮每条线路都量过了，
     # 履历判据只落在 `probe: false` 那几条压根没测的线路上，写成「本轮靠它排序」就是假话。
+    # 第三种状态是 `--replay`（`h["replay"]` = 沿用那一轮的时间戳）：每条线路都有判决，
+    # 但那些判决不是当场量的 —— 所以既不能写「本轮每条线路都实测过」，也不该说
+    # 「没实测所以要靠延迟补位」（记录里就带着每条的毫秒数）。
     measured = bool(h.get("verified"))
+    replayed = str(h.get("replay") or "")
     bits = []
     if h.get("demote"):
         bits.append(f"把 {len(h['demote'])} 个整族失效的主机往后压了档："
@@ -222,7 +231,7 @@ def _history_section(h: dict) -> list[str]:
                     "（整族那一档要求「通了的全是录像」，一条不动不够）")
     if h.get("latency_hosts"):
         bits.append(f"{h['latency_hosts']} 个主机按上一轮实测延迟补了位"
-                    + ("" if measured else
+                    + ("" if (measured or replayed) else
                        "（不补的话，本轮没实测，最好的那条会被来源优先级挤掉）"))
     if bits:
         lead = ("> 履历里另有这些判据" if measured else "> 本轮生成用到履历的地方")
@@ -230,9 +239,359 @@ def _history_section(h: dict) -> list[str]:
         if measured:
             out[-1] += ("（本轮每条线路都实测过，所以它们只作用在 `probe: false` "
                         "那几条压根没测的线路上）")
+        elif replayed:
+            out[-1] += (f"（本轮的逐条线路判决沿用 {replayed} 那一轮的记录，不是当场测的，"
+                        "所以它们只补在那份记录里没有的线路上）")
         if h.get("stale_first_lines"):
             out[-1] += (f"第一线仍落在已知失效主机上的频道 {h['stale_first_lines']} 个 —— "
                         "那些台只有这一条公网线路，没有更好的可以换。")
+    return out
+
+
+def _epg_section(e: dict | None) -> list[str]:
+    """渲染「EPG 对齐」：`tvg-id` 那一列是从哪份节目单反推的、配上多少、改了哪些台。
+
+    三种情况必须分开写，因为在局域网订阅里它们是三种完全不同的故障：
+
+      * **未启用** —— 这一轮没有对齐这回事，`tvg-id` 还是上游「谁先到谁说了算」；
+      * **取不到 / 取回来是空单** —— 一个 id 都不改。这是 `apply_ids()` 的安全性质，
+        不写明的话，读的人会以为「上游 EPG 一挂就把电视的表搞坏了」；
+      * **正常** —— 配上多少、靠哪一列配上的、改了哪几个台。
+
+    「按 id」和「靠台名」两个数要分开报，这是硬要求：erw 那份节目单的 channel id 是 `1`、`81`
+    这种纯数字，我们上游抄来的 `tvg-id="CCTV-1综合"` 按 id 一条都对不上，全靠 display-name 救回来
+    （计划书 2.19）。只报一个合计就把「这份 EPG 的 id 写法有多不讲理」这件事藏起来了。
+
+    >>> e = {"enabled": True, "url": "http://e.erw.cc/e.xml.gz",
+    ...      "header": "http://e.erw.cc/e.xml.gz", "via": "联网",
+    ...      "note": "312000 字节（gzip，解出 2400000 字节）", "error": "",
+    ...      "coverage": "今天有节目（覆盖 3 天：20260919~20260921）", "ok": True,
+    ...      "days": {"20260919": 156, "20260920": 157, "20260921": 18046},
+    ...      "epg_channels": 521, "epg_progs": 18359, "generator": "erw",
+    ...      "align": {"total": 98, "hit_id": 3, "hit_name": 66,
+    ...                "changed": [("CCTV-1综合", "CCTV-1综合", "1"),
+    ...                            ("CCTV-10科教", "CCTV-10科教", "10")],
+    ...                "miss": ["湘潭新闻综合"], "rows": [], "hunan": 10, "hunan_total": 39}}
+    >>> sec = "\\n".join(_epg_section(e))
+    >>> "EPG 对齐" in sec and "69/98" in sec
+    True
+    >>> "按 tvg-id 直接对上 3 个" in sec and "靠台名救回 66 个" in sec
+    True
+    >>> "312000 字节" in sec and "erw" in sec                      # 来历要能查回去
+    True
+    >>> "hunan.m3u 那 39 个台里 10 个" in sec
+    True
+    >>> "20260921 18046 条" in sec and "其实只有最新那天有内容" in sec
+    True
+    >>> even = "\\n".join(_epg_section({**e, "days": {"20260920": 9000, "20260921": 9300}}))
+    >>> "其实只有最新那天" not in even        # 分布均匀时不下那句判断
+    True
+    >>> 'x-tvg-url="http://e.erw.cc/e.xml.gz"' in sec       # 头部写的是电视取到的那条地址
+    True
+    >>> any("没有" in l and "x-tvg-url" in l               # 地址不是 http(s) 就宁可不写
+    ...     for l in _epg_section({**e, "header": ""}))
+    True
+    >>> sec.count("| `CCTV-1综合` |") + sec.count("| CCTV-10科教 |")   # 逐台一张表
+    2
+    >>> "湘潭新闻综合" in sec and "没配上" in sec
+    True
+    >>> off = "\\n".join(_epg_section({**e, "enabled": False}))
+    >>> "未启用" in off and "谁先创建频道桶" in off
+    True
+    >>> dead = "\\n".join(_epg_section({**e, "ok": False, "epg_channels": 0, "epg_progs": 0,
+    ...                                 "days": {}, "coverage": "", "via": "未取到",
+    ...                                 "error": "URLError: 连不上",
+    ...                                 "align": {**e["align"], "hit_id": 0, "hit_name": 0,
+    ...                                           "changed": [], "miss": ["湖南卫视"],
+    ...                                           "hunan": 0, "hunan_total": 39}}))
+    >>> "一个 tvg-id 都没改" in dead and "URLError" in dead
+    True
+    >>> "69/98" not in dead                        # 拿不到的时候不许报命中率
+    True
+    >>> _epg_section(None), _epg_section({})        # 没材料 = 不渲染，跟「未启用」不是一回事
+    ([], [])
+    >>> "EPG 对齐" in "\\n".join(_epg_section({"enabled": False}))
+    True
+    """
+    if not e:
+        return []
+    if not e.get("enabled"):
+        return ["", "## EPG 对齐（tvg-id 怎么来的）", "",
+                "> 这一轮**未启用**（`config/epg.yaml` 没写地址，或者加了 `--no-epg`）："
+                "`tvg-id` 还是上游「谁先创建频道桶谁说了算」的写法，"
+                "订阅表头部的 `x-tvg-url` 也是抄上游第一条"
+                "（2026-09-21 量过：抄来的那条 404，所以这一段本身就是一个提醒）。"
+                "启用之后这一段会改成逐台对账（计划书 2.19）。"]
+
+    a = e.get("align") or {}
+    total = a.get("total", 0)
+    hit = a.get("hit_id", 0) + a.get("hit_name", 0)
+    # 头部这一行是给电视看的，跟本机这一份不是一回事：地址不是 http(s) 时宁可不写
+    hdr = e.get("header", "")
+    hdr_line = (f"- 头部 `x-tvg-url=\"{hdr}\"` 由电视自己去取，本机这一份只用来决定 `tvg-id`"
+                if hdr else
+                "- 头部**没有** `x-tvg-url`：配置里的地址不是 http(s)，"
+                "电视取不到，写进去就是谎话（`epg_header_url()`）")
+    out = ["", "## EPG 对齐（tvg-id 怎么来的）", "",
+           f"- 节目单：`{e.get('url', '')}` —— 本轮 **{e.get('via', '未取到')}**"
+           + (f"，{e['note']}" if e.get("note") else "")
+           + (f"，generator `{e['generator']}`" if e.get("generator") else ""),
+           f"- 里面 {e.get('epg_channels', 0)} 个频道、{e.get('epg_progs', 0)} 条节目 —— "
+           f"{e.get('coverage') or '一条节目都没有'}"]
+    days = e.get("days") or {}
+    if days:
+        # 「覆盖 3 天」这种说法会骗人：各家节目单常常只有今天，另两天是跨午夜的尾巴。
+        # 所以把逐天的条数摊开，并且只在「今天占绝对多数」时才下那句判断。
+        newest = max(days)
+        per = "、".join(f"{d} {n} 条" for d, n in sorted(days.items()))
+        rest = sum(v for k, v in days.items() if k != newest)
+        tail = ("；**其实只有最新那天有内容**，另两天是跨午夜的尾巴，明天还没有"
+                if len(days) > 1 and days.get(newest, 0) and rest < days[newest] * 0.05 else "")
+        out.append(f"- 节目条数按天：{per}{tail}")
+    if e.get("error"):
+        out.append(f"- ⚠️ {e['error']}")
+    if not e.get("ok") and not a.get("hit_id") and not a.get("hit_name"):
+        out += ["", f"所以这一轮**一个 tvg-id 都没改**：{total} 个台里 0 个配上节目单，"
+                "因为根本没有能对照的名单。这是刻意的 —— 上游 EPG 挂掉时这一层不该把"
+                "已经在电视上用着的表搞乱，`apply_ids()` 拿到空单什么都不动。",
+                "", hdr_line, "",
+                "> 本机取不到不代表电视取不到，反之亦然（计划书 2.8："
+                "这台开发机的出口和电视那张 Wi-Fi 不是同一个测量点）。"
+                "要换成后备地址就改 `config/epg.yaml` 的 `url`（里面记着四个候选的量过的数字），"
+                "或者整层关掉 `enabled: false`。"]
+        if e.get("caveat"):
+            out += ["", f"> {e['caveat']}"]
+        return out
+
+    out += [f"- 我们这张表 {total} 个台：按 tvg-id 直接对上 {a.get('hit_id', 0)} 个、"
+            f"靠台名救回 {a.get('hit_name', 0)} 个 → **{hit}/{total} 有节目单**",
+            f"- hunan.m3u 那 {a.get('hunan_total', 0)} 个台里 {a.get('hunan', 0)} 个"
+            "（湖南的市州台在公开节目单里基本不存在，和计划书 2.12「没有公开线路」是同一批台）",
+            hdr_line]
+
+    changed = a.get("changed") or []
+    if changed:
+        out += ["", f"### 被改写 id 的台（{len(changed)} 个）", "",
+                "| 频道 | 原来（上游先到的写法） | 现在（节目单里的写法） |", "|---|---|---|"]
+        out += [f"| {n} | `{o}` | `{i}` |" for n, o, i in changed[:30]]
+        if len(changed) > 30:
+            out.append(f"| …另有 {len(changed) - 30} 个 | | |")
+        out += ["", "> 以前这些台的 id 取决于哪个上游先创建频道桶："
+                "`CCTV-1` 与 `CCTV-1综合` 是同一条线路的两种写法，先到者定，"
+                "所以换一批上游、换一个顺序就会换一批 id。"
+                "现在只看「这份节目单里到底有哪个 id」，与到达顺序无关。"]
+
+    miss = a.get("miss") or []
+    if miss:
+        out += ["", f"### 没配上节目单的台（{len(miss)} 个，电视上不会有节目）", "",
+                "、".join(miss[:40]) + ("…" if len(miss) > 40 else ""), "",
+                "> 两种原因混在这里：一种是这份节目单确实没有这个台（湖南市州台、"
+                "各家地面频道大多是这种），另一种是我们的台名和它的 display-name 差太远、"
+                "对不上（`src/check/epg.py` 的前缀规则故意不做中文前缀，"
+                "免得把「长沙新闻」当成「长沙新闻综合」——那是两个台）。"
+                "换一份节目单、或者往 `config/channels.yaml` 里补 alias，都是人在看这张表之后决定。"]
+    if e.get("caveat"):
+        out += ["", f"> {e['caveat']}"]
+    return out
+
+
+def _fallback_lines(fb: dict, measured: bool = False) -> list[str]:
+    """把「点第 2 条线路救得回来吗」那五类写成一句结论（数字来自 `src.cli.second_line_options`）。
+
+    为什么这句话要进报告：验收单上一版写着「这个台不动就点第二条线」，而 2026-09-21 真机上
+    湖南那批台整表超时（计划书 2.8）—— 两件同时成立，说明「有第二线」不等于「换得出去」。
+    2.25 第一次把它量成数字（39 个可疑的台里 0 个换得到公网电视线路），2.26 把结论搬进报告：
+    讲的是这张表的结构，本来就该和「第一线主机集中度」并排，不该每次都要跑一遍试播包脚本才看得到。
+
+    三处容易糊过去的地方：`other_public` 那一项**永远写**（0 才是这一句的结论）；
+    电台（`audio_only`）不算救回来 —— 它电脑实测通、有声音，但电视上没画面；
+    `scope_known` 为假时不下「没有救法」的结论，只说「判不了」。
+    `measured` 管的是 0 个可疑时有没有资格说「都测过」：没有逐条判决时只按可达范围判过，
+    话说满了就是把「没查」写成「没问题」。
+
+    >>> F = lambda **kw: dict({"channels": 0, "no_alt": 0, "same_host": 0, "other_intranet": 0,
+    ...                        "other_audio": 0, "other_public": 0, "other_unknown": 0,
+    ...                        "reasons": {}, "switchable": [], "lands": [], "land_kind": {},
+    ...                        "scope_known": True}, **kw)
+    >>> print("\\n".join(_fallback_lines(F(), measured=True)))
+    - **换第二条线路救得回来吗**：这张表没有一个台需要靠换线路救 —— 每个台的第一线都在本轮判决里，且没有一条落在 IPTV 专网上。
+    >>> print("\\n".join(_fallback_lines(F())))        # 没判决时不说「测过」，只说按范围没查出台
+    - **换第二条线路救得回来吗**：这张表没有一个台需要靠换线路救 —— 本轮没有逐条判决，按可达范围看第一线不在 IPTV 专网上。
+    >>> # 2026-09-22 那张表的形状：一个换不到公网，就把「没有这条救法」写死
+    >>> b = F(channels=2, no_alt=1, other_intranet=1, reasons={"专网": 2},
+    ...       lands=[("k.example", 1)], land_kind={"k.example": "IPTV 专网"})
+    >>> print("\\n".join(_fallback_lines(b)))
+    - **换第二条线路救得回来吗**：第一线可疑的 2 个台（专网 2）里，1 个根本没有备选线路、1 个换到别家可那一家仍是 IPTV 专网、**0 个换得到公网电视线路**。
+      - 换过去落在：`k.example`（IPTV 专网）1 个台
+      - 所以**这张表里没有「换线路」这条救法**：这些台要么没有第二线，要么第二线还在那几家专网出口上。要救得去别处找线路（计划书 P5），或走机顶盒／专网 VLAN。
+    >>> # 电台那一类单列：换过去只有声音，不算救回来
+    >>> a = F(channels=1, other_audio=1, reasons={"没测过": 1},
+    ...       lands=[("ls.qingting.fm", 1)], land_kind={"ls.qingting.fm": "纯音频电台"})
+    >>> "1 个换过去是纯音频电台" in "\\n".join(_fallback_lines(a))
+    True
+    >>> # 真换得到的那些台要点名，让他们去电视上点第二线，而不是说「没有救法」
+    >>> c = F(channels=1, other_public=1, reasons={"专网": 1}, switchable=["经视"])
+    >>> s = "\\n".join(_fallback_lines(c))
+    >>> "换得到公网电视线路的是这几个台**：经视" in s      # 点名，让他们去电视上点第二线
+    True
+    >>> "没有「换线路」这条救法" not in s                   # 有救法就不写那句结论
+    True
+    >>> # 没配可达范围：换到别家的落点判不了，就不能硬说这张表没有救法
+    >>> u = F(channels=1, other_unknown=1, reasons={"专网": 1}, scope_known=False)
+    >>> s = "\\n".join(_fallback_lines(u))
+    >>> "判不了" in s and "这条救法" not in s
+    True
+    """
+    head = f"- **换第二条线路救得回来吗**："
+    if not fb["channels"]:
+        return [head + ("这张表没有一个台需要靠换线路救 —— 每个台的第一线都在本轮判决里，"
+                        "且没有一条落在 IPTV 专网上。" if measured else
+                        "这张表没有一个台需要靠换线路救 —— 本轮没有逐条判决，"
+                        "按可达范围看第一线不在 IPTV 专网上。")]
+    kinds = "、".join(f"{k} {n}" for k, n in sorted(fb["reasons"].items()))
+    parts = [(f"{fb['no_alt']} 个根本没有备选线路", fb["no_alt"]),
+             (f"{fb['same_host']} 个的备选还在同一家机房", fb["same_host"]),
+             (f"{fb['other_intranet']} 个换到别家可那一家仍是 IPTV 专网", fb["other_intranet"]),
+             (f"{fb['other_audio']} 个换过去是纯音频电台（有声音、没画面）", fb["other_audio"]),
+             (f"{fb['other_unknown']} 个换到别家（可达范围没配，判不了那一家）", fb["other_unknown"]),
+             # 这一项**永远写**：0 才是这一整段的结论
+             (f"**{fb['other_public']} 个换得到公网电视线路**", True)]
+    out = [head + f"第一线可疑的 {fb['channels']} 个台（{kinds}）里，"
+                  + "、".join(t for t, n in parts if n) + "。"]
+    if fb["lands"]:
+        out.append("  - 换过去落在：" + "、".join(
+            f"`{b}`（{fb['land_kind'].get(b, '范围未知')}）{n} 个台"
+            for b, n in fb["lands"][:3])
+            + (f"（共 {len(fb['lands'])} 家，只列前 3）" if len(fb["lands"]) > 3 else ""))
+    if fb["switchable"]:
+        out.append("  - **换得到公网电视线路的是这几个台**：" + "、".join(fb["switchable"][:8])
+                   + ("…" if len(fb["switchable"]) > 8 else "")
+                   + " —— 真机上这几个台值得点第 2 条线路。")
+    elif fb["scope_known"]:
+        out.append("  - 所以**这张表里没有「换线路」这条救法**：这些台要么没有第二线，"
+                   "要么第二线还在那几家专网出口上。要救得去别处找线路（计划书 P5），"
+                   "或走机顶盒／专网 VLAN。")
+    else:
+        out.append("  - 换到别家的那些台落在公网还是专网，这一轮判不了（没配可达范围）—— "
+                   "先补 `config/reachability.yaml` 再决定要不要动排序。")
+    return out
+
+
+def _focus_section(views: list[dict] | None) -> list[str]:
+    """渲染「第一线主机集中度」：一张表里第一线落在几家主机上、每家挂着几个台。
+
+    为什么要单独一节：前面那些表都是**逐条**的（这条通、那条是录像），
+    而电视上的判断是**逐台**的 —— APTV 只播第一线，所以一家主机的死活直接就是
+    它名下那几个台的死活。这两层之间那座桥以前没人搭，于是「真机该先点哪个台」
+    只能靠人拿正则去数 m3u（计划书 2.22 就是这么量出来的）。
+
+    两列特别容易读反，所以宁可写长一点：
+
+      * **换线路也换不出去** —— 这个台名下一条线路都不在别的主机上，这才是供给侧的单点。
+        光看「挂着几个台」会把我们自己定的排序规则（`--max-per-host` 每条表最多留 2 条、
+        循环录像压后）也算成上游的功劳。
+      * **第一线没实测过** —— 这条地址在逐条判决里没有记录。**只在真有判决的时候才出这一列**：
+        纯离线生成时每个台都「没实测过」，那张表会把「本轮没测」说成「这几家主机都有问题」。
+        2026-09-21 那轮 `--verify` 因为 `probe: false` 没给运营商内网发过一个请求，所以这一列
+        非 0 的那几行意思是「真机那一次是它们这辈子第一次被判分」。
+
+    >>> views = [{"label": "aptv.m3u", "total": 3, "measured": True,
+    ...           "rows": [{"host": "a.cm", "scope": "iptv_intranet", "channels": 2,
+    ...                     "alone": 1, "unmeasured": 2, "alt_lines": 1,
+    ...                     "sources": ["hn_mobile"], "examples": ["湖南经视", "娄底新闻"]}]}]
+    >>> s = "\\n".join(_focus_section(views))
+    >>> "第一线主机集中度" in s and "`a.cm`" in s
+    True
+    >>> "| 2 个台 | 1 | 2 | 1 条 | `hn_mobile` |" in s      # 列的顺序就是表头的顺序
+    True
+    >>> "运营商 IPTV 内网" in s                              # 范围用读者看得懂的词
+    True
+    >>> "湖南经视" in s                                       # 例子：告诉你点开哪个台最值
+    True
+    >>> s2 = "\\n".join(_focus_section([{**views[0], "measured": False}]))
+    >>> "没实测过" not in s2                                  # 没判决就不拿这一列吓人
+    True
+    >>> "\\n".join(_focus_section(None))
+    ''
+    >>> only1 = [{"label": "x", "total": 3, "measured": False,
+    ...           "rows": [{"host": f"h{i}", "scope": "public", "channels": 1, "alone": 1,
+    ...                     "unmeasured": 0, "alt_lines": 0, "sources": [], "examples": ["t"]}
+    ...                    for i in range(3)]}]
+    >>> "一家主机都不共用" in "\\n".join(_focus_section(only1))    # 全是一对一：直说，不硬凑表
+    True
+    >>> # 2.26：这一节还要回答「换第二条线路救得回来吗」（计划书 2.25 量出来的那五类）
+    >>> fb = {"channels": 39, "no_alt": 24, "same_host": 1, "other_intranet": 14,
+    ...       "other_audio": 0, "other_public": 0, "other_unknown": 0, "reasons": {"专网": 39},
+    ...       "switchable": [], "lands": [("tvgslb.hn.chinamobile.com", 14)],
+    ...       "land_kind": {"tvgslb.hn.chinamobile.com": "IPTV 专网"}, "scope_known": True}
+    >>> s3 = "\\n".join(_focus_section([{**views[0], "fallback": fb}]))
+    >>> "换第二条线路救得回来吗" in s3 and "24 个根本没有备选线路" in s3
+    True
+    >>> "**0 个换得到公网电视线路**" in s3          # 这一项永远写：0 才是结论
+    True
+    >>> "tvgslb.hn.chinamobile.com`（IPTV 专网）14 个台" in s3
+    True
+    >>> "这张表里没有「换线路」这条救法" in s3
+    True
+    >>> "救得回来吗" in "\\n".join(_focus_section([views[0]]))   # 没给 fallback 就不硬编一句
+    False
+    >>> s4 = "\\n".join(_focus_section([{**views[0], "fallback": dict(
+    ...     fb, channels=0, no_alt=0, same_host=0, other_intranet=0, other_public=0,
+    ...     reasons={}, lands=[])}]))
+    >>> "没有一个台需要靠换线路救" in s4                        # 0 个可疑也要说出来
+    True
+    >>> # 集中度那张表不列了（一家主机都不共用），这一问照样要回答 —— 它不靠那张表活着
+    >>> "救得回来吗" in "\\n".join(_focus_section([{**only1[0], "fallback": fb}]))
+    True
+    """
+    if not views:
+        return []
+    out = ["", "## 第一线主机集中度（一家主机死了会带走几个台）"]
+    measured_any = False
+    for v in views:
+        rows = [r for r in (v.get("rows") or []) if r["channels"] >= 2][:10]
+        total = v.get("total") or sum(r["channels"] for r in (v.get("rows") or []))
+        if not rows:
+            out += ["", f"- {v.get('label', '')}：{total} 个台的第一线一家主机都不共用，"
+                        "没有哪个台会替别人背判分。"]
+        else:
+            has_ms = bool(v.get("measured"))
+            measured_any = measured_any or has_ms
+            head = ("| 第一线主机 | 范围 | 挂着几个台 | 其中换线路也换不出去 |"
+                    + (" 第一线没实测过 |" if has_ms else "") + " 备选线路 | 来源 |")
+            sep = "|---|---|---:|---:|" + ("---:|" if has_ms else "") + "---:|---|"
+            out += ["", f"### {v['label']}（{total} 个台）", "", head, sep]
+            for r in rows:
+                name, _ = _SCOPE_LABEL.get(r["scope"], (r["scope"], ""))
+                cells = [f"`{r['host']}`", name, f"{r['channels']} 个台",
+                         str(r["alone"]) if r["alone"] else "—"]
+                if has_ms:
+                    cells.append(str(r["unmeasured"]) if r["unmeasured"] else "—")
+                cells += [f"{r['alt_lines']} 条",
+                          "、".join(f"`{s}`" for s in r["sources"]) or "—"]
+                out.append("| " + " | ".join(cells) + " |")
+            top = rows[0]
+            ex = "、".join(top["examples"]) + ("…" if top["channels"] > len(top["examples"]) else "")
+            out += ["", f"- 集中度最高的是 `{top['host']}`：{top['channels']} 个台的第一线都是它"
+                        f"（{ex}）。真机点开其中任意一个，等于一次替这 {top['channels']} 个台判分。"]
+            rest = total - sum(r["channels"] for r in rows)
+            if rest > 0:
+                out += ["", f"（另有 {rest} 个台的第一线不在上表这 {len(rows)} 家上，没列进来。"
+                            + ("表只列挂着两个台以上的、前 10 家。" if len(rows) >= 10 else "") + "）"]
+        # 2.26：紧跟着这张表回答「换第二条线路救得回来吗」—— 一家主机死了带走几个台是风险面，
+        # 「那这几个台有没有第二条线可换」才是供给侧。没给 fallback 就不硬编一句（见上面的用例）。
+        fb = v.get("fallback")
+        if fb:
+            out += [""] + _fallback_lines(fb, bool(v.get("measured")))
+    out += ["", "> **两列别读反**：「挂着几个台」是**风险面** —— 这一家一死，"
+              "这几个台的默认线路一起没；而「供给侧有没有退路」看「换线路也换不出去」，"
+              "共用本身有一部分是我们自己的排序造成的（`--max-per-host`、录像压后）。"]
+    if measured_any:
+        out += ["> 「第一线没实测过」= 这条地址在这一轮的逐条判决（`probe.json`）里根本没有记录："
+                "`probe: false` 的那几个源一个请求都没发过（计划书 2.22）。"
+                "这一栏非 0 的那几行，真机点开一次就是它名下那批台第一次被判分 —— "
+                "`docs/真机验收单.md` 第 4 步的样本优先从这里挑。"]
+    out += ["", "> 数字来自本轮生成的这张表，不来自实测；换上游、换排序参数都会动它。"]
     return out
 
 
@@ -244,17 +603,27 @@ def format_report(
     unmatched: dict[str, int],
     defined_but_empty: list[tuple[str, str]],
     epg_url: str,
+    epg_note: dict | None = None,
     verify_note: str = "",
     line_scope: dict[str, int] | None = None,
     no_public: list[str] | None = None,
     fake_live: list[str] | None = None,
+    focus: list[dict] | None = None,
     hosts: list[dict] | None = None,
+    hosts_note: str = "",
     history: dict | None = None,
 ) -> str:
     """生成人读的 markdown 报告，方便你一眼看出哪些台有、哪些台还缺。
 
     hosts 是 host_summary() 的输出，传了才渲染「实测逐主机」一节；
-    history 是 src/check/history.py 算出来的履历摘要，传了才渲染趋势那一节。
+    `hosts_note` 是那一节的表头后缀 —— `--replay` 时那些数字来自被沿用的那一轮，
+    不写明的话报告读起来就像本轮又联网测了一遍（本轮真的一个请求都没发）。
+    history 是 src/check/history.py 算出来的履历摘要，传了才渲染趋势那一节；
+    focus 是 first_line_focus() 按表算出来的第一线主机集中度（计划书 2.23），
+    一个元素一张表（全量 / 湖南），传了才渲染那一节 —— 没传就不硬凑。
+    epg_note 是 `load_epg()` + `apply_ids()` 的材料，传了才渲染「EPG 对齐」那一节 ——
+    **未启用时也要传**，那一节会写明「这一轮没有对齐这回事」，否则读报告的人分不清
+    「没启用」和「功能坏了没渲染」。
 
     >>> h = [{"host": "dead.example", "scope": "public", "total": 3, "ok": 0, "best_ms": 0},
     ...      {"host": "live.example", "scope": "public", "total": 2, "ok": 2, "best_ms": 480}]
@@ -268,12 +637,30 @@ def format_report(
     True
     >>> "其中 2 条是循环录像" in format_report(**{**kw, "hosts": [{**h[1], "vod": 2}]})
     True
+    >>> [l for l in format_report(**{**kw, "hosts_note": "沿用 21:18 那一轮，本轮未联网"}).splitlines()
+    ...  if l.startswith("## 逐主机")][0]
+    '## 逐主机可用性（沿用 21:18 那一轮，本轮未联网）'
+    >>> "实测逐主机（本机出口直连）" in format_report(**kw)   # 不传后缀＝本轮自己测的
+    True
     >>> "有循环录像的主机" not in format_report(**{**kw, "hosts": h})   # 没这项就不加一节
     True
     >>> f = format_report(**{**kw, "hosts": [], "fake_live": ["湖南卫视（a.com 1259 片循环）"]})
     >>> [l for l in f.splitlines() if "湖南卫视" in l and "循环" in l]
     ['- 湖南卫视（a.com 1259 片循环）']
     >>> "循环录像" not in format_report(**{**kw, "hosts": [], "fake_live": []})
+    True
+    >>> "EPG 对齐" not in format_report(**{**kw, "hosts": []})     # 没传材料就不加这一节
+    True
+    >>> "第一线主机集中度" not in format_report(**{**kw, "hosts": []})   # 没传 focus 同上
+    True
+    >>> one = {"label": "aptv.m3u", "total": 2, "measured": False,
+    ...        "rows": [{"host": "a", "scope": "public", "channels": 2, "alone": 0,
+    ...                   "unmeasured": 0, "alt_lines": 3, "sources": ["gd"],
+    ...                   "examples": ["x", "y"]}]}
+    >>> f2 = format_report(**{**kw, "hosts": [], "focus": [one]})
+    >>> "第一线主机集中度" in f2 and "aptv.m3u（2 个台）" in f2
+    True
+    >>> "未启用" in format_report(**{**kw, "hosts": [], "epg_note": {"enabled": False}})
     True
     >>> hist = {"runs": 3, "used": 2, "dropped": 1, "egress": "119.39.40.124 CN",
     ...         "totals": [{"at": "2026-09-21T13:00:40+08:00", "egress": "U",
@@ -345,10 +732,14 @@ def format_report(
                   "比超时更坏，因为用户会以为这个台就这样。它们已在本表里被排到真直播后面，"
                   "只剩录像可播的才留在第一位。"]
 
+    lines += _focus_section(focus)
+
     if hosts:
         dead_all = [h for h in hosts if not h["ok"]]
         vod_any = [h for h in hosts if h.get("vod")]
-        lines += ["", "## 实测逐主机（本机出口直连）", "",
+        head = (f"## 逐主机可用性（{hosts_note}）" if hosts_note
+                else "## 实测逐主机（本机出口直连）")
+        lines += ["", head, "",
                   "| 主机 | 范围 | 可用 | 最快 |", "|---|---|---|---|"]
         for h in hosts:
             name, _ = _SCOPE_LABEL.get(h["scope"], (h["scope"], ""))
@@ -376,6 +767,8 @@ def format_report(
 
     if history and history.get("runs"):
         lines += _history_section(history)
+
+    lines += _epg_section(epg_note)
 
     lines += ["", "## 各分组频道与线路数", "", "| 分组 | 频道 | 线路数 |", "|---|---|---|"]
     for grp, chs in by_group.items():

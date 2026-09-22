@@ -12,6 +12,13 @@
 `config/sources.yaml` 是别人维护的聚合源，`config/sources_local.yaml` 是手工核对过的补充线路
 （带出处和有效期），两边都会读；`--skip-local` 只在前者里找问题时用。
 
+`config/epg.yaml` 管节目单那一列（计划书 2.19）：它那条地址写进订阅表头部的 `x-tvg-url`，
+是**电视自己去取**的；节目单本身优先读 `data/cache/epg.xml`，缓存里没有今天才联网。
+取回来只干一件事 —— 把每个频道的 `tvg-id` 换成「这份节目单里到底有」的那个写法
+（规则在 `src/check/epg.py`，逐台的对账结果在 report.md 的「EPG 对齐」一节）。
+取不到就是空单，一个 id 都不改；`--no-epg` 回到 P3 之前那种「头部抄上游第一条、
+id 由谁先创建频道桶决定」的行为。
+
 同一频道的多条线路按「可达范围」+「实测延迟」排先后（范围规则在 config/reachability.yaml），
 公网且快的排第一，因为 APTV 默认只播第一条；运营商 IPTV 内网地址和电台冒充项退居备选。
 
@@ -60,6 +67,8 @@ import yaml  # noqa: E402
 
 from src.check import history as hist  # noqa: E402
 from src.check.env import egress_hint, measurement_warnings  # noqa: E402
+from src.check.epg import (  # noqa: E402
+    Epg, apply_ids, coverages, gzip_decompress, has_today, load_bytes)
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
     AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
@@ -73,6 +82,7 @@ from src.parse.m3u import Entry, parse_m3u  # noqa: E402
 SOURCES_FILE = ROOT / "config" / "sources.yaml"
 LOCAL_SOURCES_FILE = ROOT / "config" / "sources_local.yaml"
 REACH_FILE = ROOT / "config" / "reachability.yaml"
+EPG_FILE = ROOT / "config" / "epg.yaml"
 HISTORY_FILE = ROOT / "data" / "output" / "probe-history.jsonl"
 CACHE_DIR = ROOT / "data" / "cache"
 HUNAN_GROUPS = ("hunan_local", "changsha", "shizhou", "jinying")
@@ -304,8 +314,263 @@ def fetch(target: str, timeout: int = 60) -> str:
     return Path(target).read_text(encoding="utf-8", errors="replace")
 
 
+def fetch_bytes(target: str, timeout: int = 60) -> bytes:
+    """`fetch` 的字节版，给节目单用（那份可能是 .gz，不能先按文本解）。
+
+    本地路径照读 —— 不是为了绕过网络，是为了 `load_epg()` 那串样例能在不联网的情况下
+    把「缓存新/缓存旧/取不到」三条分支都走一遍。
+    """
+    if target.startswith(("http://", "https://")):
+        url = quote(target, safe=":/?&=%#[]@!$'()*+,;")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return resp.read()
+    return Path(target).read_bytes()
+
+
+def epg_header_url(cfg: dict, upstream_urls: list[str]) -> str:
+    """订阅表头部 `x-tvg-url` 该写哪条地址（电视自己去取的就是这一行）。
+
+    两条规矩：
+      * 未启用才回到「抄上游播放列表的第一条」—— 那是 P3 之前的行为，原样留着，
+        但要知道它实测 404（计划书 2.19），所以这条路只是为了「什么都没配」时不改变产物；
+      * 启用但地址不是 http(s) —— **不写**。本地路径是给 `load_epg()` 做实验用的，
+        电视拿不到，写进头部就是一句谎话；宁可不写。
+
+    >>> epg_header_url({"enabled": True, "url": "https://e.erw.cc/e.xml.gz"}, ["http://抄来的"])
+    'https://e.erw.cc/e.xml.gz'
+    >>> epg_header_url({"enabled": True, "url": "/tmp/local.xml"}, ["http://抄来的"])
+    ''
+    >>> epg_header_url({"enabled": False, "url": "https://e.erw.cc/e.xml.gz"}, ["http://抄来的"])
+    'http://抄来的'
+    >>> epg_header_url({"enabled": False, "url": ""}, [])
+    ''
+    """
+    if not cfg.get("enabled"):
+        return upstream_urls[0] if upstream_urls else ""
+    url = str(cfg.get("url") or "")
+    return url if url.startswith(("http://", "https://")) else ""
+
+
+def load_epg_config(path: Path) -> dict:
+    """读 `config/epg.yaml` 里那一节；文件不在或被写坏了就当「没启用」。
+
+    「没地址就等于没启用」是同一件事的两种说法，所以只写一条判据（`enabled` 由 `url` 参与决定）。
+    这样默认值是安全的：新克隆的仓库里没有这个文件，生成行为跟 P3 之前逐字节一致。
+
+    >>> c = load_epg_config(EPG_FILE)
+    >>> c["enabled"], c["url"].startswith("http")     # 不钉死是哪条地址，见下
+    (True, True)
+    >>> c["cache"].name
+    'epg.xml'
+    >>> n = load_epg_config(ROOT / "config" / "definitely-missing.yaml")
+    >>> n["enabled"], n["url"]        # 不抛，只是什么都不做
+    (False, '')
+    >>> import pathlib, tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text("epg:\\n  url: http://x/e.xml\\n  enabled: false\\n", encoding="utf-8")
+    ...     load_epg_config(p)["enabled"]
+    False
+
+    真配置那条只钉「启用 ⇒ 地址是 http(s)」这一件事，不钉它是 `e.erw.cc` ——
+    这套设计的卖点就是「换节目单 = 改一行」（`config/epg.yaml` 的 note 里记着为什么是那条），
+    把地址写进断言里等于每换一次地址就先修一次测试。
+    """
+    try:
+        cfg = (yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}).get("epg") or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    url = str(cfg.get("url") or "").strip()
+    return {
+        "url": url,
+        "cache": ROOT / str(cfg.get("cache") or "data/cache/epg.xml"),
+        "enabled": bool(cfg.get("enabled", True)) and bool(url),
+        "caveat": str(cfg.get("caveat") or "").strip(),
+    }
+
+
+def load_epg(cfg: dict, *, today: str, force: bool = False,
+             timeout: int = 60) -> tuple[Epg, dict]:
+    """按「缓存优先、缓存里没有今天就重取」拿节目单，返回 (节目单, 一份来历)。
+
+    为什么规则写成「够不够新」而不是「用户有没有让我联网」：节目单是**有时效**的东西，
+    昨天那份的 `tvg-id` 对今天照样能用，但它自己覆盖不到今天，电视上就是空节目单。
+    `has_today()` 量得出这件事，所以取不取网看它，不看 `--fresh`；`--fresh` 只是顺带强制重取。
+
+    三条退路都是同一条原则：这一层只负责让 id 对得上，EPG 挂了、取回来是报错页、
+    缓存读不出来，任何一种都**不许影响出表**（`apply_ids()` 拿到空单什么都不改）。
+
+    >>> import pathlib, tempfile
+    >>> xml = ('<tv><channel id="CCTV1"><display-name lang="zh">CCTV1</display-name></channel>'
+    ...        '<programme channel="CCTV1" start="20260921000000 +0800"></programme></tv>')
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     src = pathlib.Path(d) / "e.xml"
+    ...     _ = src.write_text(xml, encoding="utf-8")
+    ...     cfg = {"enabled": True, "url": str(src), "cache": pathlib.Path(d) / "epg.xml"}
+    ...     doc, info = load_epg(cfg, today="20260921")
+    ...     doc.ids, info["via"], info["ok"], info["refreshed"]
+    ...     doc2, info2 = load_epg(cfg, today="20260921")      # 第二次不再联网，读缓存
+    ...     doc2.ids, info2["via"], info2["refreshed"]
+    ...     doc3, info3 = load_epg(cfg, today="20261231")      # 缓存没有今天 -> 重取
+    ...     info3["ok"], info3["coverage"]
+    ...     cfg = {**cfg, "url": str(pathlib.Path(d) / "gone.xml")}
+    ...     doc4, info4 = load_epg(cfg, today="20260921", force=True)
+    ...     doc4.ids, info4["ok"], "FileNotFound" in info4["error"], info4["via"]
+    (['CCTV1'], '联网', True, True)
+    (['CCTV1'], '缓存（epg.xml）', False)
+    (False, '没有今天的内容（覆盖 1 天：20260921，距今 101 天）')
+    (['CCTV1'], True, True, '缓存（epg.xml，联网失败后退回）')
+    """
+    info: dict = {"url": cfg.get("url", ""), "via": "未取到", "note": "",
+                  "error": "", "coverage": "", "ok": False, "refreshed": False}
+    if not cfg.get("enabled") or not cfg.get("url"):
+        return Epg(), {**info, "via": "未启用"}
+
+    cache = Path(cfg["cache"])
+    cached: Epg | None = None
+    cached_note = ""
+    if cache.exists():
+        try:
+            cached, cached_note = load_bytes(cache.read_bytes())
+        except OSError as e:
+            info["error"] = f"缓存读不出来：{type(e).__name__}: {e}"
+
+    if cached is not None and has_today(cached, today) and not force:
+        return cached, {**info, "via": f"缓存（{cache.name}）", "note": cached_note,
+                        "coverage": coverages(cached, today), "ok": True}
+
+    try:
+        raw = fetch_bytes(cfg["url"], timeout=timeout)
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip_decompress(raw)        # 缓存一律存解开的，后来的人才好直接看
+        doc, note = load_bytes(raw)
+    except Exception as e:                    # 取节目单失败不许带崩整张表
+        if cached is None:
+            return Epg(), {**info, "error": f"{type(e).__name__}: {e}"}
+        return cached, {**info, "via": f"缓存（{cache.name}，联网失败后退回）",
+                        "note": cached_note, "error": f"{type(e).__name__}: {e}",
+                        "coverage": coverages(cached, today), "ok": has_today(cached, today)}
+
+    if not doc.ids:                           # 报错页/空单：不覆盖缓存，也不改任何 id
+        msg = f"取回来了但一条频道都没有：{note}"
+        if cached is not None:
+            return cached, {**info, "via": f"缓存（{cache.name}，新取的那份是空单）",
+                            "note": cached_note, "error": msg,
+                            "coverage": coverages(cached, today),
+                            "ok": has_today(cached, today)}
+        return Epg(), {**info, "note": note, "error": msg}
+
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(raw)
+    except OSError as e:                      # 缓存写不进去不影响这一轮用这份节目单
+        info["error"] = f"缓存没写成：{type(e).__name__}: {e}"
+    return doc, {**info, "via": "联网", "note": note, "coverage": coverages(doc, today),
+                 "ok": has_today(doc, today), "refreshed": True}
+
+
+PROBE_FILE = ROOT / "data" / "output" / "probe.json"
+
+
+def load_probe(path: Path | str) -> tuple[dict[str, ProbeResult], dict]:
+    """把上一轮 `--verify` 落盘的 probe.json 读回成「一份本轮实测结果」。
+
+    为什么值得有这条路：probe.json 里躺着的是**逐条线路**的判决（350 条的
+    `ok/http/ms/kind`），而 `aggregate()` 的删线路、延迟分档、录像降档吃的就是这个形状的东西。
+    于是「换一行配置就想看到效果」不必再等一个干净出口 —— 那 350 条判决是家里联通测出来的，
+    拿过来重出表，测的地方和当时一模一样。
+    它**不是一次新的实测**，所以既不追加履历也不覆盖 probe.json（`replay_gate()` 会把这层意思说清楚）。
+
+    返回 (结果表, 这一轮的来历 {at, egress, warnings, hosts})；文件坏掉/格式不对就抛，
+    由调用方决定是报错还是当没这份记录。`hosts` 是那一轮的逐主机汇总 —— 一起带回来，
+    报告里那张「逐主机可用性」表才不会在一次沿用记录的生成里凭空消失（它和判决同源，
+    不是一次新的测量，所以表头会写明它是哪一轮的）。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "probe.json"
+    ...     _ = p.write_text('{"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",'
+    ...         ' "measurement_warnings": [], "hosts": [{"host": "a", "total": 2, "ok": 1}],'
+    ...         ' "lines": {"http://a/1": {"ok": true, "ms": 120, "kind": "live"},'
+    ...         '  "http://a/2": {"ok": false, "http": 404}}}', encoding="utf-8")
+    ...     res, meta = load_probe(p)
+    >>> [(u, r.ok, r.ms, r.http) for u, r in sorted(res.items())]
+    [('http://a/1', True, 120, 0), ('http://a/2', False, 0, 404)]
+    >>> meta["at"][:16], meta["egress"], meta["warnings"], meta["hosts"]
+    ('2026-09-21T21:18', '1.2.3.4 CN', [], [{'host': 'a', 'total': 2, 'ok': 1}])
+    """
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(doc, dict) or "lines" not in doc:
+        raise ValueError(f"{path} 里没有找到 lines 那一段（不是本工具写的 probe.json？）")
+    results = {u: ProbeResult(bool(v.get("ok")), int(v.get("http") or 0), int(v.get("ms") or 0),
+                              int(v.get("segments") or 0), str(v.get("error") or ""),
+                              str(v.get("kind") or ""))
+               for u, v in doc["lines"].items()}
+    meta = {"at": str(doc.get("at") or ""), "egress": str(doc.get("egress") or ""),
+            "warnings": [str(w) for w in (doc.get("measurement_warnings") or [])],
+            "hosts": [dict(h) for h in (doc.get("hosts") or []) if isinstance(h, dict)]}
+    return results, meta
+
+
+def replay_gate(meta: dict, *, point: str, now: str, max_age_hours: int = 48,
+                force: bool = False) -> tuple[bool, str]:
+    """这份记录能不能当本轮判决用，以及为什么不能（`point` 是本轮排序的参照出口）。
+
+    三道门一道都不能省，因为它们各自对应一次真翻过的车：
+
+      * **那一轮体检报过警** —— 2.16 那次是 TUN 开着跑的，73 条被假阴性判死。
+        拿这样一份记录重出表，等于把已经关进 `untrusted/` 的错误又请回订阅目录，
+        所以直接拒绝（`--allow-untrusted` 才能明知故犯）。
+      * **它的出口不是本轮参照出口** —— 境外判的「连不上」对家里那张 Wi-Fi 不算数（2.8）。
+        参照出口本身就是从履历里挑出来的可信出口，所以这一条也顺带挡住了「拿旧出口的记录顶新出口」。
+      * **它太旧**（默认 48 小时） —— 沿用久了表会冻在旧世界上：上游换 IP、主机复活都看不见了。
+        这条是刻意保守的：履历里的主机级判据没有时间闸，线路级这把要有。
+
+    >>> ok, why = replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",
+    ...                        "warnings": []}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")
+    >>> ok, why
+    (True, '')
+    >>> replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "9.9.9.9 JP",
+    ...              "warnings": ["TUN 已开启"]}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")
+    (False, '那一轮（21:18）体检报过警，它判死的线路多半是假阴性（2.16）：TUN 已开启')
+    >>> replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "9.9.9.9 JP",
+    ...              "warnings": []}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")
+    (False, '那一轮的出口是 9.9.9.9 JP，与本轮参照出口 1.2.3.4 CN 不是一个测量点')
+    >>> replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",
+    ...              "warnings": []}, point="1.2.3.4 CN", now="2026-09-24T08:00:00+08:00")
+    (False, '那份记录已经 59 小时了（上限 48）——沿用太久表会冻在旧世界上，跑一轮 --verify 吧')
+    >>> replay_gate({"at": "坏日期", "egress": "1.2.3.4 CN", "warnings": []},
+    ...             point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")
+    (False, '那份记录上读不出时间（at="坏日期"），不知道多旧就不用')
+    >>> replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "9.9.9.9 JP",
+    ...              "warnings": ["TUN"]}, point="1.2.3.4 CN", now="2026-09-24T08:00:00+08:00",
+    ...             force=True)
+    (True, '明知故犯：--allow-untrusted 越过了上面三道门')
+    """
+    if force:
+        return True, "明知故犯：--allow-untrusted 越过了上面三道门"
+    at = str(meta.get("at") or "")
+    try:
+        age_h = (datetime.fromisoformat(now) - datetime.fromisoformat(at)).total_seconds() / 3600
+    except ValueError:
+        return False, f'那份记录上读不出时间（at="{at}"），不知道多旧就不用'
+    warns = meta.get("warnings") or []
+    if warns:
+        return False, (f"那一轮（{at[11:16]}）体检报过警，它判死的线路多半是假阴性（2.16）："
+                       f"{warns[0]}")
+    egress = str(meta.get("egress") or "")
+    if point and egress and egress.split()[:2] != point.split()[:2]:
+        return False, f"那一轮的出口是 {egress}，与本轮参照出口 {point} 不是一个测量点"
+    if age_h > max_age_hours:
+        return False, (f"那份记录已经 {age_h:.0f} 小时了（上限 {max_age_hours}）"
+                       "——沿用太久表会冻在旧世界上，跑一轮 --verify 吧")
+    return True, ""
+
+
 def collect(sources: Iterable[dict | str]) -> tuple[list[Entry], list[str]]:
-    """sources 元素可以是 load_sources() 的 dict，也可以是裸路径/URL（--source 传入）。"""
     entries: list[Entry] = []
     epg_urls: list[str] = []
     for src in sources:
@@ -334,7 +599,8 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
               stale_hosts: frozenset[str] = frozenset(),
               fake_hosts: frozenset[str] = frozenset(),
               rolls: dict[str, str] | None = None,
-              hist_ms: dict[str, int] | None = None):
+              hist_ms: dict[str, int] | None = None,
+              preset: dict[str, ProbeResult] | None = None):
     """归位 + 合并多线路 + 同源收敛 + 排序 + 截断（可选实测过滤）。
 
     max_per_host 用来治「一个频道的 5 条线路其实全来自同一个失效主机」——
@@ -366,6 +632,12 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     前者是上一轮这个主机通了的线路全是循环录像，后者是 L3 逐条验过的「列表不动」。
     它们排在可达范围与「本轮实测是录像」之后、延迟档之前 ——
     录像通常比真直播快，只用延迟当第二键会被顶到第一位去。
+
+    `preset` 是「本轮不实测，但把上一轮可信实测的**逐条**判决当本轮结果用」（`--replay`，
+    见 `load_probe()` / `replay_gate()`）。它和 `verify` 只有一条区别：**它不产生新的测量**，
+    所以既不写 `probe.json` 也不追加履历；相同的是删线、延迟分档、录像降档走的是同一套代码，
+    所以「沿用记录重出的表」和「当场测出来的表」在口径上可以逐字节对得上（这正是它的验收方式）。
+    没有记录的线路（那一轮之后上游新塞进来的）仍然按未知处理，不惩罚也不优待。
     """
     skip_verify = set(skip_verify)
     prio = source_priority or {}
@@ -403,7 +675,7 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
     if private:
         print(f"\n剔除鉴权私有流 {private} 条（URL 里绑了别人的 IP 和时效，红线不收录）")
 
-    results: dict[str, ProbeResult] = {}
+    results: dict[str, ProbeResult] = dict(preset) if preset else {}
     if verify:
         urls = sorted({e.url for b in buckets.values() for e in b["lines"]
                        if e.source not in skip_verify})
@@ -422,6 +694,15 @@ def aggregate(entries: list[Entry], index, max_lines: int, *,
         for src, c in stat.items():
             tag = "跳过实测（运营商内网源）" if src in skip_verify else f"可用 {c['ok']}/{c['all']}"
             print(f"    {src}: {tag}")
+    elif results:
+        # 沿用上一轮的逐条判决：说清楚「哪几条真有记录」，剩下的按未知处理。
+        # 这句话不能省 —— 少了它，屏幕上看到的「可用 n/m」就变成了一次没发生过的测量。
+        urls = sorted({e.url for b in buckets.values() for e in b["lines"]
+                       if e.source not in skip_verify})
+        hit = [u for u in urls if u in results]
+        print(f"\n本轮不实测：沿用上一轮的逐条判决 —— 候选 {len(urls)} 条里 "
+              f"{len(hit)} 条有记录（可用 {sum(1 for u in hit if results[u].ok)} 条），"
+              f"其余 {len(urls) - len(hit)} 条按未知处理")
 
     dead = 0
     stale_hits = 0
@@ -523,6 +804,201 @@ def host_summary(results: dict[str, ProbeResult], reach: Reachability,
                   key=lambda a: (RANK[a["scope"]], -a["total"], a["host"]))
 
 
+def first_line_focus(channels: list[OutputChannel], results: dict[str, ProbeResult],
+                     src_of: dict[str, list[str]] | None,
+                     reach: Reachability | None) -> list[dict]:
+    """按「第一线主机」把一张表摊开：一个主机挂着几个台，其中几个台连备选都没有。
+
+    为什么单独量这一件事：上面两张表都只说「哪条线路通了」，没人说过**这些第一线落在几家主机上**。
+    2026-09-21 那张表是手工数出来的（计划书 2.22），因为「真机点开哪个台最值」这个问题
+    答不了 —— 一个台通了不代表它的邻居也通，一个台死了却很可能带走一片。这里把它变成算出来的。
+
+    `results` 是逐条判决（本轮实测或 `--replay` 沿用来的）。**空 dict 时 `unmeasured` 全是 0**，
+    意思是「没有任何判决可依据」，不是「全都测过」，也不是「全都测过所以安全」：
+    纯离线生成没有逐条记录，那一栏本来就说不准，宁可不写。
+    `src_of` / `reach` 可以给 `None` —— 只想问「哪家挂着几个台」的调用方（试播包 `scripts/probe_pack.py`）
+    不需要来源和可达范围，那两个字段就留空，而不是拿默认值糊一个出来。
+
+    返回按（第一线台数倒序、主机名）排好的行：
+    host/scope/channels/alone/unmeasured/alt_lines/sources/examples。
+
+    >>> from src.output.writer import OutputChannel
+    >>> reach = Reachability([".chinamobile.com"])
+    >>> ch = [OutputChannel("湖南经视", "📍 湖南", "", "",
+    ...                     ["http://a.chinamobile.com/1", "http://b.example/2"]),
+    ...       OutputChannel("娄底新闻", "📍 市州", "", "", ["http://a.chinamobile.com/3"]),
+    ...       OutputChannel("湘潭新闻", "📍 市州", "", "", ["http://c.example/4"])]
+    >>> src = {"http://a.chinamobile.com/1": ["hn_mobile"], "http://a.chinamobile.com/3": ["hn_mobile"],
+    ...        "http://c.example/4": ["iptv_api_gd"]}
+    >>> rows = first_line_focus(ch, {}, src, reach)
+    >>> for r in rows:
+    ...     print(r["host"], r["scope"], r["channels"], r["alone"], r["unmeasured"],
+    ...           r["alt_lines"], r["sources"], r["examples"])
+    a.chinamobile.com iptv_intranet 2 1 0 1 ['hn_mobile'] ['湖南经视', '娄底新闻']
+    c.example public 1 1 0 0 ['iptv_api_gd'] ['湘潭新闻']
+    >>> res = {"http://c.example/4": ProbeResult(True, 200, 90, 3, "", "live"),
+    ...        "http://a.chinamobile.com/1": ProbeResult(True, 200, 80, 3, "", "live")}
+    >>> [r["unmeasured"] for r in first_line_focus(ch, res, src, reach)]
+    [1, 0]
+    >>> # 「备选线路 0 条」＝换机位也换不出去，跟通不通无关：所以它和上面那列各管一头
+    >>> [r["alone"] for r in first_line_focus(ch, res, src, reach)]
+    [1, 1]
+    >>> [(r["host"], r["scope"], r["sources"]) for r in first_line_focus(ch, {}, None, None)]
+    [('a.chinamobile.com', '', []), ('c.example', '', [])]
+    """
+    host_of = lambda u: urlsplit(u).hostname or u[:16]
+    src_of = src_of or {}
+    agg: dict[str, dict] = {}
+    for c in channels:
+        if not c.urls:
+            continue
+        first = c.urls[0]
+        host = host_of(first)
+        a = agg.setdefault(host, {"host": host, "scope": reach.scope(first) if reach else "",
+                                  "channels": 0, "alone": 0, "unmeasured": 0, "alt_lines": 0,
+                                  "sources": set(), "examples": []})
+        a["channels"] += 1
+        a["sources"] |= set(src_of.get(first) or [])
+        if len(a["examples"]) < 3:
+            a["examples"].append(c.name)
+        # 备选：这个台的线路里，落在**别的主机**上的那些条。一条都没有 = 换机位也换不出去。
+        alts = [u for u in c.urls if host_of(u) != host]
+        a["alt_lines"] += len(alts)
+        if not alts:
+            a["alone"] += 1
+        if results and first not in results:
+            a["unmeasured"] += 1
+    for a in agg.values():
+        a["sources"] = sorted(a["sources"])
+    return sorted(agg.values(), key=lambda a: (-a["channels"], a["host"]))
+
+
+SCOPE_WORD = {"iptv_intranet": "IPTV 专网", "audio_only": "纯音频电台"}
+
+
+def weak_first_line(url: str, results: dict, reach: Reachability | None) -> str:
+    """这条第一线值不值得替它担心，返回一个短标签；不担心返回空串。
+
+    两种「可疑」：**专网地址**（家里 Wi-Fi 上必然播不动，计划书 2.8 真机验过），
+    和**这一轮压根没有逐条判决**的地址（`probe: false` 的手工源就是这种，电脑从没测过它）。
+    没有逐条判决时既不能说「全都测过」，也不能反过来把每条都算成没测过：
+    所以 `results` 为空时只按专网判，少判的那一层由调用方声明（见 `report.md` 那一节）。
+
+    >>> from src.check.scope import Reachability
+    >>> r = Reachability([".chinamobile.com"])
+    >>> weak_first_line("http://a.chinamobile.com/1", {}, r)
+    '专网'
+    >>> weak_first_line("http://a.example/1", {"http://a.example/1": None}, r)
+    ''
+    >>> weak_first_line("http://a.example/1", {"http://b/2": None}, r)
+    '没测过'
+    >>> weak_first_line("http://a.example/1", {}, r)          # 一份判决都没有 → 不下「没测过」的结论
+    ''
+    >>> weak_first_line("http://a.example/1", {"http://b/2": None}, None)   # 没给 reach 就不判专网
+    '没测过'
+    >>> weak_first_line("", {}, r)                            # 连第一线都没有的台
+    ''
+    """
+    if not url:
+        return ""
+    if reach is not None and reach.scope(url) == "iptv_intranet":
+        return "专网"
+    if results and url not in results:
+        return "没测过"
+    return ""
+
+
+def second_line_options(channels: list[OutputChannel], results: dict,
+                        reach: Reachability | None) -> dict:
+    """第一线可疑的那些台，**点第 2 条线路救得回来吗** —— 按换过去落在哪里分五类。
+
+    为什么要有这一层：报告和验收单里长期写着「这个台不动就点第二条线」，
+    而 2026-09-21 那轮真机上湖南那批台整表超时（计划书 2.8）。这两件事同时对，
+    就说明「有第二条线」不等于「换得出去」，得把换过去的落点分类算出来。
+    2026-09-22 第一次量（计划书 2.25）：39 个可疑的台里 24 个压根没有备选、1 个备选在同一家机房、
+    14 个从湖南联通专网出口换到湖南移动专网门户，**换得到公网电视线路的 0 个** ——
+    把表加宽到每台 6 条线路再算还是 0（多出来那条是蜻蜓 FM 电台）。
+    所以这句话现在写在报告里，不用再靠人记。
+
+    三个判据各自会读反的地方：
+    - 同一家机房算「换了等于没换」：比的是去端口的主机名，`tvgslb:8089` → `tvgslb:9901` 还在那台机器上。
+    - **电台不算救回来**：`audio_only` 那批主机电脑实测能通、有声音，但那是电台冒充的电视位，
+      换过去没画面，所以单列一类、不进 `switchable`。
+    - 「换到别家是不是专网/电台」得靠 `reach` 判，没给配置就落进 `other_unknown`
+      且 `scope_known=False`，让渲染那一层改口，不硬下「没有救法」的结论。
+
+    >>> from src.check.scope import Reachability
+    >>> def C(name, *urls):
+    ...     return OutputChannel(name, "", "", "", list(urls))
+    >>> r = Reachability([".example"])
+    >>> g = [C("台一", "http://i.example/1"),
+    ...      C("台二", "http://i.example/2", "http://i.example:9901/3"),
+    ...      C("台三", "http://i.example/4", "http://pub/5"),
+    ...      C("台四", "http://ok/6", "http://pub/7")]
+    >>> s = second_line_options(g, {}, r)
+    >>> (s["channels"], s["no_alt"], s["same_host"], s["other_public"], s["switchable"])
+    (3, 1, 1, 1, ['台三'])
+    >>> s["reasons"], s["lands"], s["scope_known"]
+    ({'专网': 3}, [], True)
+    >>> # 换过去那一家按**台**数、不按线路数，并记下它是专网还是电台
+    >>> s2 = second_line_options([C("台一", "http://i.example/1", "http://k.example/2",
+    ...                             "http://k.example:8080/3")], {}, r)
+    >>> (s2["other_intranet"], s2["lands"], s2["land_kind"])
+    (1, [('k.example', 1)], {'k.example': 'IPTV 专网'})
+    >>> s3 = second_line_options([C("台一", "http://i.example/1", "http://ls.qingting.fm/2")],
+    ...                          {}, Reachability([".example"], [".qingting.fm"]))
+    >>> (s3["other_audio"], s3["other_public"], s3["switchable"])
+    (1, 0, [])
+    >>> # 没有逐条判决时不下「没测过」的结论（`weak_first_line`），只剩下专网那一层
+    >>> second_line_options(g, {}, r)["channels"] == second_line_options(g, {"http://ok/6": None}, r)["channels"]
+    True
+    >>> s4 = second_line_options(g, {"http://ok/6": None}, None)      # 没给 reach：换到别家的判不了
+    >>> (s4["channels"], s4["no_alt"], s4["same_host"], s4["other_unknown"], s4["scope_known"])
+    (3, 1, 1, 1, False)
+    """
+    out = {"channels": 0, "no_alt": 0, "same_host": 0, "other_intranet": 0, "other_audio": 0,
+           "other_public": 0, "other_unknown": 0, "reasons": {}, "switchable": [],
+           "lands": {}, "land_kind": {}, "scope_known": reach is not None}
+    host_of = lambda u: urlsplit(u).hostname or u[:16]
+    for c in channels:
+        urls = c.urls
+        if not urls:
+            continue
+        why = weak_first_line(urls[0], results, reach)
+        if not why:
+            continue
+        out["channels"] += 1
+        out["reasons"][why] = out["reasons"].get(why, 0) + 1
+        base = host_of(urls[0])
+        alts: dict[str, str] = {}          # 备选按主机名收：同一主机多条线路算一个台
+        for u in urls[1:]:
+            alts.setdefault(host_of(u), reach.scope(u) if reach else "")
+        others = {b: s for b, s in alts.items() if b != base}
+        if not alts:
+            out["no_alt"] += 1
+            continue
+        if not others:
+            out["same_host"] += 1          # 有备选，但全在挂第一线的那一家上
+            continue
+        if reach is None:
+            out["other_unknown"] += 1
+            continue
+        scopes = set(others.values())
+        bucket = ("other_public" if scopes - {"iptv_intranet", "audio_only"}
+                  else "other_audio" if "audio_only" in scopes else "other_intranet")
+        out[bucket] += 1
+        if bucket == "other_public":
+            out["switchable"].append(c.name)
+        else:
+            want = "iptv_intranet" if bucket == "other_intranet" else "audio_only"
+            for b, s in others.items():
+                if s == want:
+                    out["lands"][b] = out["lands"].get(b, 0) + 1
+                    out["land_kind"][b] = SCOPE_WORD.get(s, s)
+    out["lands"] = sorted(out["lands"].items(), key=lambda kv: (-kv[1], kv[0]))
+    return out
+
+
 def load_lean_fn():
     """取 scripts/lean_playlist.lean()：裸订阅表的生成逻辑只保留一份实现。
 
@@ -562,7 +1038,23 @@ def cmd_build(argv: list[str]) -> int:
                     help="完全不看履历，只按本轮（或无本轮）的结果排 —— 复现旧行为、排查降档本身时用")
     ap.add_argument("--allow-untrusted", action="store_true",
                     help="明知故犯：体检报警也照旧覆盖 data/output/（默认会把产物关进 untrusted/）")
+    ap.add_argument("--replay", nargs="?", const=str(PROBE_FILE), default="",
+                    help="本轮不实测，把上一轮可信实测的逐条判决当本轮结果用"
+                         "（默认 data/output/probe.json）：于是换配置、换节目单都能重出那张实测表，"
+                         "不必等一个干净出口。既不写 probe.json 也不追加履历")
+    ap.add_argument("--replay-max-age", type=int, default=48, metavar="小时",
+                    help="那份记录最多能旧到多少小时（默认 48）；超了就直接拒绝")
+    ap.add_argument("--epg-file", default=str(EPG_FILE),
+                    help="节目单配置（默认 config/epg.yaml：里面那条地址会写进订阅表头部，"
+                         "节目单本身优先从它的 cache 读，缓存里没有今天才联网）")
+    ap.add_argument("--no-epg", action="store_true",
+                    help="完全不读节目单：不改任何 tvg-id，头部地址回到「抄上游第一条」的老行为")
     args = ap.parse_args(argv)
+    # 这两个是互相矛盾的两种「本轮的线路判决从哪来」，在碰网络之前先拦掉：
+    # 再往下每一步（读上游、取节目单）都要花时间，而这个组合根本给不出答案。
+    if args.verify and args.replay:
+        print("--verify 与 --replay 只能选一个：前者是当场测，后者是沿用记录", file=sys.stderr)
+        return 1
 
     sources = (
         [{"id": s.rsplit("/", 1)[-1][:40], "target": s, "cache": None} for s in args.sources]
@@ -585,6 +1077,22 @@ def cmd_build(argv: list[str]) -> int:
     index = load_index(args.config)
     reach = load_reachability(REACH_FILE)
 
+    # P3（计划书 2.19）：`tvg-id` 由「选定的节目单里到底有哪个 id」决定，不再由谁先创建频道桶决定。
+    # 节目单取不到就是空单，`apply_ids()` 拿到空单什么都不改 —— 这一层不能变成新的失效面。
+    today = datetime.now().strftime("%Y%m%d")
+    epg_cfg = load_epg_config(Path(args.epg_file))
+    if args.no_epg:
+        epg_cfg["enabled"] = False
+    epg_doc, epg_info = load_epg(epg_cfg, today=today, force=args.fresh)
+    if epg_cfg["enabled"]:
+        print(f"\n节目单（{epg_info['via']}，{epg_info['url']}）："
+              f"{epg_doc.n_channels} 个频道、{epg_doc.progs} 条节目 —— "
+              f"{epg_info['coverage'] or '一条节目都没有'}"
+              + (f"；⚠️ {epg_info['error']}" if epg_info["error"] else ""))
+    else:
+        print("\n节目单：未启用（config/epg.yaml 没写地址、或加了 --no-epg），"
+              "tvg-id 保持上游写法")
+
     # 实测履历：判据只认「体检没报警」的那些轮，而参照出口由 judgment_egress() 定
     # （表是给电视用的，开发机代理在哪不影响这个依据）。
     # 出口身份现查一次就够，屏幕、probe.json、落盘、体检都用它，别重复查。
@@ -592,6 +1100,21 @@ def cmd_build(argv: list[str]) -> int:
     runs = hist.load_history(history_path)
     egress = egress_hint()
     warns = measurement_warnings(egress) if args.verify else []   # 只查一次，后面几处复用
+    # --replay：本轮不实测，但把上一轮那一份**逐条**判决当本轮结果用。于是判据出口、
+    # 体检警告、该不该隔离，全部换成「那一轮」的 —— 本机现在的出口在这一轮不构成任何测量
+    # （它此刻可能正挂在代理隧道上，而表是电视要用的）。
+    replay: dict[str, ProbeResult] = {}
+    replay_meta: dict = {"at": "", "egress": "", "warnings": [], "hosts": []}
+    point_egress, measured = egress, bool(args.verify)
+    if args.replay:
+        try:
+            replay, replay_meta = load_probe(Path(args.replay))
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            print(f"--replay 读不了 {args.replay}：{type(e).__name__}: {e}", file=sys.stderr)
+            return 1
+        warns = list(replay_meta["warnings"])
+        point_egress = replay_meta["egress"] or egress
+        measured = True
     if not runs and not history_path.exists():
         old = Path(args.out) / "probe.json"
         try:
@@ -602,10 +1125,24 @@ def cmd_build(argv: list[str]) -> int:
             hist.append_run(history_path, adopted)
             runs = hist.load_history(history_path)
             print(f"已把上一版留下的 {old.name} 补为第 1 轮履历（{adopted['at'][:16]}）")
-    point = judgment_egress(egress, warns, runs, measured=bool(args.verify))
+    point = judgment_egress(point_egress, warns, runs, measured=measured)
+    replay_at = str(replay_meta["at"])[:16].replace("T", " ")   # 报给人看的时刻，别带那个 T
+    if replay:
+        gate_ok, gate_why = replay_gate(
+            replay_meta, point=point, max_age_hours=args.replay_max_age,
+            now=datetime.now().astimezone().isoformat(timespec="seconds"),
+            force=args.allow_untrusted)
+        if not gate_ok:
+            print(f"⚠️ 那份记录不能用：{gate_why}\n"
+                  f"   （要硬来就加 --allow-untrusted，或者跑一轮真正的 --verify）", file=sys.stderr)
+            return 1
+        print(f"\n线路判决沿用 {args.replay}：{replay_at} 那一轮"
+              f"（出口 {replay_meta['egress']}，{len(replay)} 条逐条判决）"
+              + (f"；⚠️ {gate_why}" if gate_why else "")
+              + f"；本轮不写 {Path(args.replay).name}、不追加履历")
     # 报警那一轮的产物不进订阅目录（理由见 artifact_dir()）；履历照旧追加。
     trusted_dir = Path(args.out)
-    out_dir, quarantined = artifact_dir(trusted_dir, warns=warns, measured=bool(args.verify),
+    out_dir, quarantined = artifact_dir(trusted_dir, warns=warns, measured=measured,
                                         force=args.allow_untrusted)
     try:
         trusted_rel = trusted_dir.relative_to(ROOT)
@@ -634,7 +1171,8 @@ def cmd_build(argv: list[str]) -> int:
               + (f"{n_stuck} 条线路按 L3 让位、" if n_stuck else "")
               + f"{len(host_latency(rep))} 个按上一轮延迟补位"
               + (f"，另有 {dropped} 轮因测量点不对未采用" if dropped else "")
-              + "；本轮未实测，这些判据顶上")
+              + ("；本轮未实测，这些判据顶上" if not replay else
+                 "；本轮的逐条判决来自 --replay，这些只是补位用的历史延迟"))
     channels, unmatched, excluded, dead, results, stale_hits = aggregate(
         entries, index, args.max_lines,
         verify=args.verify, timeout=args.timeout, workers=args.workers,
@@ -646,19 +1184,27 @@ def cmd_build(argv: list[str]) -> int:
         fake_hosts=fake,
         rolls=rolls,
         hist_ms=host_latency(rep),
+        preset=replay or None,
     )
 
     present = {c.name for c in channels}
     empty = [(r.name, index.group_title(r.group)) for r in index.rules if r.name not in present]
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    epg = epg_urls[0] if epg_urls else ""
+    # 头部那行是**电视自己去取节目单**用的地址：启用 config/epg.yaml 就用它，
+    # 没启用才回到「抄上游播放列表的第一条」（那条实测 404，见 2.19）。
+    epg = epg_header_url(epg_cfg, epg_urls)
+    align = apply_ids(channels, epg_doc)
 
     full = format_m3u(channels, epg)
     (out_dir / "aptv.m3u").write_text(full, encoding="utf-8")
 
     hunan_titles = {index.group_title(gid) for gid in HUNAN_GROUPS}
     hunan = [c for c in channels if c.group_title in hunan_titles]
+    # hunan.m3u 是电视上真正在用的那张，所以命中率单独按台名切一份出来对账
+    hn_names = {c.name for c in hunan}
+    align["hunan"] = sum(1 for r in align["rows"] if r["name"] in hn_names and r["how"])
+    align["hunan_total"] = sum(1 for r in align["rows"] if r["name"] in hn_names)
     hunan_text = format_m3u(hunan, epg)
     (out_dir / "hunan.m3u").write_text(hunan_text, encoding="utf-8")
 
@@ -701,7 +1247,19 @@ def cmd_build(argv: list[str]) -> int:
         if e.source:
             url_srcs[e.url].add(e.source)
     src_of = {u: sorted(s) for u, s in url_srcs.items()}
-    hosts = host_summary(results, reach, src_of) if args.verify else []
+    hosts = (host_summary(results, reach, src_of) if args.verify
+             else list(replay_meta["hosts"]) if replay else [])
+    # 第一线主机集中度（计划书 2.23）：两张表各量一遍。全量那张回答「这台死了带走几个台」，
+    # 湖南那张才是电视上真正在订阅的，两边的答案不一样（2026-09-21 那版：22 台 / 20 台）。
+    # fallback 是同一批台的下一问：换第二条线路救不救得回来（2.25 量出来是 0 个，2.26 搬进报告）。
+    focus = [{"label": "aptv.m3u 全量",
+              "total": len(channels), "measured": bool(results),
+              "rows": first_line_focus(channels, results, src_of, reach),
+              "fallback": second_line_options(channels, results, reach)},
+             {"label": "hunan.m3u 湖南本地",
+              "total": len(hunan), "measured": bool(results),
+              "rows": first_line_focus(hunan, results, src_of, reach),
+              "fallback": second_line_options(hunan, results, reach)}]
     if args.verify:
         at = datetime.now().astimezone().isoformat(timespec="seconds")
         (out_dir / "probe.json").write_text(json.dumps({
@@ -750,10 +1308,34 @@ def cmd_build(argv: list[str]) -> int:
         "latency_hosts": len(host_latency(rep)),
         "stale_first_lines": stale_hits,
         "verified": bool(args.verify),
+        # --replay 是第三种状态：判决齐全但不是当场量的。报告要能分辨这三层，
+        # 否则「本轮实测过」和「本轮沿用了实测过的记录」会长成同一句话。
+        "replay": replay_at if replay else "",
     } if runs or args.verify else None
 
     verify_note = (f"--verify 实测剔除失效 {dead} 条" if args.verify else
-                   "本次未做线路实测，列表里的线路可用性以 Apple TV 实际播放为准")
+                   (f"本轮没有重新实测：线路判决沿用 {replay_at} 那一轮"
+                    f"（出口 {replay_meta['egress'] or '未知'}，{len(replay)} 条逐条记录），"
+                    f"按它剔除失效 {dead} 条" if replay else
+                    "本次未做线路实测，列表里的线路可用性以 Apple TV 实际播放为准"))
+    # 「逐主机」那一节的表头后缀：--replay 时那些数字来自被沿用的那一轮，不写明的话
+    # 报告读起来就像本轮又联网测了一遍（本轮真的一个请求都没发）。
+    # 出口这里只留 IP + 国家码那两段：整条 BGP 描述已经在上面一行说过一遍了，
+    # 而这一处是标题，别让它比表格还长。
+    hosts_note = (f"沿用 {replay_at} 那一轮落在 {Path(args.replay).name} 里的记录，"
+                  f"出口 {' '.join((replay_meta['egress'] or '未知').split()[:2])}，本轮未联网"
+                  if replay else "")
+    # 「EPG 对齐」那一节的材料：来历（哪来的、覆盖到哪、有没有取砸）+ 逐台的对账结果。
+    # 未启用时也要写一节：报告得能看出这一轮**没有**对齐这回事，而不是读起来像漏了。
+    epg_note = {**epg_info,
+                "enabled": bool(epg_cfg["enabled"]),
+                "header": epg,
+                "epg_channels": epg_doc.n_channels,
+                "epg_progs": epg_doc.progs,
+                "days": dict(epg_doc.days),
+                "generator": epg_doc.generator,
+                "align": align,
+                "caveat": epg_cfg.get("caveat", "")}
     if quarantined:
         verify_note += (f"。⚠️ 本轮体检报警（出口 {egress or '未取到'}），被剔的那些多半是假阴性，"
                         f"所以这份表只落在 {UNTRUSTED}/ 里当排查用，"
@@ -767,11 +1349,14 @@ def cmd_build(argv: list[str]) -> int:
         unmatched=unmatched,
         defined_but_empty=empty,
         epg_url=epg,
+        epg_note=epg_note,
         verify_note=verify_note,
         line_scope=line_scope,
         no_public=no_public,
         fake_live=fake_live,
+        focus=focus,
         hosts=hosts,
+        hosts_note=hosts_note,
         history=history_note,
     )
     (out_dir / "report.md").write_text(report, encoding="utf-8")
@@ -786,6 +1371,13 @@ def cmd_build(argv: list[str]) -> int:
     print(f"  hunan.m3u : {len(hunan)} 个频道 / {sum(len(c.urls) for c in hunan)} 条线路")
     if lean:
         print("  诊断用副产物：hunan-lean.m3u（无台标无 EPG）、test.m3u（前 4 个台）")
+    if align["total"] and epg_note["enabled"]:
+        print(f"  EPG 对齐：{align['total']} 个台里 {align['hit_id'] + align['hit_name']} 个有节目单"
+              f"（按 tvg-id 直接对上 {align['hit_id']} 个、靠台名救回 {align['hit_name']} 个），"
+              f"{len(align['changed'])} 个台的 tvg-id 被改写；"
+              f"hunan.m3u 那 {align['hunan_total']} 个台里 {align['hunan']} 个有节目单")
+    if epg_note["enabled"] and epg_info["error"]:
+        print(f"    ⚠️ {epg_info['error']} —— 节目单只是「有更好」，这一轮照旧出表")
     print(f"  可达范围：公网 {line_scope[PUBLIC]} 条 / 运营商内网 {line_scope[INTRANET]} 条 / "
           f"电台冒充 {line_scope[AUDIO]} 条；第一线是公网线路的 {scope_stats[PUBLIC]}/{len(channels)} 个频道")
     if no_public:
@@ -794,8 +1386,25 @@ def cmd_build(argv: list[str]) -> int:
     if fake_live:
         print(f"  ⚠️ 第一线是循环录像的频道 {len(fake_live)} 个（有画但不是直播）："
               + "、".join(fake_live))
+    for v in focus:
+        rows = [r for r in v["rows"] if r["channels"] >= 2]
+        if not rows:
+            print(f"  第一线集中度：{v['label']} 那 {v['total']} 个台一家主机都不共用")
+            continue
+        top = rows[0]
+        print(f"  第一线集中度：{v['total']} 个台只落在 {len(v['rows'])} 家主机上，"
+              f"`{top['host']}` 一家挂着 {top['channels']} 个台的第一线"
+              + (f"（其中 {top['alone']} 个台全部线路都在它上面，换线路也换不出去）"
+                 if top["alone"] else "")
+              + (f"，这 {top['unmeasured']} 个台的第一线电脑从没测过"
+                 if v["measured"] and top["unmeasured"] else ""))
     if hosts:
-        print(f"  实测出口：{egress or '未取到'}（详情见 {out_dir / 'probe.json'}）")
+        if replay:
+            print(f"  线路判决来自 {replay_at} 那一轮（出口 {replay_meta['egress'] or '未知'}，"
+                  f"详情见 {args.replay}）；本机当前出口 {egress or '未取到'}，"
+                  "这一轮没拿它量过任何东西")
+        else:
+            print(f"  实测出口：{egress or '未取到'}（详情见 {out_dir / 'probe.json'}）")
         bad = [h for h in hosts if h["ok"] < h["total"]]
         for h in bad[:8]:
             print(f"    ⚠️ {h['host']:<34} 可用 {h['ok']}/{h['total']}"
@@ -833,8 +1442,13 @@ def cmd_build(argv: list[str]) -> int:
             print(f"  源级趋势：还摊不开 —— 履历里 {h['unattributed']} 个主机族没记来源"
                   "（2.17 之前的轮次），在家里补跑一次 build --verify 就齐了")
     print(f"  丢弃：黑名单 {excluded} 条，未匹配 {sum(unmatched.values())} 条"
-          + (f"，实测失效 {dead} 条" if args.verify else ""))
-    if not args.verify:
+          + (f"，实测失效 {dead} 条" if args.verify else
+             (f"，按 {replay_at} 那轮的判决剔掉失效 {dead} 条" if replay else "")))
+    if replay:
+        print("  注意：本轮一条线路都没联网测。表是按那份记录剔过死线的，"
+              f"但「这些线路还活着」只在 {replay_at} 那一刻成立 —— "
+              "换配置重出表用它（不用等干净出口），判断线路本身好坏还是要 --verify")
+    if not args.verify and not replay:
         print("  注意：本次未实测"
               + ("，已按实测履历排序（只覆盖被测过的主机，新线路按未知处理）；"
                  "但离线生成不删失效线路，第二三条备选里仍会混着已知连不上的。" if stale else
@@ -845,10 +1459,31 @@ def cmd_build(argv: list[str]) -> int:
     return 0
 
 
+SUBCOMMANDS = ("build",)
+
+
 def main(argv: list[str]) -> int:
-    if not argv or argv[0] not in {"build"}:
+    """入口：只有 `build` 一个子命令。
+
+    没给子命令（或 `-h`）就打印上面那份用法说明并退 0 —— 那是「人想看帮助」。
+    **拼错的子命令退 2**，不再顺手退 0：以前 `python -m src.cli bulid --verify` 也退 0，
+    于是它前面挂的 `&&` 会照样往下走，屏幕上滚过的还是那段人写的说明，
+    没有任何一处告诉你说这条命令其实根本没跑（计划书 2.21 那把尺拿假文档试出来的就是它）。
+
+    >>> main(["bulid", "--verify"])      # 拼错：非 0；那句说明走 stderr，doctest 看不见
+    2
+    >>> import contextlib, io
+    >>> with contextlib.redirect_stdout(io.StringIO()): a, b = main([]), main(["-h"])
+    >>> (a, b)                           # 想看用法说明的两条路仍是 0
+    (0, 0)
+    """
+    if not argv or argv[0] in {"-h", "--help"}:
         print(__doc__)
         return 0
+    if argv[0] not in SUBCOMMANDS:
+        print(f"未知的子命令 {argv[0]!r}（只认 {'、'.join(SUBCOMMANDS)}）；"
+              "看用法说明跑 python -m src.cli --help", file=sys.stderr)
+        return 2
     return cmd_build(argv[1:])
 
 
