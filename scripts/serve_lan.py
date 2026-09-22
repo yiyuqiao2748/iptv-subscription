@@ -36,31 +36,98 @@ DIAG_NAMES = {"probe-pack.m3u": "试播包：每个流主机族挑一条，逐�
               "test.m3u": "只有几个台的极小表 —— 判断是不是表太大/太复杂"}
 
 
-def count_channels(text: str) -> int:
-    """订阅表里有几个不同的台（同名多条线路算一个台）。
+def channel_count(text: str) -> int:
+    """这张表在 APTV 界面上是几个台：连续两条一模一样的 `#EXTINF` 算同一个台的多条线路。
 
-    >>> count_channels('#EXTM3U\\n#EXTINF:-1 ,湖南卫视\\nhttp://a/1.m3u8\\n'
-    ...                '#EXTINF:-1 ,湖南卫视\\nhttp://a/2.m3u8\\n#EXTINF:-1 ,湖南经视\\nhttp://a/3.m3u8')
+    为什么不是「不同台名有几个」：同名不同 id 的两个桶在电视上是**两个台**，
+    按名数会少数一个。口径与 `probe_pack.channel_groups`、`scripts/doc_num.py` 里
+    那个 `aptv:channels` 是同一个（那一层量的是「这条记录是不是换台了」，这里量的是
+    「电视上会多出几行」）。这一处不 import 它们：这支脚本由 `.command` 双击拉起，
+    它要能在 `src/` 出任何状况时照样起得来 —— 少一个依赖就少一种起不来的可能。
+
+    >>> channel_count('#EXTM3U\\n#EXTINF:-1 tvg-id="1",湖南卫视\\nhttp://a/1\\n'
+    ...               '#EXTINF:-1 tvg-id="1",湖南卫视\\nhttp://a/2\\n')
+    1
+    >>> # 台名相同、id 不同：电视上是两个台，这里也不能并成一个
+    >>> channel_count('#EXTM3U\\n#EXTINF:-1 tvg-id="1",湖南经视\\nhttp://a/1\\n'
+    ...               '#EXTINF:-1 tvg-id="2",湖南经视\\nhttp://b/1\\n')
     2
+    >>> channel_count('#EXTM3U\\n#EXTINF:-1 tvg-id="1",挂了半行的台\\n')
+    0
     """
-    names = {l.split(",", 1)[1] for l in text.splitlines()
-             if l.startswith("#EXTINF") and "," in l}
-    return len(names)
+    buckets: list[list[object]] = []        # 每桶 = [台名, 这一桶有没有线路]
+    tag: str | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#EXTINF"):
+            name = line.split(",", 1)[1] if "," in line else ""
+            if tag != line:                 # 属性一模一样 = 同一个台的另一条线路
+                buckets.append([name, False])
+            tag = line
+        elif tag is not None and line.startswith("http"):
+            buckets[-1][1] = True           # 只有挂了地址的那一桶在电视上是一个台
+    return sum(1 for _, has in buckets if has)
 
 
-def refresh_labels() -> None:
-    """按当前文件内容把台数填进标签。
+def labels(names: dict[str, str], base: Path = OUT_DIR) -> dict[str, str]:
+    """按**当前文件内容**给每张表配一句人话，末尾那个台数是现算的。
 
-    这两个数字曾经硬编码成「39 个台 / 93 个台」，跑一次 --verify 就变成 39 / 90，
-    屏幕上留个旧数字比不写更糟 —— 电视订阅排查时人就是靠这些数字对账的。
-    先按「（」截一刀再拼，重复调用只会换数字，不会叠出两层括号。
+    为什么每次请求都要现算：旧代码里有个 `refresh_labels()`，只在起服务那一刻跑一次。
+    而 `data/output/` 是会换版的 —— 2026-09-22 抓到一次现场：这一页写着「99 个台」，
+    可它同一秒钟发出去的那 47876 字节里只有 98 个台（那个服务进程是前一天 18:49 起的，
+    起好之后 21:18 那轮 `--verify` 把表换掉了）。全项目的文档都在防「说的不是同一张表」，
+    而**电视边上唯一会被人盯着看的那一页**恰恰是最后一个没被防住的地方。
+
+    文件不在就说「文件不在」，不许留着上一个数字 —— 那和上面那个 bug 是同一种。
+
+    >>> import tempfile
+    >>> d = Path(tempfile.mkdtemp())
+    >>> _ = (d / "aptv.m3u").write_text('#EXTM3U\\n#EXTINF:-1 tvg-id="1",甲\\nhttp://a/1\\n',
+    ...                                  encoding="utf-8")
+    >>> labels({"aptv.m3u": "全量：央视 + 卫视"}, d)
+    {'aptv.m3u': '全量：央视 + 卫视（1 个台）'}
+    >>> labels({"gone.m3u": "还没生成的那张"}, d)
+    {'gone.m3u': '还没生成的那张（文件不在）'}
+    >>> # 换表之后同一个字典再叫一次，拿到的是新文件的数（不是叠加两层括号）
+    >>> _ = (d / "aptv.m3u").write_text('#EXTM3U\\n#EXTINF:-1 ,甲\\nhttp://a/1\\n'
+    ...                                  '#EXTINF:-1 ,乙\\nhttp://b/1\\n', encoding="utf-8")
+    >>> labels({"aptv.m3u": "全量：央视 + 卫视"}, d)["aptv.m3u"]
+    '全量：央视 + 卫视（2 个台）'
     """
+    out: dict[str, str] = {}
+    for name, desc in names.items():
+        head = desc.split("（")[0]                      # 挡掉历史上被写死在标签里的旧数
+        p = base / name
+        try:
+            n = channel_count(p.read_text(encoding="utf-8"))
+            out[name] = f"{head}（{n} 个台）"
+        except OSError:
+            out[name] = f"{head}（文件不在）"
+    return out
+
+
+def round_stamp(base: Path = OUT_DIR) -> str:
+    """在用的这两张订阅表是哪一轮生成的（拿 mtime，不猜）。
+
+    为什么要在页面上写这一句：这一页只能保证「台数是现算的」，
+    保证不了「这一轮实测是什么时候做的」。把时间摆出来，
+    电视边上那个人就知道自己看的到底是哪一批线路（计划书 2.27/2.28 同一口径）。
+
+    >>> round_stamp(Path("/does/not/exist"))
+    '没读到产物'
+    >>> import tempfile
+    >>> d = Path(tempfile.mkdtemp())
+    >>> for f in ("aptv.m3u", "hunan.m3u"):
+    ...     _ = (d / f).write_text("#EXTM3U\\n", encoding="utf-8")
+    >>> len(round_stamp(d)) > 5 and round_stamp(d).split()[1].count(":") == 1
+    True
+    """
+    ts = []
     for name in PUBLIC_NAMES:
-        path = OUT_DIR / name
-        if not path.exists():
-            continue
-        n = count_channels(path.read_text(encoding="utf-8"))
-        PUBLIC_NAMES[name] = f"{PUBLIC_NAMES[name].split('（')[0]}（{n} 个台）"
+        p = base / name
+        if p.exists():
+            ts.append(dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%m-%d %H:%M"))
+    return "、".join(sorted(set(ts))) if ts else "没读到产物"
 
 _seen_clients: set[str] = set()
 _local_ips: set[str] = {"127.0.0.1"}
@@ -109,9 +176,10 @@ class Handler(SimpleHTTPRequestHandler):
         ip = candidates[0]
 
         def rows(names: dict[str, str]) -> str:
+            live = labels(names)             # 台数每次现算：见 labels 的 docstring
             return "".join(
-                f'<li><code>http://{ip}:{self.server.port}/{n}</code> —— {desc}'
-                for n, desc in names.items()
+                f'<li><code>http://{ip}:{self.server.port}/{n}</code> —— {live[n]}'
+                for n in names
             )
 
         others = "".join(f"<li><code>{c}</code></li>" for c in candidates[1:])
@@ -124,7 +192,10 @@ class Handler(SimpleHTTPRequestHandler):
             "<p>这个页面能打开，说明这台电脑和你在用的设备是通的。"
             "把下面的地址复制到 APTV 的订阅输入框：</p>"
             f"<ul>{rows(PUBLIC_NAMES)}</ul>"
-            f"<h2>主地址加不上时，试这两个诊断用的表</h2>"
+            f"<p>上面那两张表是 <b>{round_stamp()}</b> 生成的那一批 —— "
+            "这个服务发的就是磁盘上那一份文件，重载这一页，台数跟着文件变。"
+            "电视里已经订过的话，改表之后要在 APTV 里点一次「刷新」才会取到新的那份。</p>"
+            f"<h2>主地址加不上时，试这几个诊断用的表</h2>"
             f"<ul>{rows(DIAG_NAMES)}</ul>"
             f"<p>哪些台在 Wi-Fi 上必然播不动（只有运营商 IPTV 专网来源），"
             f"看<code>http://{ip}:{self.server.port}/report.md</code>里"
@@ -274,18 +345,20 @@ def main() -> int:
     httpd.candidates = candidates              # 状态页要列给电视看的那几个地址
     _local_ips.update(candidates)
 
-    refresh_labels()                           # 屏幕上的台数要跟当前文件一致
     firewall = firewall_hint()                 # 起服务前先问，别在请求中途卡住
     _log_line("=" * 62)
     _log_line("  APTV 局域网订阅服务")
     _log_line("=" * 62)
+    start_labels = labels(PUBLIC_NAMES)
+    _log_line(f"  现在发的这两张表是 {round_stamp()} 生成的那一批。")
     for ip in candidates:
         for name, desc in PUBLIC_NAMES.items():
-            _log_line(f"  http://{ip}:{args.port}/{name}   # {desc}")
+            _log_line(f"  http://{ip}:{args.port}/{name}   # {start_labels[name]}")
     _log_line("")
-    _log_line("  主地址在 APTV 里加不上时，再试这两个诊断用的表：")
-    for name, desc in DIAG_NAMES.items():
-        _log_line(f"    http://{candidates[0]}:{args.port}/{name}   # {desc}")
+    _log_line("  主地址在 APTV 里加不上时，再试下面这几个诊断用的表：")
+    diag_labels = labels(DIAG_NAMES)
+    for name in DIAG_NAMES:
+        _log_line(f"    http://{candidates[0]}:{args.port}/{name}   # {diag_labels[name]}")
     _log_line("")
     _log_line(f"  {firewall}")
     _log_line("  先别做端口映射，这个服务只在家里用。")
