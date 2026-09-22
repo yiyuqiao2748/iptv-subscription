@@ -22,9 +22,9 @@
     .venv/bin/python scripts/epg_check.py http://x/e.xml.gz     # 查指定地址（本地文件也行）
     .venv/bin/python scripts/epg_check.py --playlist data/output/hunan.m3u <url>...
 
-出口提醒：从这台开发机发出去的请求走的是代理那条隧道（计划书 2.8 / 2.16），
+出口提醒：这台电脑挂着全局代理时，发出去的请求走的是那条隧道（计划书 2.8 / 2.16），
 所以「境内 EPG 服务能拿到」在这里**只能证明服务活着**，不能证明家里那张 Wi-Fi 拿得到 ——
-最后一步要电视那边（或干净出口）再确认一次。
+最后一步要电视那边（或干净出口）再确认一次。这一句只在真的发了请求时才印（见 `is_remote`）。
 """
 
 from __future__ import annotations
@@ -148,11 +148,27 @@ def drift(channels: list[tuple[str, str]]) -> dict[str, list[str]]:
 
 def fetch(target: str, timeout: int = 40) -> bytes:
     """本地文件直接读，URL 走 urllib。"""
-    if target.startswith("http"):
+    if is_remote(target):
         req = urllib.request.Request(target, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return resp.read()
     return Path(target).read_bytes()
+
+
+def is_remote(target: str) -> bool:
+    """这一条候选要不要发一个请求出去 —— 「出口提醒」该不该印，就看这个。
+
+    为什么要单独拎出来：那句提醒以前是**无条件**印的，等于替这台机器的出口状态下了结论
+    （2.30 把它挂进 `scripts/selfcheck.py`、只喂一份本地缓存时，它当场成了一句假话：
+    一个请求都没发，却在说「境内服务拿得到只证明它活着」）。
+    这和 2.29 那个「99 个台」是同一个形状的东西 —— **话说得比它量的范围大**。
+
+    >>> is_remote("https://e.erw.cc/e.xml.gz")
+    True
+    >>> is_remote("data/cache/epg.xml")
+    False
+    """
+    return target.startswith("http")
 
 
 def id_map(channels: list[tuple[str, str]]) -> dict[str, str]:
@@ -226,6 +242,25 @@ def usable(lines: list[str]) -> bool:
     return "今天有节目" in txt and "合计 0/" not in txt
 
 
+def exit_code(n_targets: int, ok: int) -> int:
+    """一个候选都没落进「可用」时退 1 —— 别的脚本要拿这个当门。
+
+    为什么要改：这条脚本从 2.19 起只印结论、永远退 0，那会儿它是人肉看的一份报告，
+    「0 个能用」也是一条有用的信息。2.30 把它挂进 `scripts/selfcheck.py` 之后，同一句
+    「结论：1 个候选里，0 个既今天有节目…」头顶着一个 ✓，就成了这个项目最不接受的那种绿
+    （另外三把尺说不通就退非 0，只有它退 0）。
+    没查任何候选仍然算 0：那只可能是 `--against` 单跑漂移，那不是「查了、都说不能用」。
+
+    >>> exit_code(4, 1)      # 四个候选里有一个能用
+    0
+    >>> exit_code(4, 0)      # 一个都用不了
+    1
+    >>> exit_code(0, 0)      # 一条候选都没查，不是失败
+    0
+    """
+    return 1 if n_targets and not ok else 0
+
+
 def report(target: str, channels: list[tuple[str, str]], today: str,
            timeout: int = 40) -> list[str]:
     """一个地址一段话：活没活着、今天有没有、我们的台有几个配得上、靠哪一列配上的。"""
@@ -295,8 +330,12 @@ def main(argv: list[str]) -> int:
               + (f"，配置里在用 `{rel}`：{in_use[0]}"
                  if in_use else f"，配置 `{rel}` 没读到地址，只查默认候选")
               + (f"，后备 {in_use[1]}" if len(in_use) > 1 else ""))
-    print("（这台机器的出口在代理隧道里，所以境内服务「拿得到」只证明它活着，"
-          "不证明家里那张 Wi-Fi 拿得到）")
+    if any(is_remote(t) for t in targets):
+        print("（下面这些「拿得到」是从**这台电脑**发请求量的：出口若挂着全局代理，"
+              "它只证明那个服务活着，不证明家里那张 Wi-Fi 拿得到；"
+              "出口干不干净看 `build --verify` 屏幕上那三行体检警告，别看这里）")
+    else:
+        print("（这一轮一个请求都没发：读的全是本地文件，所以下面那些数跟出口状态无关）")
     bad = drift(channels)
     if bad:                      # 这一层是「表本身有问题」，跟哪个 EPG 无关，所以先说
         print(f"⚠️ {len(bad)} 个台名在这张表里有两种以上的 tvg-id（2.14 那条漂移）："
@@ -312,7 +351,7 @@ def main(argv: list[str]) -> int:
         print("\n".join(lines))
         ok += 1 if usable(lines) else 0
     print(f"结论：{len(targets)} 个候选里，{ok} 个既今天有节目、又配得上我们表里的台。")
-    return 0
+    return exit_code(len(targets), ok)
 
 
 if __name__ == "__main__":
