@@ -207,6 +207,70 @@ def _media_body(url: str, timeout: int, direct: bool) -> str:
     return body
 
 
+# 「连不上」底下那几种能确定说法的异常。只列确定得了的：认不出的一律退回类型名。
+_DEAD_WHY = {
+    "ConnectionRefusedError": "端口没人听",
+    "ConnectionResetError": "连上就被对方断了",
+    "BrokenPipeError": "连上就被对方断了",
+    "gaierror": "域名解析不出来",
+}
+
+
+def why_dead(e: BaseException) -> str:
+    """把「根本连不上」那一族异常翻成一句结论；翻不出就照旧报类型名。
+
+    为什么补这一格：`probe()` 那个兜底 except 以前把**类型名**当结论写进了 `probe.json`。
+    21:18 那轮 350 条判决里 116 条失效，其中 **99 条** 的全部信息就是 `URLError` 一个词
+    （另两种常见的 `ConnectionResetError` 4 条、`TimeoutError` 2 条也一样），
+    而「域名解析不出来」「那个端口没人听」「对方地址根本不是 http」是三件完全不同的事，
+    在 `probe.json` 和 `verify_lines.py` 的输出里长得一模一样。
+    2.41 那 54 条专网线当时就是这一族，**现在回头问不出它们是上面哪一种了** ——
+    记下来的东西不够具体，等于没记。
+
+    这一格和 2.36 在 `src/check/history.py` 里立的是同一条规矩：读不进来要说清是**哪一种**
+    读不进来。宁缺毋滥：认不出的照旧报 `type(e).__name__`，
+    不要编一句「大概是超时」—— 那是把没查到的东西写成查到的。
+
+    >>> import socket, urllib.error as ue
+    >>> why_dead(ue.URLError(ConnectionRefusedError(61, "Connection refused")))
+    '端口没人听'
+    >>> why_dead(ue.URLError(socket.gaierror(-2, "Name or service not known")))
+    '域名解析不出来'
+    >>> why_dead(ue.URLError(ConnectionResetError(54, "Connection reset by peer")))
+    '连上就被对方断了'
+    >>> why_dead(TimeoutError())
+    '连上没响应（超时）'
+    >>> why_dead(ue.URLError("unknown url type: rtmp"))     # reason 是个字符串，不是异常
+    '这种地址本机测不了（不是 http）'
+    >>> why_dead(ue.URLError("什么奇怪说法"))                # 字符串但认不出：留着原文，不换成中文
+    'URLError:什么奇怪说法'
+    >>> why_dead(ue.URLError(OSError(51, "Network is unreachable")))   # 认不出的退回类型名
+    'URLError'
+    >>> why_dead(ValueError("别的什么东西"))
+    'ValueError'
+    >>> why_dead(ue.HTTPError("http://x/y.m3u8", 404, "Not Found", None, None))
+    'HTTP 404'
+
+    最后那一条不是随手加的：`HTTPError` 是 `URLError` 的**子类**（`URLError` 又是 `OSError` 的），
+    所以「服务器明确回了 404」这种最该留住状态码的情形，恰好是最容易被 `except URLError` 吃掉的
+    —— `probe()` 里那两个 except 的先后不能反，`l3_roll()` 那一个则必须自己认得这件事。
+    """
+    if isinstance(e, urllib.error.HTTPError):     # 必须在 URLError 之前问：它是 URLError 的子类
+        return f"HTTP {e.code}"
+    node: BaseException = e
+    if isinstance(e, urllib.error.URLError):
+        if isinstance(e.reason, str):
+            if "unknown url type" in e.reason:
+                return "这种地址本机测不了（不是 http）"
+            return f"URLError:{e.reason}"
+        if isinstance(e.reason, BaseException):
+            node = e.reason
+    if isinstance(node, TimeoutError):        # socket.timeout 在 3.10 起就是这个的别名
+        return "连上没响应（超时）"
+    return _DEAD_WHY.get(type(node).__name__, type(e).__name__)
+
+
+
 def l3_roll(url: str, gap: int = 20, timeout: int = 12, direct: bool = True) -> dict:
     """L3：隔 gap 秒重取一次，比对分片窗口。返回 {verdict, segments, error}。
 
@@ -214,17 +278,51 @@ def l3_roll(url: str, gap: int = 20, timeout: int = 12, direct: bool = True) -> 
 
     这一步每次要付 gap 秒的等待，所以不进 build --verify 的主流程
     （330 条线路全做 L3 要多等十几分钟），只在验收和核对手工源时对少量线路做。
+
+    三种「取不到」分得开吗（2.43 起有用了，以前这一整层零用例）：
+
+    >>> import contextlib, urllib.error as ue
+    >>> import src.check.prober as P
+    >>> @contextlib.contextmanager
+    ... def answered(*answers):            # 同 probe 的用例：换一份按顺序作答的假答案
+    ...     keep, left = P._get, list(answers)
+    ...     def fake(url, timeout, direct):
+    ...         a = left.pop(0) if len(left) > 1 else left[0]
+    ...         if isinstance(a, BaseException): raise a
+    ...         return a
+    ...     P._get = fake
+    ...     try:
+    ...         yield
+    ...     finally:
+    ...         P._get = keep
+    >>> L = "#EXTM3U\\n#EXTINF:10,\\n"
+    >>> with answered((200, L + "a1.ts\\n"), (200, L + "a2.ts\\n")):
+    ...     l3_roll("http://x/y.m3u8", gap=0)["verdict"]          # 窗口动了
+    'rolling'
+    >>> with answered((200, L + "a1.ts\\n")):
+    ...     l3_roll("http://x/y.m3u8", gap=0)["verdict"]          # 两次一模一样
+    'stuck'
+    >>> M = "#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=1\\nlo.m3u8\\n"
+    >>> with answered((200, M), (200, L + "a1.ts\\n"), (200, M), (200, L + "a2.ts\\n")):
+    ...     l3_roll("http://x/y.m3u8", gap=0)["verdict"]     # 索引要跟一跳，比的是变体的窗口
+    'rolling'
+    >>> with answered(ue.URLError(ConnectionRefusedError(61, "x"))):
+    ...     l3_roll("http://x/y.m3u8", gap=0)                 # 第一次就取不到：没有 segments 可记
+    {'verdict': 'dead', 'segments': 0, 'error': '端口没人听'}
+    >>> with answered((200, L + "a1.ts\\n"), ue.URLError(ConnectionResetError(54, "x"))):
+    ...     l3_roll("http://x/y.m3u8", gap=0)     # 第二次才断：第一次那份窗口仍然留着
+    {'verdict': 'dead', 'segments': 1, 'error': '重取失败:连上就被对方断了'}
     """
     try:
         first = _media_body(url, timeout, direct)
     except Exception as e:
-        return {"verdict": "dead", "segments": 0, "error": type(e).__name__}
+        return {"verdict": "dead", "segments": 0, "error": why_dead(e)}
     time.sleep(gap)
     try:
         second = _media_body(url, timeout, direct)
     except Exception as e:
         return {"verdict": "dead", "segments": len(segment_window(first)),
-                "error": f"重取失败:{type(e).__name__}"}
+                "error": f"重取失败:{why_dead(e)}"}
     return {"verdict": roll_verdict(first, second),
             "segments": len(segment_window(second)), "error": ""}
 
@@ -241,6 +339,122 @@ def probe(url: str, timeout: int = 12, direct: bool = True) -> ProbeResult:
     不存在的 /gc/xxx.m3u8 返回干净的 404，而它索引里的 zjjjjdl_1_md.m3u8 是
     连接被重置。也就是说这台 CDN 认得这个流名但后端没人推流，
     播放器同样出不来画，留着只会占掉频道第一位。
+
+    可是这一层在 2.43 之前**一条用例都没有**：`classify`／`raw_kind` 那些纯函数各有样例，
+    把它们拼成一条判决的这里没有。`_get` 以下（socket、DNS、代理）不是本模块的逻辑，
+    而且它的结果随出口变（2.41），所以这里把 `_get` 换成一份「按顺序作答」的假答案，
+    逐支钉住 probe 自己的判断；末尾再用两个**真的本地套接字**对一遍
+    「假答案和真世界里抛出来的是同一种东西」（127.0.0.1，与走不走代理无关）。
+
+    >>> import contextlib, socket, urllib.error as ue
+    >>> import src.check.prober as P
+    >>> @contextlib.contextmanager
+    ... def answered(*answers):        # 依次让 _get 给出这些答案：(状态, 正文) 或一个异常
+    ...     keep, left = P._get, list(answers)
+    ...     def fake(url, timeout, direct):
+    ...         a = left.pop(0) if len(left) > 1 else left[0]     # 用尽后重复最后一个
+    ...         if isinstance(a, BaseException): raise a
+    ...         return a
+    ...     P._get = fake
+    ...     try:
+    ...         yield
+    ...     finally:
+    ...         P._get = keep          # 必须还回去：全项目的用例是同一个进程按顺序跑的
+    >>> def brief(r):                  # 判决里的 ms 是流逝时间，不进用例
+    ...     return (r.ok, r.http, r.segments, r.kind, r.error)
+
+    正常的一条直播线路，和一支明确回了 404 的（状态码必须留在判决里 —— 上面说的那个顺序）：
+
+    >>> with answered((200, "#EXTM3U\\n#EXTINF:10,\\na.ts\\n")):
+    ...     brief(probe("http://x/y.m3u8"))
+    (True, 200, 1, 'live', '')
+    >>> with answered(ue.HTTPError("http://x/y.m3u8", 404, "Not Found", None, None)):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 404, 0, '', 'HTTP 404，没给出播放列表')
+
+    200 但正文不是播放列表的四种坏法（真数据里各有一批，见 2.43「量到的东西」）：
+
+    >>> with answered((200, "<!DOCTYPE html>" + "<p>维护中</p>" * 200)):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 200, 0, '', '返回的是网页，不是流')
+    >>> with answered((200, "x" * 500)):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 200, 0, '', '200 但正文太小，不像一条流')
+    >>> with answered((200, "\\x00\\x00\\x00\\x14ftypqt" + "x" * 4000)):     # 整段录像
+    ...     brief(probe("http://x/y.m3u8"))
+    (True, 200, 0, 'vod', '')
+    >>> with answered((200, "G" + "\\xff" * 4000)):                    # 裸 TS 分片流
+    ...     brief(probe("http://x/y.m3u8"))
+    (True, 200, 0, 'raw', '')
+
+    多码率索引要跟一跳，那一跳的四种结果各判各的：
+
+    >>> M = "#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=500000\\nlo.m3u8\\n"
+    >>> with answered((200, M), (200, "#EXTM3U\\n#EXTINF:10,\\na.ts\\nb.ts\\n")):
+    ...     brief(probe("http://x/y.m3u8"))
+    (True, 200, 2, 'master:live', '')
+    >>> with answered((200, M), (200, "#EXTM3U\\n#EXTINF:10,\\na.ts\\n#EXT-X-ENDLIST\\n")):
+    ...     brief(probe("http://x/y.m3u8"))          # 索引 → 变体是录像：`master:vod` 也在 FAKE_KINDS 里
+    (True, 200, 1, 'master:vod', '')
+    >>> with answered((200, M), (200, "#EXTM3U\\n")):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 200, 0, 'master:live', '变体为空')
+    >>> with answered((200, M), (404, "")):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 404, 0, 'master:raw', '变体 HTTP 404')
+    >>> with answered((200, M), ue.URLError(ConnectionRefusedError(61, "x"))):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 200, 1, 'master', '变体不可达:端口没人听')
+    >>> with answered((200, "#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=1\\n")):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 200, 0, 'master', '索引里没有变体')
+
+    列表在、但要么空要么不是 200：
+
+    >>> with answered((200, "#EXTM3U\\n")):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 200, 0, 'live', '空播放列表')
+    >>> with answered((503, "#EXTM3U\\n#EXTINF:10,\\na.ts\\n")):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 503, 1, 'live', 'HTTP 503')
+
+    兜底那一支是整个产品里出现次数最多的一句话（21:18 那轮 116 条失效里 99 条只写了
+    `URLError`），现在它说得出是哪一种：
+
+    >>> with answered(ue.URLError(socket.gaierror(-2, "Name or service not known"))):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 0, 0, '', '域名解析不出来')
+    >>> with answered(ue.URLError(ConnectionResetError(54, "x"))):
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 0, 0, '', '连上就被对方断了')
+    >>> with answered(ue.URLError("unknown url type: rtmp")):   # 上游 1868 条里有 3 条 rtmp
+    ...     brief(probe("http://x/y.m3u8"))
+    (False, 0, 0, '', '这种地址本机测不了（不是 http）')
+
+    但「一律判失效」不能宽到把按 Ctrl-C 也当成一条线路坏了：
+
+    >>> with answered(KeyboardInterrupt()):
+    ...     try:
+    ...         probe("http://x/y.m3u8")
+    ...     except KeyboardInterrupt:
+    ...         print("照原样往上抛，不吞成判决")
+    照原样往上抛，不吞成判决
+
+    真套接字这两支核对上面那些异常形状（第二支要等满 1 秒，它就是在量「超时」）：
+
+    >>> srv = socket.socket()
+    >>> _ = srv.bind(("127.0.0.1", 0))
+    >>> port = srv.getsockname()[1]
+    >>> srv.close()
+    >>> brief(probe(f"http://127.0.0.1:{port}/x.m3u8", 2))
+    (False, 0, 0, '', '端口没人听')
+    >>> hole = socket.socket()
+    >>> _ = hole.bind(("127.0.0.1", 0))
+    >>> _ = hole.listen(1)                      # 握手给，但从不 accept：对方永远不回
+    >>> hport = hole.getsockname()[1]
+    >>> brief(probe(f"http://127.0.0.1:{hport}/x.m3u8", 1))
+    (False, 0, 0, '', '连上没响应（超时）')
+    >>> hole.close()
     """
     started = time.monotonic()
     try:
@@ -248,17 +462,20 @@ def probe(url: str, timeout: int = 12, direct: bool = True) -> ProbeResult:
     except urllib.error.HTTPError as e:
         http, body = e.code, ""
     except Exception as e:  # 超时 / DNS / 连接重置，一律判失效
-        return ProbeResult(False, 0, int((time.monotonic() - started) * 1000), 0,
-                           type(e).__name__)
+        return ProbeResult(False, 0, _el(started), 0, why_dead(e), "")
 
-    ms = int((time.monotonic() - started) * 1000)
+    ms = _el(started)
 
     if "#EXTM3U" not in body:
         # 不是播放列表：只有裸分片流（TS/FLV）才算可用，
         # MP4 是整段录像、HTML 是错误页，两者都不能当直播线路。
         rk = raw_kind(body)
-        if http != 200 or len(body) <= 1024:
-            return ProbeResult(False, http, ms, 0, "非播放列表且体量过小", "")
+        if http != 200:
+            # 这一支以前和下面那格挤成同一句「非播放列表且体量过小」，于是 403/404
+            # 在 probe.json 里读起来像「内容有问题」，而真正的事是服务器拒了这个请求。
+            return ProbeResult(False, http, ms, 0, f"HTTP {http}，没给出播放列表", "")
+        if len(body) <= 1024:
+            return ProbeResult(False, http, ms, 0, "200 但正文太小，不像一条流", "")
         if rk == "html":
             return ProbeResult(False, http, ms, 0, "返回的是网页，不是流", "")
         if rk == "bin":
@@ -276,7 +493,7 @@ def probe(url: str, timeout: int = 12, direct: bool = True) -> ProbeResult:
             v_http, v_body = _get(urllib.parse.urljoin(url, variant), timeout, direct)
         except Exception as e:  # 拿到位就是没流，判失效见下方说明
             return ProbeResult(False, http, _el(started), segs,
-                               f"变体不可达:{type(e).__name__}", "master")
+                               f"变体不可达:{why_dead(e)}", "master")
         v_kind, v_segs = classify(v_body) if "#EXTM3U" in v_body else ("raw", 0)
         if v_http != 200 or v_segs == 0:
             return ProbeResult(False, v_http, _el(started), v_segs,
@@ -291,6 +508,35 @@ def probe(url: str, timeout: int = 12, direct: bool = True) -> ProbeResult:
 
 def probe_many(urls: list[str], timeout: int = 12, workers: int = 20,
                direct: bool = True) -> list[ProbeResult]:
+    """并发探测一批地址，返回**与入参同序**的一批判决。
+
+    同序这件事有人靠：`cmd_build` 实测那一支是 `dict(zip(urls, probe_many(urls, …)))`，
+    顺序错了就是把 A 地址的判决记到 B 地址头上，而**两边的地址都还在**，事后看不出来。
+    空表单独一条：那是「这一轮没有要测的」，不能和「全测了、全连不上」混成同一个结果。
+
+    >>> probe_many([])
+    []
+
+    下面这条用「正文里有几个分片」把地址编号带出来，所以它真能认出被打乱（三条一模一样的
+    结果排在什么顺序都看不出问题 —— 那种用例是假绿）：
+
+    >>> import src.check.prober as P
+    >>> keep = P._get
+    >>> P._get = lambda url, timeout, direct: (200, "#EXTM3U\\n" + "#EXTINF:10,\\nx.ts\\n" * int(url[-1]))
+    >>> [r.segments for r in probe_many([f"http://x/{i}" for i in (3, 1, 2, 1)], timeout=2)]
+    [3, 1, 2, 1]
+    >>> P._get = keep
+
+    真套接字那一条：一个关掉的端口，三条地址并发跑完，各自都认得出是同一种连不上。
+
+    >>> import socket
+    >>> srv = socket.socket()
+    >>> _ = srv.bind(("127.0.0.1", 0))
+    >>> port = srv.getsockname()[1]
+    >>> srv.close()
+    >>> [(r.ok, r.error) for r in probe_many([f"http://127.0.0.1:{port}/x.m3u8"] * 3, timeout=2)]
+    [(False, '端口没人听'), (False, '端口没人听'), (False, '端口没人听')]
+    """
     if not urls:
         return []
     with ThreadPoolExecutor(max_workers=workers) as pool:
