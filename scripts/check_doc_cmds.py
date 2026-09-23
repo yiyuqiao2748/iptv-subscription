@@ -18,9 +18,14 @@
 `src.cli bulid`），用 `<!-- check-doc-cmds: off -->` / `on` 把那段圈起来 —— 渲染出来看不见，
 总结行也会写明有几段被圈掉了，不让这个口子悄悄吞掉整篇文档。
 
+但这个口子本身要配对：`off` 忘了关、或者**只是正文里把这对标记原样抄了一遍**（2.40 就是写文档时
+抄出来的，那一下把后面 24 条命令全圈走了，总结句还是「0 条对不上；该查的都查了」），
+由 `skip_imbalance` 当场判错。段数写在括号里是不够的 —— 会去核对分母的人本来就少。
+
 位置参数、参数的取值对不对，它不管 —— 那类漂移要靠用例，不靠这把尺。
 
-退码：**0** = 扫到的每一条都没问题；**1** = 有对不上的；**2** = **一条都没扫到**
+退码：**0** = 扫到的每一条都没问题；**1** = 有对不上的（命令、脚本名、或 off/on 没配上）；
+**2** = **一条都没扫到**
 （2.32 补的那一格：文档被清空、文件名给错、版式改了让正则落空，三种都是这把尺自己瞎了，
 不能让「扫了 0 条、0 条对不上」冒充「查过了、没问题」）。
 """
@@ -178,8 +183,9 @@ def subcommands(src_text: str) -> set[str]:
 def strip_skipped(text: str) -> str:
     """把 `SKIP_OFF`/`SKIP_ON` 之间那些行挖成空行（行号原样保留，报告里的位置还是准的）。
 
-    没有配对的 `on` 就挖到文末 —— 文档里漏写收尾标记，后果是「这一段以后不查了」，
-    而不是「凭空冒出一堆错」；所以数量会在总结里报出来，不能悄悄吞掉。
+    没有配对的 `on` 就挖到文末 —— 这是**挖内容**那一半的宽容：漏写收尾标记不该凭空造出一堆
+    「脚本不存在」的假错。但漏写本身必须单独判错，见 `skip_imbalance`（2.40：写 2.39 那节时把
+    这对标记**原样抄进正文当说明**，于是从那一行起到文末的 24 条命令一条都没查，退码照旧 0）。
 
     >>> strip_skipped("a\\n" + "<!-- check-doc-cmds: off -->" + "\\nscripts/gone.py\\n"
     ...               + "<!-- check-doc-cmds: on -->" + "\\nb\\n").splitlines()
@@ -200,6 +206,54 @@ def strip_skipped(text: str) -> str:
             continue
         keep.append(line if on else "")
     return "\n".join(keep)
+
+
+def skip_imbalance(text: str) -> list[tuple[int, str, int]]:
+    """off / on 没配上的地方：[(行号, 说法, 被这块吞掉的命令条数)]，按行号排。
+
+    为什么「没配上」要**单独判错**，而不是像以前那样只在总结里报个段数：一个多出来的
+    `off`（最典型就是像 2.40 那样把它当词儿抄进正文）会让那行往后所有命令都不进统计，
+    而总结句照旧是「0 条对不上；该查的都查了」。**分母缩水这件事，一句括号里的段数挡不住** ——
+    数一数才知道少了 24 条的人，和没数的人，看到的都是同一句绿。
+
+    认三种：到文末都没关、一个 `off` 还没关就被下一个 `off` 顶掉（该改的是**前一个**，
+    所以行号报前一个，别把人引到那个来收尾的标记上）、先出现 `on`（那行白写，
+    说明有一段本来想圈的结果圈反了）。每种都算出这一段里被吞掉的命令条数。
+
+    >>> skip_imbalance("a\\n<!-- check-doc-cmds: off -->\\nx\\n<!-- check-doc-cmds: on -->\\nb")
+    []
+    >>> skip_imbalance("x\\n<!-- check-doc-cmds: off -->\\n"
+    ...                ".venv/bin/python -m src.cli build --replay\\n")
+    [(2, 'off 到文末都没关', 1)]
+    >>> skip_imbalance("<!-- check-doc-cmds: on -->\\nx")
+    [(1, 'on 之前没有 off（这段是圈反了还是多写的？）', 0)]
+    >>> skip_imbalance("<!-- check-doc-cmds: off -->\\n.venv/bin/python scripts/x.py\\n"
+    ...                "<!-- check-doc-cmds: off -->\\n.venv/bin/python scripts/y.py\\n"
+    ...                "<!-- check-doc-cmds: on -->")
+    [(1, '这行的 off 没关，被第 3 行的 off 顶掉', 1)]
+    """
+    lines = text.splitlines()
+    open_at: int | None = None
+    out: list[tuple[int, str, int]] = []
+
+    def inside(a: int, b: int) -> int:
+        """第 a 行到第 b 行之间（含两端之外）还有几条命令 —— 报的是「这一段白扫了」。"""
+        return len(commands_in("\n".join(lines[a:b - 1])))
+
+    for no, line in enumerate(lines, 1):
+        if SKIP_OFF in line:
+            if open_at is not None:
+                out.append((open_at, f"这行的 off 没关，被第 {no} 行的 off 顶掉",
+                            inside(open_at, no)))
+            open_at = no
+        elif SKIP_ON in line:
+            if open_at is None:
+                out.append((no, "on 之前没有 off（这段是圈反了还是多写的？）", 0))
+            else:
+                open_at = None
+    if open_at is not None:
+        out.append((open_at, "off 到文末都没关", inside(open_at, len(lines) + 1)))
+    return sorted(out)
 
 
 def script_refs(text: str) -> set[str]:
@@ -327,11 +381,13 @@ def main(argv: list[str] | None = None) -> int:
     paths = [Path(d) for d in (args.docs or DEFAULT_DOCS)]
     n = bad = skipped = 0
     miss: list[tuple[str, int, str]] = []
+    loose: list[tuple[str, int, str, int]] = []
     refs: set[str] = set()
     for doc in paths:
         raw = (ROOT / doc).read_text(encoding="utf-8") if not doc.is_absolute() \
             else doc.read_text(encoding="utf-8")
         skipped += raw.count(SKIP_OFF)
+        loose += [(str(doc), no, why, hid) for no, why, hid in skip_imbalance(raw)]
         text = strip_skipped(raw)
         refs |= script_refs(text)
         miss += [(str(doc), no, why) for no, why in unrecognized(text)]
@@ -354,6 +410,14 @@ def main(argv: list[str] | None = None) -> int:
     for name in dead:
         print(f"文档里写了 scripts/{name}，但 scripts/ 里没有这个文件"
               "（打错了还是删了没改文档？）")
+    # 这一层在最底下那句总结之外报，因为它改的是**分母**：一个没关的 off 会让上面的 `n`
+    # 本身就少，「扫了 115 条、0 条对不上」那句越是干净越不能信。
+    for doc, no, why, hid in loose:
+        print(f"✗ {doc}:{no} off/on 没配上：{why}"
+              + (f"，这一段里 {hid} 条命令一条都没查" if hid else ""))
+    if loose:
+        print("   补上收尾的 on；如果那只是正文里提了一句这个标记，把它写成不带 HTML 注释的样子"
+              "（计划书 2.21 那节自己提到它时就是这么写的）")
     if args.verbose:
         for name in undocumented(scripts, refs):
             print(f"    scripts/{name} 存着，但 {'、'.join(str(p) for p in paths)} 里没提过")
@@ -362,7 +426,10 @@ def main(argv: list[str] | None = None) -> int:
     # 「哪支脚本没进文档」只有把**全套**文档一起扫才有意义：单扫一份的话
     # 另外几份里提到过的一律会被误报成没人知道，那条提醒就成噪音了。
     hidden = undocumented(scripts, refs) if not args.docs else []
-    tail = (f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose" if miss
+    # 顺序要紧：`loose` 排在 `miss` 前面 —— 一个没关的 off 会把后面的行全挖空，
+    # 于是「写了 python 却没认成」那个数也跟着少，两个一起说只会把人引到小的那个上。
+    tail = ("；有 off/on 没配上，上面那个数是从少了命令的分母算的" if loose
+            else f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose" if miss
             else "；该查的都查了" if n else "；这一轮一条都没扫到，上面那些 0 全是空的")
     print(f"\n扫了 {n} 条命令、{len(refs)} 个脚本名：{bad} 条命令、{len(dead)} 个脚本名对不上"
           + (f"（另有 {skipped} 段标了 off 的例子没查）" if skipped else "")
@@ -377,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         print("（三种可能：文档被清空了、`docs` 参数给错了、版式改了让 `commands_in` 全落空 —— "
               "加 --verbose 看一眼是哪种）")
         return 2
-    return 1 if (bad or dead) else 0
+    return 1 if (bad or dead or loose) else 0
 
 
 if __name__ == "__main__":

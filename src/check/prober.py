@@ -67,13 +67,6 @@ class ProbeResult:
     error: str = ""
     kind: str = ""                 # live / master / vod / raw，空串表示没测出来
 
-    @property
-    def score_hint(self) -> int:
-        """P0 阶段的粗略质量分：可用加分，越快越高。P2 会换成三层探测 + 实测码率。"""
-        if not self.ok:
-            return -1
-        return 100 - min(self.ms // 50, 60) + min(self.segments, 20)
-
 
 def classify(body: str) -> tuple[str, int]:
     """从播放列表正文判断它是哪种流、有多少分片。

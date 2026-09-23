@@ -9,14 +9,40 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
 
+from src.keys import check_keys, check_version
 from src.match.normalize import normalize
 from src.parse.m3u import Entry
+
+# 这份表允许的键（`src/keys.py` 的守卫用）。写成一份配置一段，是因为「谁被读」是读它
+# 的那段代码的事 —— 放远了就会漂：漂掉的不是注释，是「改了这行到底有没有生效」。
+CHANNELS_TOP_KEYS = ["version", "groups", "upstream_group_map", "excluded_groups",
+                     "exclude_patterns", "channels"]
+CHANNELS_TOP_NOTES = {
+    "channels": "表上有哪几个台、每个台认哪些名字",
+    "groups": "有哪几组、组与组在订阅里的先后",
+    "upstream_group_map": "名单没写到的上游分组，整组归给谁",
+    "excluded_groups": "哪些上游分组一律不要",
+    "exclude_patterns": "名字带这些词的条目一律不要",
+}
+GROUP_KEYS = ["id", "title"]
+GROUP_NOTES = {
+    "id": "channels 靠它引用这一组（写歪就是「引用了未定义的分组」）",
+    "title": "电视上那一组显示成什么名",
+}
+RULE_KEYS = ["name", "group", "aliases", "tvg_id"]
+RULE_NOTES = {
+    "name": "这条规则管的是哪个台",
+    "group": "它归到哪一组",
+    "aliases": "上游那些花名认不认得它 —— 少一个别名就安静地少对上一批线路",
+    "tvg_id": "电子节目单把它对到谁",
+}
 
 
 @dataclass(slots=True)
@@ -78,6 +104,28 @@ class ChannelIndex:
     True
     >>> idx.is_excluded(Entry(name="湖南卫视", url="u", group="🕘️更新时间"))
     True
+
+    键名写歪停下来（2.39）。这一份最疼的一种是 `alias` 少了那个 s：规则照建、台照出，
+    只是那批花名再也没人认得 —— 报告里显示成「这个台只有 1 条线路」，看着像上游就没给。
+    `name` / `group` 漏写由前面那句「缺 name」接住（它会把读到的键列出来），
+    守卫管的是这种**写了、但写歪了才安静**的。
+
+    >>> bad = {"channels": [{"name": "湖南卫视", "group": "weisheng",
+    ...                      "alias": ["湖南卫视高清"]}],
+    ...        "groups": [{"id": "weisheng", "title": "🌏 卫视"}]}
+    >>> try:
+    ...     ChannelIndex(bad)
+    ... except ValueError as e:
+    ...     print(str(e))
+    channels 第 1 条（湖南卫视）：`alias` 我们不读，最像是 `aliases` 写歪了 —— 它管的是上游那些花名认不认得它 —— 少一个别名就安静地少对上一批线路
+
+    顶层 `channel:` 少了 s 以前是「一条规则都没有」—— 那句话现在还在，但守卫先说得更准。
+
+    >>> try:
+    ...     ChannelIndex({"channel": [{"name": "湖南卫视", "group": "weisheng"}]})
+    ... except ValueError as e:
+    ...     print("`channel`" in str(e) and "最像是" in str(e))
+    True
     """
 
     def __init__(self, cfg: dict[str, Any]):
@@ -91,6 +139,10 @@ class ChannelIndex:
         if not isinstance(cfg, dict):
             raise ValueError(f"配置读出来是 {type(cfg).__name__}，不是「groups: / channels:」"
                              "那种结构，这一份不能当频道配置用")
+        check_version(cfg, where="频道配置")
+        for warn in check_keys(cfg, where="频道配置", known=CHANNELS_TOP_KEYS,
+                               notes=CHANNELS_TOP_NOTES):
+            print(f"⚠️ {warn}", file=sys.stderr)
         groups = cfg.get("groups") or []
         if not isinstance(groups, list):
             raise ValueError(f"groups 读出来是 {type(groups).__name__}，应该是列表")
@@ -98,6 +150,9 @@ class ChannelIndex:
             if not isinstance(g, dict) or not g.get("id") or not g.get("title"):
                 raise ValueError(f"groups 第 {i + 1} 条不是「id + title」那种字典（现在读到的："
                                  f"{str(g)[:40] if isinstance(g, dict) else type(g).__name__}）")
+            for warn in check_keys(g, where=f"groups 第 {i + 1} 条", known=GROUP_KEYS,
+                                   notes=GROUP_NOTES):
+                print(f"⚠️ {warn}", file=sys.stderr)
         self.groups: dict[str, dict[str, Any]] = {
             g["id"]: {"title": g["title"], "order": i}
             for i, g in enumerate(groups)
@@ -121,6 +176,9 @@ class ChannelIndex:
             if missing:
                 raise ValueError(f"channels 第 {i + 1} 条缺 {' 和 '.join(missing)}"
                                  f"（现在只有 {sorted(raw)}），补上再出表")
+            for warn in check_keys(raw, where=f"channels 第 {i + 1} 条（{raw['name']}）",
+                                   known=RULE_KEYS, notes=RULE_NOTES):
+                print(f"⚠️ {warn}", file=sys.stderr)
             rule = ChannelRule(
                 name=raw["name"],
                 group=raw["group"],

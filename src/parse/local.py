@@ -17,9 +17,23 @@ from pathlib import Path
 
 import yaml
 
+from src.keys import check_keys, check_version
 from src.parse.m3u import Entry
 
 SOURCE_ID = "local"
+
+# 这份文件允许的键，逐条说清它管什么 —— 这份名单就是 `src/keys.py` 那道守卫的弹药，
+# 代码里 `raw.get("x")` 读了谁、以及「写给人看所以没人读」的谁，都在这里对齐一次。
+TOP_KEYS = ["version", "channels"]
+CHANNEL_KEYS = ["name", "url", "group", "tvg_id", "expires", "added", "note"]
+# 值是一句人话，会原样出现在报错里：写歪了这些键，表上会安静地少掉什么。
+CHANNEL_NOTES = {
+    "name": "这条线路叫什么、频道名单认不认得它",
+    "url": "这条线路的真实地址（没地址它本来就不该进表）",
+    "group": "认不上名字时它归到哪一组",
+    "tvg_id": "电子节目单把它对到哪个台",
+    "expires": "这条线路哪天停用（写歪就是永不过期）",
+}
 
 
 def is_expired(expires: str, today: dt.date | None = None) -> bool:
@@ -47,15 +61,24 @@ def is_expired(expires: str, today: dt.date | None = None) -> bool:
     return end < (today or dt.date.today())
 
 
-def parse_channels(text: str) -> tuple[list[Entry], list[str]]:
+def parse_channels(text: str, *,
+                   where: str = "config/sources_local.yaml") -> tuple[list[Entry], list[str]]:
     """YAML 正文 -> (Entry 列表, 被跳过的原因)。
 
     name / url 缺一就跳过：宁可不进表，也不要往用户的第一线塞半条线路。
+
+    `where` 只用在顶层那两句上（`version` / `channels` 写歪）：条目级的说法本来就短，
+    而顶层那两句会被 `stop_config` 接住 —— 它前面已经印过一次文件路径，两边写的是同一个
+    字符串才不会重复（2.39 装完闸第一次实测，屏幕上那条绝对路径出现了两次）。
 
     url 还必须是**一行**：`strip()` 只去首尾，中间剩下的空白是 YAML 折行弄出来的，
     那条地址已经不是任何人测过的那一条了。字面块 `|` 更糟 —— 里面如果有换行，
     写进 m3u 就是凭空多出一行地址（2.35 复现过：1 头 + 2 线路的表变成 4 行）。
     这里拦下来比让 writer 悄悄改掉诚实：理由会打印，条目不会假装存在。
+
+    键名写歪也拦（`src/keys.py`，2.39）：`expires` 少个 s 就是「这条线路永不过期」，
+    表上什么都不会少，少的是一次本该发生的停用 —— 那种错只有在这里说才来得及。
+    认不出又不确定是不是笔误的，只印一行警告，不拦出表。
 
     >>> entries, skipped = parse_channels('''
     ... channels:
@@ -72,13 +95,65 @@ def parse_channels(text: str) -> tuple[list[Entry], list[str]]:
     ['第 1 条 折行的：url 里有空白，多半是 YAML 折行']
     >>> parse_channels("channels:\\n  - name: 两行\\n    url: |\\n      http://a/1.m3u8\\n      http://b/2.m3u8\\n")[0]
     []
+    >>> parse_channels('''
+    ... channels:
+    ...   - 湘潭新闻综合          # 漏了 `- name:` 那种写法，整条只是个字符串
+    ...   - name: 好的
+    ...     url: http://a/1.m3u8
+    ... ''')[1]
+    ['第 1 条不是「name + url」那种字典（是 str）']
+
+    致命的近亲键：抛话，且这一份一条都不进表（半份名单比没名单更难查）。
+
+    >>> try:
+    ...     parse_channels("channels:\\n  - name: 湘潭\\n    url: http://a/1.m3u8\\n    expire: 2026-12-31\\n")
+    ... except ValueError as e:
+    ...     print(str(e))
+    第 1 条 湘潭：`expire` 我们不读，最像是 `expires` 写歪了 —— 它管的是这条线路哪天停用（写歪就是永不过期）
+
+    顶层写成 `channel:`（少了 s）以前是静默出一张没有手工线路的表。
+
+    >>> try:
+    ...     parse_channels("channel:\\n  - name: 湘潭\\n    url: http://a/1.m3u8\\n")
+    ... except ValueError as e:
+    ...     print("`channel`" in str(e) and "`channels`" in str(e))
+    True
+
+    顶层那两句带的是真文件名（`load_local` 把路径传进来）—— 句首与 `stop_config` 要印的
+    那个字符串同一个，才不会「这条路径屏幕上出现两遍」：
+
+    >>> try:
+    ...     parse_channels("channel:\\n  - name: 湘潭\\n    url: http://a/1.m3u8\\n",
+    ...                    where="/tmp/x/sources_local.yaml")
+    ... except ValueError as e:
+    ...     print(str(e))
+    /tmp/x/sources_local.yaml：`channel` 我们不读，最像是 `channels` 写歪了 —— 它管的是这些手工核对过的线路进不进表
+
+    认不出的键只警告：下面这条的 `note` 是写给人看的（在名单上），所以只有 `expire_date` 那句话。
+
+    >>> parse_channels("channels:\\n  - name: 湘潭\\n    url: http://a/1.m3u8\\n    note: 自己试过\\n")[1]
+    []
     """
     cfg = yaml.safe_load(text) or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    check_version(cfg, where=where)
+    for warn in check_keys(cfg, where=where, known=TOP_KEYS,
+                           notes={"channels": "这些手工核对过的线路进不进表"}):
+        print(f"    ⚠️ {warn}")
     out: list[Entry] = []
     skipped: list[str] = []
     for i, raw in enumerate(cfg.get("channels") or []):
-        raw = raw or {}
+        if not isinstance(raw, dict):
+            # 以前这里往下走就是裸 `AttributeError: 'str' object has no attribute 'get'`：
+            # 一条写漏了 `- name:` 缩进的线路，崩栈比它被跳过更难懂。
+            skipped.append(f"第 {i + 1} 条不是「name + url」那种字典（是 "
+                           f"{type(raw).__name__}）")
+            continue
         name = str(raw.get("name") or "").strip()
+        for warn in check_keys(raw, where=f"第 {i + 1} 条 {name or '（没名字）'}",
+                               known=CHANNEL_KEYS, notes=CHANNEL_NOTES):
+            print(f"    ⚠️ {warn}")
         url = str(raw.get("url") or "").strip()
         if not name or not url:
             skipped.append(f"第 {i + 1} 条：缺 {'url' if name else 'name'}")
@@ -100,7 +175,6 @@ def parse_channels(text: str) -> tuple[list[Entry], list[str]]:
             tvg_id=str(raw.get("tvg_id") or "").strip(),
             group=str(raw.get("group") or "").strip(),
             source=SOURCE_ID, seq=i,
-            extras={"note": str(raw.get("note") or "")},
         ))
     return out, skipped
 
@@ -110,7 +184,7 @@ def load_local(path: Path | str) -> list[Entry]:
     p = Path(path)
     if not p.exists():
         return []
-    entries, skipped = parse_channels(p.read_text(encoding="utf-8"))
+    entries, skipped = parse_channels(p.read_text(encoding="utf-8"), where=str(p))
     for why in skipped:
-        print(f"    跳过 config/sources_local.yaml {why}")
+        print(f"    跳过 {p} {why}")
     return entries

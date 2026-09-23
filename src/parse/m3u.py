@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator
 
 _ATTR_RE = re.compile(r'([\w][\w-]*)="([^"]*)"')
 _DURATION_RE = re.compile(r'^-?[\d.]+')
@@ -27,7 +26,6 @@ class Entry:
     group: str = ""
     source: str = ""               # 来自哪个上游（sources.yaml 里的 id）
     seq: int = 0                   # 在上游文件中的原始顺序，用于稳定排序
-    extras: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -105,7 +103,9 @@ def parse_m3u(text: str, source: str = "") -> Playlist:
         if not name or not url or any(c.isspace() for c in url):
             playlist.skipped += 1
             return
-        known = {"tvg-id", "tvg-name", "tvg-logo", "group-title", "title"}
+        # 认不出的属性直接丢，不告警：那是别人写的文件，各家自定义键一大堆
+        # （`user-agent`、`catchup`、`tvg-shift`…），报出来只会淹掉该看的那一行。
+        # 自己那份配置写歪键名是另一件事，守卫在 `src/keys.py`。
         playlist.entries.append(
             Entry(
                 name=name.strip(),
@@ -116,7 +116,6 @@ def parse_m3u(text: str, source: str = "") -> Playlist:
                 group=(attrs.get("group-title") or extgrp or "").strip(),
                 source=source,
                 seq=seq,
-                extras={k: v for k, v in attrs.items() if k not in known},
             )
         )
         seq += 1
@@ -160,12 +159,3 @@ def parse_m3u(text: str, source: str = "") -> Playlist:
         extgrp = ""
 
     return playlist
-
-
-def iter_urls(entries: Iterable[Entry]) -> Iterator[str]:
-    """去重后依次产出 url，保持首次出现顺序。"""
-    seen: set[str] = set()
-    for e in entries:
-        if e.url not in seen:
-            seen.add(e.url)
-            yield e.url

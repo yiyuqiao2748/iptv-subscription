@@ -72,6 +72,7 @@ from src.check.epg import (  # noqa: E402
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
     AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
+from src.keys import check_keys, check_version  # noqa: E402
 from src.match.matcher import load_index  # noqa: E402
 from src.match.normalize import quality_hint  # noqa: E402
 from src.output.writer import (  # noqa: E402
@@ -283,6 +284,19 @@ def fake_strike(url: str, r: ProbeResult | None, fake: frozenset[str]) -> int:
     return 1 if (urlsplit(url).hostname or "") in fake else 0
 
 
+# 源清单允许的键，连同「这个键一改，表上就有东西跟着变」那句话一起交给 `src/keys.py`。
+# 为什么名单写在这儿而不是 keys.py 里：谁被读是读它的那段代码的事，放在一起才看得出漂没漂。
+SOURCES_TOP_KEYS = ["version", "sources"]
+SOURCE_KEYS = ["id", "url", "enabled", "priority", "probe", "note"]
+SOURCE_NOTES = {
+    "id": "缓存文件名、报告里的源名、履历里的出处",
+    "url": "去哪儿抓这份列表",
+    "enabled": "这条源参不参与出表",
+    "priority": "同一频道里谁排第一条（不写就是按这里的先后）",
+    "probe": "它进不进 --verify 实测",
+}
+
+
 def load_sources(path: Path, *, fresh: bool) -> list[dict]:
     """读 config/sources.yaml 里启用的源，解析成本地缓存路径或远端 URL。
 
@@ -313,16 +327,38 @@ def load_sources(path: Path, *, fresh: bool) -> list[dict]:
     ...     except ValueError as e:
     ...         print(str(e).split(" 第 1 条源缺 ")[1])   # 前半截是那个临时文件的路径
     url（现在只有 ['id']），先修配置再出表
+
+    键名写歪也停下来（2.39）。这份文件里最贵的一类错不是漏写 —— 漏写有上面那句「缺 url」
+    接住 —— 是**看起来像写了**：`enable: false` 少两个字母，那条源照样进表，
+    而人以为已经把它关了。`src/keys.py` 里把哪些键算「一改就有东西跟着变」写明了。
+
+    >>> with tempfile.TemporaryDirectory() as d:                # enabled 写成了 enable
+    ...     p = Path(d) / "s.yaml"
+    ...     _ = p.write_text("sources:\\n  - id: a\\n    url: http://x/a\\n    enable: false\\n",
+    ...                      encoding="utf-8")
+    ...     try:
+    ...         load_sources(p, fresh=False)
+    ...     except ValueError as e:
+    ...         print("最像是 `enabled`" in str(e), "参不参与出表" in str(e))
+    True True
     """
     text = Path(path).read_text(encoding="utf-8")
     cfg = yaml.safe_load(text)
     if not isinstance(cfg, dict):
         raise ValueError(f"{path} 读出来不是「sources: […]」那种结构（是 "
                          f"{type(cfg).__name__}），这一份不能当源清单用")
+    check_version(cfg, where=str(path))
+    for warn in check_keys(cfg, where=str(path), known=SOURCES_TOP_KEYS,
+                           notes={"sources": "这一轮有哪几个上游"}):
+        print(f"⚠️ {warn}", file=sys.stderr)
     out = []
     for i, s in enumerate(cfg.get("sources") or []):
         if not isinstance(s, dict):
             raise ValueError(f"{path} 第 {i + 1} 条源不是字典（是 {type(s).__name__}）")
+        # 关掉的源也查：那条源迟早要开回来，写歪的键不会自己变对
+        for warn in check_keys(s, where=f"{path} 第 {i + 1} 条源", known=SOURCE_KEYS,
+                               notes=SOURCE_NOTES):
+            print(f"⚠️ {warn}", file=sys.stderr)
         if not s.get("enabled", True):
             continue
         missing = [k for k in ("id", "url") if not s.get(k)]
@@ -414,6 +450,17 @@ def epg_header_url(cfg: dict, upstream_urls: list[str]) -> str:
     return url if url.startswith(("http://", "https://")) else ""
 
 
+EPG_TOP_KEYS = ["version", "epg"]
+EPG_KEYS = ["url", "backup_url", "cache", "enabled", "caveat", "note"]
+EPG_NOTES = {
+    "url": "节目单从哪儿取，tvg-id 就照着谁对",
+    "enabled": "对 id 这一层开不开（关掉就是所有台退回上游写法）",
+    "cache": "取回来的节目单落在哪儿，离线重出与「今天够不够新」都读它",
+}
+# `backup_url` 在名单上但不是这里读的：`scripts/epg_check.py` 拿它当第二条候选（2.30）。
+# `note` 是写给人看的为什么。
+
+
 def load_epg_config(path: Path) -> dict:
     """读 `config/epg.yaml` 里那一节；文件不在或被写坏了就当「没启用」。
 
@@ -438,13 +485,52 @@ def load_epg_config(path: Path) -> dict:
     真配置那条只钉「启用 ⇒ 地址是 http(s)」这一件事，不钉它是 `e.erw.cc` ——
     这套设计的卖点就是「换节目单 = 改一行」（`config/epg.yaml` 的 note 里记着为什么是那条），
     把地址写进断言里等于每换一次地址就先修一次测试。
+
+    「不抛」只对**读不出来**的那几种；文件明明在、键名写歪是另一件事（2.39）。
+    `enabledd: false` 以前等于「节目单还开着」，而写的人以为已经关了 —— 现在停下来。
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text("epg:\\n  url: http://x/e.xml\\n  enabledd: false\\n", encoding="utf-8")
+    ...     try:
+    ...         load_epg_config(p)
+    ...     except ValueError as e:
+    ...         print("最像是 `enabled`" in str(e))
+    True
+
+    顶层 `epg:` 写成 `epgs:` 以前是彻底安静：`.get("epg")` 拿到空，于是这被读成
+    「没配地址 = 没启用」，出表照出，只是 tvg-id 全退回上游写法。
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text("epgs:\\n  url: http://x/e.xml\\n", encoding="utf-8")
+    ...     try:
+    ...         load_epg_config(p)
+    ...         print("没拦")
+    ...     except ValueError:
+    ...         print("拦下了")
+    拦下了
     """
     try:
-        cfg = (yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}).get("epg") or {}
+        top = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        cfg = {}
+        top = {}
+    if not isinstance(top, dict):
+        top = {}
+    cfg = top.get("epg") or {}
     if not isinstance(cfg, dict):
         cfg = {}
+    # 键名守卫只在「这份文件真的读出来了」之后才谈：读不出来还是老行为（当没启用）。
+    # 不然新克隆的仓库会因为一份本来就可选的配置出不了表 —— 那是跟上面那句「默认值安全」
+    # 直接冲突的。写坏了 YAML 的那格同理：形状都不在，谈不上键名。
+    if top:
+        check_version(top, where=str(path))
+        for warn in check_keys(top, where=str(path), known=EPG_TOP_KEYS,
+                               notes={"epg": "tvg-id 照哪一份节目单对"}):
+            print(f"⚠️ {warn}", file=sys.stderr)
+    if cfg:
+        for warn in check_keys(cfg, where=f"{path} 的 epg 段", known=EPG_KEYS, notes=EPG_NOTES):
+            print(f"⚠️ {warn}", file=sys.stderr)
     url = str(cfg.get("url") or "").strip()
     return {
         "url": url,
@@ -1287,6 +1373,48 @@ def history_record_note(new_run: bool, cleared: list[str]) -> str:
             + (f"，顺带清掉上一行的 {'、'.join(cleared)}" if cleared else ""))
 
 
+def stop_message(what: str, path, reason: str, extra: str) -> str:
+    """「这一份配置读不了」那两行怎么拼 —— 路径只说一遍。
+
+    键名守卫（src/keys.py）那些整句开头本来就带着文件名：警告是直接打在终端上的，
+    不说清是哪一份就得让人回头猜。可同一句被 `stop_config` 接住时，它前面又印了一遍
+    `⚠️ 源清单 <路径> 读不了：` —— 于是 2.39 装完闸第一次实测，屏幕上那条绝对路径出现了两次，
+    真正把要改的那一行顶到了行尾。这里剥掉开头那截相同的。
+
+    >>> stop_message("源清单", "config/sources.yaml", "第 1 条缺 url", "少一个源看不出来")
+    '⚠️ 源清单 config/sources.yaml 读不了：第 1 条缺 url\\n   这一轮不出表 —— 少一个源看不出来'
+    >>> print(stop_message("源清单", "/tmp/a.yaml",
+    ...                    "/tmp/a.yaml 第 2 条源：`enable` 我们不读", "x"))
+    ⚠️ 源清单 /tmp/a.yaml 读不了：第 2 条源：`enable` 我们不读
+       这一轮不出表 —— x
+    >>> stop_message("范围规则", "r.yaml", "r.yaml: 这档规则没了", "x")   # 紧跟冒号的也剥
+    '⚠️ 范围规则 r.yaml 读不了：这档规则没了\\n   这一轮不出表 —— x'
+    """
+    p = str(path)
+    if reason.startswith(p):
+        reason = reason[len(p):].lstrip("： :")
+    return (f"⚠️ {what} {p} 读不了：{reason}\n"
+            f"   这一轮不出表 —— {extra}")
+
+
+def stop_config(what: str, path, e: Exception, extra: str) -> int:
+    """配置读不了 / 键名写歪时那句同样的人话，四份配置共用一套说法。
+
+    为什么要有这一层：这几处停下来的理由完全一样 —— 带着坏配置出表，缺的东西**在表上
+    看不出来**（少一个源、少一档范围、少一条手工线路，都只是「本来就没有」）。
+    写四遍就会漂四遍，漂掉的那一句正好是让人知道该改哪一行。
+
+    只印 `Exception` 的第一行：YAML 的报错自带一段缩进提示，全塞进来会把「先修配置」
+    那句顶出屏幕。怎么拼那两行见 `stop_message`。
+
+    >>> stop_config("源清单", "config/sources.yaml", ValueError("第 1 条缺 url"), "少一个源看不出来")
+    1
+    """
+    reason = (str(e).strip().splitlines() or [type(e).__name__])[0]
+    print(stop_message(what, path, reason, extra), file=sys.stderr)
+    return 1
+
+
 def cmd_build(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="src.cli build", description="生成 APTV 订阅列表")
     ap.add_argument("--source", action="append", dest="sources",
@@ -1379,21 +1507,26 @@ def cmd_build(argv: list[str]) -> int:
     except (OSError, ValueError, yaml.YAMLError) as e:
         # 源清单读不了不是「少看几个源」的小事：接着往下走表照出，只是那些台安静地不见了。
         # 以前这里是裸崩（文件不在 → FileNotFoundError 崩栈，条目缺 url → KeyError）。
-        reason = (str(e).strip().splitlines() or [type(e).__name__])[0]
-        print(f"⚠️ 源清单 {args.sources_file} 读不了：{reason}\n"
-              f"   这一轮不出表 —— 少一个源在表上是看不出来的，先修配置（`--sources-file`）",
-              file=sys.stderr)
-        return 1
+        return stop_config("源清单", args.sources_file, e,
+                           "少一个源在表上是看不出来的，先修配置（`--sources-file` 换一份）")
     if not sources:
         print("config/sources.yaml 里没有启用的源。", file=sys.stderr)
         return 1
+    # 手工线路在碰上游之前读 —— 2.37 给 channels.yaml 立过同一条规矩：读不进去这件事
+    # 该在花掉那几分钟抓网络之前说。它也不再是「跳过那一行」的宽容路径：`expires` 写歪
+    # 就是永不过期（src/keys.py），那种错只能停下来。
+    try:
+        local_lines = [] if args.skip_local else load_local(LOCAL_SOURCES_FILE)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        return stop_config("手工线路", LOCAL_SOURCES_FILE, e,
+                           "那些核对过的第一线会安静地消失。先修配置；"
+                           "这轮确实不要它们，传 --skip-local")
     print(f"读取 {len(sources)} 个上游：")
     try:
         entries, epg_urls = collect(sources)
     except UnreadableSource as e:
         print(f"⚠️ {e}", file=sys.stderr)
         return 1
-    local_lines: list[Entry] = [] if args.skip_local else load_local(LOCAL_SOURCES_FILE)
     if local_lines:
         print(f"  {LOCAL_ID}（手工核对）: {len(local_lines)} 条 ← config/sources_local.yaml")
         entries += local_lines
@@ -1402,12 +1535,21 @@ def cmd_build(argv: list[str]) -> int:
         return 1
 
     # `index` 在碰网络之前就读好了（2.37：它读不进去时最晚在这里说，见函数开头）
-    reach = load_reachability(REACH_FILE)
+    try:
+        reach = load_reachability(REACH_FILE)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        return stop_config("范围规则", REACH_FILE, e,
+                           "少一档规则，运营商内网地址就会跑去占第一线 —— 真机上正是这么坏的（2.9）")
 
     # P3（计划书 2.19）：`tvg-id` 由「选定的节目单里到底有哪个 id」决定，不再由谁先创建频道桶决定。
     # 节目单取不到就是空单，`apply_ids()` 拿到空单什么都不改 —— 这一层不能变成新的失效面。
     today = datetime.now().strftime("%Y%m%d")
-    epg_cfg = load_epg_config(Path(args.epg_file))
+    try:
+        epg_cfg = load_epg_config(Path(args.epg_file))
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        return stop_config("节目单配置", args.epg_file, e,
+                           "它只管 tvg-id 对得上谁，写歪的键安静走默认值就是"
+                           "「以为关了其实没关」。先修那一行（`--epg-file` 可以指另一份）")
     if args.no_epg:
         epg_cfg["enabled"] = False
     epg_doc, epg_info = load_epg(epg_cfg, today=today, force=args.fresh)
