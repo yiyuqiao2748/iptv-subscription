@@ -53,7 +53,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 # Windows 控制台默认 GBK，输出 emoji 分组名会抛 UnicodeEncodeError
 for _stream in (sys.stdout, sys.stderr):
@@ -290,12 +290,44 @@ def load_sources(path: Path, *, fresh: bool) -> list[dict]:
 
     `probe: false` 的源（运营商内网源）不参与 --verify 实测：
     它们的可达性取决于看电视那张网，开发机上测出来全红是假阴性。
+
+    读不了 / 写歪了都抛 `OSError` 或 `ValueError`，**不静默跳过那一条**：
+    少一个源在表上是看不出来的（那些台会安静地变成「本来就没有」），
+    所以宁可停下让人去修配置。以前这里连形状都不查 —— 一条源漏写 `url`
+    就是裸 `KeyError: 'url'`（2.36 实测），YAML 少个缩进是 `ParserError` 崩栈。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     good = Path(d) / "s.yaml"
+    ...     _ = good.write_text(chr(10).join(
+    ...         ["sources:", "  - id: a", "    url: http://x/a.m3u", "  - id: off",
+    ...          "    url: http://x/off", "    enabled: false"]), encoding="utf-8")
+    ...     [(s["id"], s["probe"]) for s in load_sources(good, fresh=False)]
+    [('a', True)]
+    >>> with tempfile.TemporaryDirectory() as d:                 # 漏写 url
+    ...     bad = Path(d) / "s.yaml"
+    ...     _ = bad.write_text("sources:\\n  - id: a\\n", encoding="utf-8")
+    ...     try:
+    ...         load_sources(bad, fresh=False)
+    ...     except ValueError as e:
+    ...         print(str(e).split(" 第 1 条源缺 ")[1])   # 前半截是那个临时文件的路径
+    url（现在只有 ['id']），先修配置再出表
     """
-    cfg = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    text = Path(path).read_text(encoding="utf-8")
+    cfg = yaml.safe_load(text)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{path} 读出来不是「sources: […]」那种结构（是 "
+                         f"{type(cfg).__name__}），这一份不能当源清单用")
     out = []
     for i, s in enumerate(cfg.get("sources") or []):
+        if not isinstance(s, dict):
+            raise ValueError(f"{path} 第 {i + 1} 条源不是字典（是 {type(s).__name__}）")
         if not s.get("enabled", True):
             continue
+        missing = [k for k in ("id", "url") if not s.get(k)]
+        if missing:
+            raise ValueError(f"{path} 第 {i + 1} 条源缺 {' 和 '.join(missing)}"
+                             f"（现在只有 {sorted(s)}），先修配置再出表")
         cache = CACHE_DIR / f"{s['id']}.m3u"
         target = s["url"] if (fresh or not cache.exists()) else str(cache)
         out.append({"id": s["id"], "target": target, "cache": cache, "url": s["url"],
@@ -304,14 +336,43 @@ def load_sources(path: Path, *, fresh: bool) -> list[dict]:
     return out
 
 
+def local_path(target: str) -> Path:
+    """把「本地文件那种写法」折成一个 Path。
+
+    为什么单独有这一层：`fetch()` 只认 `http(s)://` 前缀，剩下的一律当路径，
+    而 `Path("file:///tmp/a.m3u")` 会把三个斜杠吃掉一个，报出来的错是
+    `No such file or directory: 'file:/tmp/a.m3u'` —— **那个路径不存在，
+    可用户写的文件是存在的**，照着报错去找文件会找错地方（2.36 实测）。
+    有人往 `config/sources.yaml` 里粘 `file://` 地址是常态（浏览器里复制就是这么个形状），
+    所以这里替他把它折回来，而不是要求他先改成纯路径。
+
+    >>> local_path("file:///tmp/a/b.m3u")
+    PosixPath('/tmp/a/b.m3u')
+    >>> local_path("/tmp/a/b.m3u")
+    PosixPath('/tmp/a/b.m3u')
+    >>> local_path("./a.m3u")
+    PosixPath('a.m3u')
+    >>> local_path("file:///tmp/%E6%B9%96%E5%8D%97.m3u")   # 百分号转义要还原
+    PosixPath('/tmp/湖南.m3u')
+    """
+    if target.startswith("file://"):
+        return Path(unquote(urlsplit(target).path))
+    return Path(target)
+
+
 def fetch(target: str, timeout: int = 60) -> str:
-    """读上游。本地文件直接读，URL 走 urllib（自动使用系统代理设置）。"""
+    """读上游。本地文件直接读，URL 走 urllib（自动使用系统代理设置）。
+
+    读不到就抛 `OSError`（文件不存在、是个目录、没权限），**不在这里降级** ——
+    少了谁、为什么少，得由知道「这一轮一共有几个源、各指望它出什么」的那一层来说
+    （见 `collect()`）。
+    """
     if target.startswith(("http://", "https://")):
         url = quote(target, safe=":/?&=%#[]@!$'()*+,;")   # 上游路径里有中文
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
-    return Path(target).read_text(encoding="utf-8", errors="replace")
+    return local_path(target).read_text(encoding="utf-8", errors="replace")
 
 
 def fetch_bytes(target: str, timeout: int = 60) -> bytes:
@@ -325,7 +386,7 @@ def fetch_bytes(target: str, timeout: int = 60) -> bytes:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return resp.read()
-    return Path(target).read_bytes()
+    return local_path(target).read_bytes()
 
 
 def epg_header_url(cfg: dict, upstream_urls: list[str]) -> str:
@@ -509,6 +570,12 @@ def load_probe(path: Path | str) -> tuple[dict[str, ProbeResult], dict]:
     报告里那张「逐主机可用性」表才不会在一次沿用记录的生成里凭空消失（它和判决同源，
     不是一次新的测量，所以表头会写明它是哪一轮的）。
 
+    「格式不对」一律抛 `ValueError`，别把 `AttributeError` 漏到调用方那里去
+    （现码就漏过：`lines` 的某一条不是字典 → `'str' object has no attribute 'get'`
+    崩栈，而调用方 catch 的是 OSError/ValueError —— 2.36 实测）。
+    **一条判决都没有要单独问一句**：那是另一类问题（这份记录没量过任何东西），
+    所以留成空字典返回，由 `replay_gate()` 用人话拒绝，而不是在这里冒充「读不出来」。
+
     >>> import tempfile
     >>> with tempfile.TemporaryDirectory() as d:
     ...     p = Path(d) / "probe.json"
@@ -521,14 +588,36 @@ def load_probe(path: Path | str) -> tuple[dict[str, ProbeResult], dict]:
     [('http://a/1', True, 120, 0), ('http://a/2', False, 0, 404)]
     >>> meta["at"][:16], meta["egress"], meta["warnings"], meta["hosts"]
     ('2026-09-21T21:18', '1.2.3.4 CN', [], [{'host': 'a', 'total': 2, 'ok': 1}])
+    >>> with tempfile.TemporaryDirectory() as d2:      # 某一条判决写成了字符串
+    ...     p2 = Path(d2) / "bad.json"
+    ...     _ = p2.write_text('{"at": "x", "lines": {"http://a/1": "不是字典"}}', encoding="utf-8")
+    ...     try:
+    ...         load_probe(p2)
+    ...     except ValueError as e:
+    ...         print(str(e).split(" 里 ")[1])   # 前半截是那个临时文件的路径
+    1 条判决不是字典，例如 http://a/1 —— 本工具写的每一条都是 {"ok": …, "ms": …} 那种形状
+    >>> with tempfile.TemporaryDirectory() as d3:      # lines 在，但一条判决都没有
+    ...     p3 = Path(d3) / "empty.json"
+    ...     _ = p3.write_text('{"at": "x", "lines": {}}', encoding="utf-8")
+    ...     res3, _ = load_probe(p3)
+    >>> len(res3)                                      # 读得出来，是空的 —— 交给 replay_gate 拒绝
+    0
     """
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(doc, dict) or "lines" not in doc:
         raise ValueError(f"{path} 里没有找到 lines 那一段（不是本工具写的 probe.json？）")
+    lines = doc["lines"]
+    if not isinstance(lines, dict):
+        raise ValueError(f"{path} 里的 lines 不是「地址 → 判决」那种字典（是 "
+                         f"{type(lines).__name__}），这一份不能当本轮实测结果用")
+    bad = [u for u, v in lines.items() if not isinstance(v, dict)]
+    if bad:
+        raise ValueError(f"{path} 里 {len(bad)} 条判决不是字典，例如 {bad[0]} —— "
+                         "本工具写的每一条都是 {\"ok\": …, \"ms\": …} 那种形状")
     results = {u: ProbeResult(bool(v.get("ok")), int(v.get("http") or 0), int(v.get("ms") or 0),
                               int(v.get("segments") or 0), str(v.get("error") or ""),
                               str(v.get("kind") or ""))
-               for u, v in doc["lines"].items()}
+               for u, v in lines.items()}
     meta = {"at": str(doc.get("at") or ""), "egress": str(doc.get("egress") or ""),
             "warnings": [str(w) for w in (doc.get("measurement_warnings") or [])],
             "hosts": [dict(h) for h in (doc.get("hosts") or []) if isinstance(h, dict)]}
@@ -536,7 +625,7 @@ def load_probe(path: Path | str) -> tuple[dict[str, ProbeResult], dict]:
 
 
 def replay_gate(meta: dict, *, point: str, now: str, max_age_hours: int = 48,
-                force: bool = False) -> tuple[bool, str]:
+                force: bool = False, n_lines: int | None = None) -> tuple[bool, str]:
     """这份记录能不能当本轮判决用，以及为什么不能（`point` 是本轮排序的参照出口）。
 
     三道门一道都不能省，因为它们各自对应一次真翻过的车：
@@ -548,6 +637,10 @@ def replay_gate(meta: dict, *, point: str, now: str, max_age_hours: int = 48,
         参照出口本身就是从履历里挑出来的可信出口，所以这一条也顺带挡住了「拿旧出口的记录顶新出口」。
       * **它太旧**（默认 48 小时） —— 沿用久了表会冻在旧世界上：上游换 IP、主机复活都看不见了。
         这条是刻意保守的：履历里的主机级判据没有时间闸，线路级这把要有。
+
+    另外三格是 2.36 补的，都关于「那个时间/那份记录到底能不能算」：
+    时间读不出、**只有一头带时区**（以前在这里 `TypeError` 崩栈）、**写着未来**（以前负数直接
+    通过 48 小时那道闸），以及传了 `n_lines` 时问一句**里面到底有几条判决**。
 
     >>> ok, why = replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",
     ...                        "warnings": []}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")
@@ -565,6 +658,36 @@ def replay_gate(meta: dict, *, point: str, now: str, max_age_hours: int = 48,
     >>> replay_gate({"at": "坏日期", "egress": "1.2.3.4 CN", "warnings": []},
     ...             point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")
     (False, '那份记录上读不出时间（at="坏日期"），不知道多旧就不用')
+
+    少写时区（手改过、或者别的机器写的）—— 以前是崩栈：
+
+    >>> replay_gate({"at": "2026-09-21T21:18:13", "egress": "1.2.3.4 CN", "warnings": []},
+    ...             point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")[1].split("，")[0]
+    '那份记录和本轮时刻有一边没带时区（at="2026-09-21T21:18:13"'
+    >>> replay_gate({"at": "2026-09-21", "egress": "1.2.3.4 CN", "warnings": []},
+    ...             point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")[0]
+    False
+
+    写着未来的记录：负数年龄过不了「太旧」那道闸，但它比「太旧」更值得单独问一句。
+    差几十分钟的时钟抖动放过（`timespec="seconds"` 本身就有可能把它凑成微小负数）：
+
+    >>> replay_gate({"at": "2026-09-22T18:00:00+08:00", "egress": "1.2.3.4 CN",
+    ...              "warnings": []}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")
+    (False, '那份记录写着未来（at="2026-09-22T18:00:00+08:00"，比本轮时刻还 10 小时）—— 这台机器的钟或时区不对，一份对不上表的时刻不能当本轮判决用')
+    >>> replay_gate({"at": "2026-09-22T08:30:00+08:00", "egress": "1.2.3.4 CN",
+    ...              "warnings": []}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00")[0]
+    True
+
+    几条判决这件事，`n_lines` 传进来才问（不传 = 不知道，就不拿它当理由）：
+
+    >>> replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",
+    ...              "warnings": []}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00",
+    ...             n_lines=0)
+    (False, '那份记录里一条逐条判决都没有（lines 是空的）—— 沿用它等于什么都不沿用，这一轮不会有线路被判死。要的就是这个效果就别传 --replay')
+    >>> replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",
+    ...              "warnings": []}, point="1.2.3.4 CN", now="2026-09-22T08:00:00+08:00",
+    ...             n_lines=350)[0]
+    True
     >>> replay_gate({"at": "2026-09-21T21:18:13+08:00", "egress": "9.9.9.9 JP",
     ...              "warnings": ["TUN"]}, point="1.2.3.4 CN", now="2026-09-24T08:00:00+08:00",
     ...             force=True)
@@ -574,9 +697,22 @@ def replay_gate(meta: dict, *, point: str, now: str, max_age_hours: int = 48,
         return True, "明知故犯：--allow-untrusted 越过了上面三道门"
     at = str(meta.get("at") or "")
     try:
-        age_h = (datetime.fromisoformat(now) - datetime.fromisoformat(at)).total_seconds() / 3600
+        then, here = datetime.fromisoformat(at), datetime.fromisoformat(now)
     except ValueError:
         return False, f'那份记录上读不出时间（at="{at}"），不知道多旧就不用'
+    if (then.tzinfo is None) != (here.tzinfo is None):
+        # 一头带时区一头不带，减法本身就不合法（现码在这里抛 TypeError 崩栈，2.36 实测）。
+        # **不猜**：猜它是本地时区还是 UTC，最坏差 8 小时 —— 而这把闸的整数值就是 48。
+        return False, (f'那份记录和本轮时刻有一边没带时区（at="{at}"，now="{now}"），'
+                       '减不出相差几小时。把那个时间补成 `…+08:00` 那种写法，'
+                       '或者跑一轮真正的 --verify')
+    age_h = (here - then).total_seconds() / 3600
+    if age_h < -1:
+        return False, (f'那份记录写着未来（at="{at}"，比本轮时刻还 {-age_h:.0f} 小时）—— '
+                       '这台机器的钟或时区不对，一份对不上表的时刻不能当本轮判决用')
+    if n_lines == 0:
+        return False, ('那份记录里一条逐条判决都没有（lines 是空的）—— 沿用它等于什么都不沿用，'
+                       '这一轮不会有线路被判死。要的就是这个效果就别传 --replay')
     warns = meta.get("warnings") or []
     if warns:
         return False, (f"那一轮（{at[11:16]}）体检报过警，它判死的线路多半是假阴性（2.16）："
@@ -590,14 +726,52 @@ def replay_gate(meta: dict, *, point: str, now: str, max_age_hours: int = 48,
     return True, ""
 
 
+class UnreadableSource(RuntimeError):
+    """一个上游整个读不到。
+
+    和「读到了但里面有几行畸形」不是一类事，危害的**方向**也不同：
+    畸形行丢的是几条线路，屏幕上会写「跳过 N 行」；这一类丢的是**一整个源**，
+    而表上完全看不出区别 —— 少掉的那些频道看起来就像「本来就没有台」。
+    2.32 那条老教训的另一个方向：不能量不到东西还报绿。
+    所以这里选择**停下来**，而不是「剩下的源够用就接着出表」。
+    """
+
+
 def collect(sources: Iterable[dict | str]) -> tuple[list[Entry], list[str]]:
+    """读所有上游并解析。读不到的那些一起点名（不读一个崩一个），全读不到也要停。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:                 # 一个正常读到的源
+    ...     p = Path(d) / "a.m3u"
+    ...     body = chr(10).join(['#EXTM3U', '#EXTINF:-1 tvg-id="h1",湖南卫视', 'http://a/1.m3u8'])
+    ...     _ = p.write_text(body, encoding="utf-8")
+    ...     got, urls = collect([str(p)])
+      a.m3u（缓存）: 1 条（跳过 0 行畸形数据）
+    >>> [e.name for e in got], urls
+    (['湖南卫视'], [])
+    >>> try:                                                     # 一个不存在的源：停下来点名
+    ...     collect(["./does-not-exist.m3u"])
+    ... except UnreadableSource as e:
+    ...     print(f"停了：{str(e).splitlines()[0]}")
+      does-not-exist.m3u: ⚠️ 读不到（No such file or directory）
+    停了：1 个上游整个读不到（不是里面几行畸形，是这一路一条都没读到）：
+    """
     entries: list[Entry] = []
     epg_urls: list[str] = []
+    unreadable: list[str] = []
     for src in sources:
         if isinstance(src, str):
             src = {"id": src.rsplit("/", 1)[-1][:40], "target": src, "cache": None}
-        text = fetch(src["target"])
         tag = src["id"]
+        try:
+            text = fetch(src["target"])
+        except OSError as e:
+            # 先记下来，别在这里 return —— 一次跑要让人看见**所有**读不到的源，
+            # 不然修一个撞一个，三次跑才知道配置里有三处写歪了。
+            why = e.strerror or type(e).__name__
+            unreadable.append(f"  {tag} ← {src['target']}：{why}")
+            print(f"  {tag}: ⚠️ 读不到（{why}）")
+            continue
         pl = parse_m3u(text, source=tag)
         entries.extend(pl.entries)
         if pl.x_tvg_url:
@@ -608,6 +782,13 @@ def collect(sources: Iterable[dict | str]) -> tuple[list[Entry], list[str]]:
             cache.write_text(text, encoding="utf-8")
         via = "缓存" if not src["target"].startswith("http") else "联网"
         print(f"  {tag}（{via}）: {len(pl)} 条（跳过 {pl.skipped} 行畸形数据）")
+    if unreadable:
+        raise UnreadableSource(
+            f"{len(unreadable)} 个上游整个读不到（不是里面几行畸形，是这一路一条都没读到）：\n"
+            + "\n".join(unreadable)
+            + "\n  表少一整个源是**看不出来**的：那些台会安静地变成「本来就没有」。"
+              "先确认路径（`--source` 要的是文件本身），或者把这一条从 "
+              "config/sources.yaml 里注掉再来。")
     return entries, epg_urls
 
 
@@ -1076,16 +1257,29 @@ def cmd_build(argv: list[str]) -> int:
         print("--verify 与 --replay 只能选一个：前者是当场测，后者是沿用记录", file=sys.stderr)
         return 1
 
-    sources = (
-        [{"id": s.rsplit("/", 1)[-1][:40], "target": s, "cache": None} for s in args.sources]
-        if args.sources
-        else load_sources(Path(args.sources_file), fresh=args.fresh)
-    )
+    try:
+        sources = (
+            [{"id": s.rsplit("/", 1)[-1][:40], "target": s, "cache": None} for s in args.sources]
+            if args.sources
+            else load_sources(Path(args.sources_file), fresh=args.fresh)
+        )
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        # 源清单读不了不是「少看几个源」的小事：接着往下走表照出，只是那些台安静地不见了。
+        # 以前这里是裸崩（文件不在 → FileNotFoundError 崩栈，条目缺 url → KeyError）。
+        reason = (str(e).strip().splitlines() or [type(e).__name__])[0]
+        print(f"⚠️ 源清单 {args.sources_file} 读不了：{reason}\n"
+              f"   这一轮不出表 —— 少一个源在表上是看不出来的，先修配置（`--sources-file`）",
+              file=sys.stderr)
+        return 1
     if not sources:
         print("config/sources.yaml 里没有启用的源。", file=sys.stderr)
         return 1
     print(f"读取 {len(sources)} 个上游：")
-    entries, epg_urls = collect(sources)
+    try:
+        entries, epg_urls = collect(sources)
+    except UnreadableSource as e:
+        print(f"⚠️ {e}", file=sys.stderr)
+        return 1
     local_lines: list[Entry] = [] if args.skip_local else load_local(LOCAL_SOURCES_FILE)
     if local_lines:
         print(f"  {LOCAL_ID}（手工核对）: {len(local_lines)} 条 ← config/sources_local.yaml")
@@ -1129,8 +1323,14 @@ def cmd_build(argv: list[str]) -> int:
     if args.replay:
         try:
             replay, replay_meta = load_probe(Path(args.replay))
-        except (OSError, ValueError, json.JSONDecodeError) as e:
-            print(f"--replay 读不了 {args.replay}：{type(e).__name__}: {e}", file=sys.stderr)
+        except json.JSONDecodeError as e:      # 它是 ValueError 的子类，必须先接住
+            print(f"⚠️ --replay 那份记录不是 JSON：{args.replay}"
+                  f"（{str(e).splitlines()[0]}）", file=sys.stderr)
+            return 1
+        except (OSError, ValueError) as e:
+            # OSError = 文件不在/没权限；ValueError = `load_probe()` 里那些「读得出来
+            # 但不是给人用的形状」—— 它们的句子本身已经带着路径，这里不再重复一遍。
+            print(f"⚠️ --replay 那份记录读不了：{str(e).splitlines()[0]}", file=sys.stderr)
             return 1
         warns = list(replay_meta["warnings"])
         point_egress = replay_meta["egress"] or egress
@@ -1147,11 +1347,14 @@ def cmd_build(argv: list[str]) -> int:
             print(f"已把上一版留下的 {old.name} 补为第 1 轮履历（{adopted['at'][:16]}）")
     point = judgment_egress(point_egress, warns, runs, measured=measured)
     replay_at = str(replay_meta["at"])[:16].replace("T", " ")   # 报给人看的时刻，别带那个 T
-    if replay:
+    if args.replay:
+        # 原来是 `if replay:` —— 一份「读得出来但一条判决都没有」的记录会让这个条件不成立，
+        # 于是 --replay 静默变成「什么都没沿用」的普通离线生成，退码还是 0（2.36 实测）。
+        # 现在只要传了这个 flag 就必须过闸，闸问的第一批问题里就包括「里面到底有几条」。
         gate_ok, gate_why = replay_gate(
             replay_meta, point=point, max_age_hours=args.replay_max_age,
             now=datetime.now().astimezone().isoformat(timespec="seconds"),
-            force=args.allow_untrusted)
+            force=args.allow_untrusted, n_lines=len(replay))
         if not gate_ok:
             print(f"⚠️ 那份记录不能用：{gate_why}\n"
                   f"   （要硬来就加 --allow-untrusted，或者跑一轮真正的 --verify）", file=sys.stderr)
