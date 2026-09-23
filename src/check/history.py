@@ -842,3 +842,182 @@ def append_run(path: Path, run: dict, *, merge_minutes: int = MERGE_WINDOW_MIN,
         lines.append(json.dumps(run, ensure_ascii=False))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return not merged
+
+
+# ---------------------------------------------------------------------------
+# 2.51：范围规则那七行的履历（`data/output/rule-history.jsonl`）。
+#
+# 为什么不塞进上面那份 `probe-history.jsonl` 同一行（这是量出来的，不是顺手选的）：
+# 那一行只在 `--verify` 时写，而规则那一节**每一轮**都要写（离线重出正是它最容易被
+# 用坏的那条路：`report.md` 被覆盖，2.50 那七行就整个没了）。
+# 09-24 06:04 拿真履历（三行）量过把离线轮塞进去的代价：同一份 09-21 21:18 的判决
+# 再多记一行，`blacklist()` 从 26 族变 27 族（新判死的是 `m.italkbbtv.com`，
+# 它 `runs` 从 2 变 3、`ok_runs` 还是 0）—— 也就是**一次实测被数成两轮独立观测**，
+# 而「要两轮才判死刑」那道防线（`min_runs=2`）正是拿来挡这个的。
+# 所以这里另存一份，且那份**不参与任何判据**：它只被读出来印在报告上。
+
+RULE_HISTORY_NAME = "rule-history.jsonl"
+
+
+def rule_history_path(out_dir: str | Path) -> Path:
+    """这一轮的规则履历落在**产物目录里**（跟 `report.md` 同一层），不是跟着 `--history` 走。
+
+    位置是量出来的，不是顺手挑的：项目里所有沙盒复现的写法都是
+    `build ... --out /tmp/一份表`（`docs/真机验收单.md:93`、`docs/电视订阅接入.md:450`、
+    计划书 2.20 / 2.23 / 2.32 那几轮），只有 2.37 那一组另外带 `--history`。
+    所以「挂到 `--history` 的目录」等于给以后每一次照抄文档的沙盒跑都留一个坑：
+    它自认为只往 `/tmp` 写，实际上往 `data/output/` 追加了一行 ——
+    而那正是这个项目每一条复现都要先证明的「`data/output/` 一个字没动」。
+    挂在产物目录上，`--out` 挪到哪儿它就挪到哪儿，一种参数管一件事。
+
+    顺带一个好处：体检报警那一轮 `out_dir` 是 `data/output/untrusted/`（`artifact_dir()`），
+    那一轮的规则履历就落在 `untrusted/` 里 —— 正常轮下一轮读的是订阅目录那份，
+    于是**基准自动是上一轮可信的**，与 `probe-history.jsonl` 那边 `trustworthy()` 同一方向，
+    只是这里不用写判据：目录本身就把它隔开了。
+
+    >>> rule_history_path("data/output")
+    PosixPath('data/output/rule-history.jsonl')
+    >>> rule_history_path("/tmp/一份表")
+    PosixPath('/tmp/一份表/rule-history.jsonl')
+    >>> rule_history_path(Path("/tmp/x/"))          # 尾斜杠不影响
+    PosixPath('/tmp/x/rule-history.jsonl')
+    """
+    return Path(out_dir) / RULE_HISTORY_NAME
+
+
+def load_rule_history(path: Path, *, problems: list[str] | None = None) -> list[dict]:
+    """读规则履历。缺文件返回 []（首轮就是没有），坏行跳过 —— 但它**得说是跳过了**。
+
+    与 `load_history()` 同一条规矩（2.36 / 2.32）：读不进来不能安静当没有，
+    否则「这份履历坏了」和「就是没有上一轮」在报告上会长成同一句话 ——
+    而这两句的意义正好相反：前者是这一节失效了，后者是本节刚装上。
+
+    判「算不算一轮」的字段是 `rows`（不是 `hosts`）：这一份只关心那七行。
+    名字与 `src/cli.py` 里那份 `reach_rules`、以及 `diff_rule_rounds()` 读的键**是同一个**，
+    不是「落盘时改个名」—— 三种名字（`rules` / `rows` / `hosts`）里挑一个不重命名的，
+    是因为这一份行从写出到读入再到比对，全程只有 `rows` 这一个键名在动。
+
+    >>> load_rule_history(Path("/does/not/exist.jsonl"))
+    []
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "r.jsonl"
+    ...     _ = p.write_text("这不是 JSON\\n"
+    ...                      '{"at": "x", "rows": [{"tier": "a", "rule": ".a.com"}]}\\n'
+    ...                      '{"at": "y", "hosts": []}\\n', encoding="utf-8")
+    ...     got: list[str] = []
+    ...     rows = load_rule_history(p, problems=got)
+    ...     len(rows), got[0]
+    (1, 'r.jsonl 里 3 行只采用 1 次：第 1 行不是 JSON、1 行没有 rows 字段，不算一轮')
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "bin.jsonl"
+    ...     _ = p.write_bytes(b"\\xff\\xfe not utf-8")
+    ...     got = []
+    ...     load_rule_history(p, problems=got), got[0].startswith("bin.jsonl 读不进来")
+    ([], True)
+    """
+    path = Path(path)
+    out: list[dict] = []
+    note = problems if problems is not None else []
+    try:
+        raw = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return out
+    except (OSError, UnicodeDecodeError) as e:
+        why = getattr(e, "strerror", None) or getattr(e, "reason", None) or type(e).__name__
+        note.append(f"{path.name} 读不进来（{why}）—— 本轮没有可比对的上一次，"
+                    f"「跟上一轮比」那一段这轮印不出来")
+        return out
+    bad_json: list[str] = []
+    no_rows = 0
+    for i, line in enumerate(raw):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            bad_json.append(f"第 {i + 1} 行不是 JSON")
+            continue
+        if isinstance(obj, dict) and obj.get("rows") is not None:
+            out.append(obj)
+        else:
+            no_rows += 1
+    drops = list(bad_json[:3])
+    if len(bad_json) > 3:
+        drops.append(f"另有 {len(bad_json) - 3} 行同样不是 JSON")
+    if no_rows:
+        drops.append(f"{no_rows} 行没有 rows 字段，不算一轮")
+    if drops:
+        note.append(f"{path.name} 里 {len(raw)} 行只采用 {len(out)} 次：" + "、".join(drops))
+    return out
+
+
+def append_rule_round(path: Path, row: dict) -> None:
+    """把这一轮的规则统计追加成一行 —— **只追加，不重写、不合并**。
+
+    三件事与 `append_run()` 不一样，每一条都是这一节量过才敢这么定：
+
+    1. **不合并。** 主机履历要合并，是因为「调代码时连着跑三次」会被当成三轮独立观测、
+       一次抖动就成了三轮一致结论。这一份比的恰恰是「相邻两轮的数」，
+       两次跑就是两次观测；而 30 分钟那个窗口是**整行换掉**，
+       换掉的正是「改配置之前那一轮」—— 那是唯一的对比基准。基准被顶掉之后，
+       下一次跑只能和改坏之后那一轮比，那个 0 就永远追不回来了。
+    2. **不整份重写。** `append_run` 整份重写，所以它读不进来时必须抛（否则等于清空履历）。
+       这一份只做追加，「读不进来」那一种危险在这里不存在：
+       一份坏掉的规则履历既挡不住出表，也不会被下一次写覆盖掉。
+    3. **每一轮都写**，`--verify` / `--replay` / 纯离线三种跑法都算一轮（`mode` 记在行里，
+       能不能跨轮比由 `src.check.scope.verdict_source()` 判，不在这里判）。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "sub" / "r.jsonl"          # 父目录不在也要建得出来
+    ...     _ = append_rule_round(p, {"at": "t1", "rows": []})
+    ...     _ = append_rule_round(p, {"at": "t2", "rows": [{"tier": "a", "rule": ".a.com"}]})
+    ...     got = []
+    ...     rows = load_rule_history(p, problems=got)
+    ...     [r["at"] for r in rows], got, p.read_text().count("\\n")
+    (['t1', 't2'], [], 2)
+
+    隔得再近也不合并（那是上面第 1 条的全部内容）：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "r.jsonl"
+    ...     at = "2026-09-24T06:20:00+08:00"
+    ...     _ = append_rule_round(p, {"at": at, "rows": [{"tier": "a", "rule": ".a.com",
+    ...                                                   "any_up": 9, "own_up": 18,
+    ...                                                   "own_table": 0, "own_first": 0,
+    ...                                                   "state": "out"}]})
+    ...     _ = append_rule_round(p, {"at": at, "rows": [{"tier": "a", "rule": "。a.com",
+    ...                                                   "any_up": 0, "own_up": 0,
+    ...                                                   "own_table": 0, "own_first": 0,
+    ...                                                   "state": "none"}]})
+    ...     rows = load_rule_history(p)
+    ...     len(rows), [x["rows"][0]["own_up"] for x in rows]
+    (2, [18, 0])
+
+    写进去的那一行，读出来就能直接给 `diff_rule_rounds()` 当上一轮 —— 这一条往返是这一节
+    唯一的跨文件契约（键名对不上不会崩，只会每轮安静地少一段「跟上一轮比」），所以钉在这里：
+
+    >>> from src.check.scope import diff_rule_rounds
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "r.jsonl"
+    ...     base = {"at": "2026-09-24T06:20:00+08:00", "mode": "offline", "egress": "",
+    ...             "warnings": [], "fingerprint": "7eae708d153a",
+    ...             "cfg_fingerprint": "aaaa11112222", "n_up": 1869, "n_up_uniq": 1804,
+    ...             "no_public_n": 39, "params": [3, 2], "rows": [dict(
+    ...                 tier="iptv_intranet", rule=".a.com", any_up=210, own_up=18,
+    ...                 own_table=0, own_first=0, state="out")]}
+    ...     _ = append_rule_round(p, base)
+    ...     prev = load_rule_history(p)[-1]
+    ...     diff = diff_rule_rounds(prev, {**base, "at": "2026-09-24T06:25:00+08:00",
+    ...                                    "rows": [{**base["rows"][0], "own_up": 0,
+    ...                                               "state": "shadow"}]})
+    ...     [(x["rule"], x["kind"], x["prev"], x["cur"]) for x in diff["items"]], diff["pool_same"]
+    ([('.a.com', '归0', 18, 0)], True)
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return None

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -295,12 +296,18 @@ def dead_tiers(rows: Iterable[dict]) -> list[str]:
     return [tier for tier, all_none in seen.items() if all_none]
 
 
-def dead_tier_lines(rows: Iterable[dict], n_up: int, no_public_n: int) -> list[str]:
+def dead_tier_lines(rows: Iterable[dict], n_up: int, no_public_n: int, *,
+                    diff: dict | None = None) -> list[str]:
     """整档全 0 时屏幕上那几句话 —— 放在这里而不是 `cmd_build` 里，是为了能被 doctest 钉住（2.50）。
 
     判据只有一条：按**整档**喊，不按条（逐条的 0 有三种意义、两种无害，见 `dead_tiers`）。
     「后果」那半句按档分着写：内网档摊开是「所有台超时」，电台档摊开是「点开只剩声音」，
     拿一句通用的话会把第二种说得像不会发生（2.49 那两格的「怎么改」就是这么分开写的）。
+
+    `diff` 是 `diff_rule_rounds()` 摆出来的上一轮（2.51）。有了它，最后那半句
+    「上一轮还有几十个、这轮变 0」就从**人的记忆**变成了**量出来的两个数** ——
+    那句本来就是 2.50 留在边界里的最后一格靠人记着的分辨方法。
+    传不进来（首轮、`--ignore-history`、那份履历读不出）时照旧给方法不给数，不能装成量过了。
 
     >>> rows = Reachability(["9999:"], ["。qingting.fm"]).rule_states([], [], [])
     >>> lines = dead_tier_lines(rows, n_up=1869, no_public_n=0)
@@ -321,18 +328,708 @@ def dead_tier_lines(rows: Iterable[dict], n_up: int, no_public_n: int) -> list[s
     ([('.a.com', 'out'), ('9999:', 'none')], [])
     >>> "防身" in lines[0]                        # 「今天就是没这类地址」那一种可能也摆在同一句里
     True
+
+    有了上一轮，那一句改成拿数说话（括号里就是 2.51 在沙盒里量到的那一组）：
+
+    >>> d = {"prev_at": "2026-09-24T05:49:00+08:00", "prev_mode": "replay",
+    ...      "tier_own_prev": {"iptv_intranet": 332}, "tier_n_prev": {"iptv_intranet": 6},
+    ...      "pool_same": True, "cfg_same": True,
+    ...      "fingerprint": "7eae708d153a", "no_public_prev": 39, "no_public_cur": 0}
+    >>> w = dead_tier_lines(rows, 1869, 0, diff=d)[0]
+    >>> "抓到 332 条" in w and "05:49" in w
+    True
+    >>> "这一档 6 条规则在上游抓到 332 条，本轮这 1 条命中的全是 0" in w   # 上一轮 6 条 / 本轮 1 条各说各的
+    True
+    >>> "这一档 1 条规则在上游抓到" not in w                # 拿本轮条数配上一轮总数 = 一句假话（M8）
+    True
+    >>> "T05:49" not in w                                    # 时刻的写法与报告里那一节一致
+    True
+    >>> "从 39 个变成 0 个" in w and "几十个" not in w      # 不用再靠人记着上一轮是几个
+    True
+    >>> "一条不差" in w and "判定代码" in w                  # 池子、规则文件都没变 → 剩判定代码
+    True
+    >>> w.count("那一节。")                                  # 那一半句只说一遍（原来串了两遍）
+    1
+    >>> "一条不差" not in dead_tier_lines(rows, 1869, 0, diff={**d, "pool_same": False})[0]
+    True
+    >>> "先确认抓取" in dead_tier_lines(rows, 1869, 0, diff={**d, "pool_same": False})[0]
+    True
+    >>> "config/reachability.yaml` 改过" in dead_tier_lines(  # 池子没变、规则文件变了：不赖代码
+    ...     rows, 1869, 0, diff={**d, "cfg_same": False})[0]
+    True
+    >>> dead_tier_lines(rows, 1869, 0)[0].count("那一节。")    # 没上一轮时同样只说一遍
+    1
+    >>> "05:49" not in dead_tier_lines(rows, 1869, 0, diff={**d, "tier_own_prev": {}})[0]
+    True
     """
+    rows = list(rows)
     out = []
+    tail = ("   逐条的数、以及跟上一轮比出来的变化，写在 report.md"
+            "「范围规则各自抓到几条」那一节。")
     for tier in dead_tiers(rows):
         n = sum(1 for x in rows if x["tier"] == tier)
+        was = (diff or {}).get("tier_own_prev", {}).get(tier) if diff else None
+        if was:
+            npr = (diff or {}).get("no_public_prev")
+            npn = (diff or {}).get("no_public_cur", no_public_n)
+            npv = (diff or {}).get("tier_n_prev", {}).get(tier)
+            at = str((diff or {}).get("prev_at") or "")[:16].replace("T", " ")
+            how = (f"   不用靠记忆分辨：上一轮（{at}）这一档 {npv if npv is not None else n} "
+                   f"条规则在上游抓到 {was} 条，本轮这 {n} 条命中的全是 0；"
+                   f"「一条公网线路都没有的频道」也从 {npr} 个变成 {npn} 个。\n"
+                   + _pool_evidence(diff) + "\n" + tail)
+        else:
+            how = (f"   也可能是今天这批线路里就是没有它要判的地址（`2408:` 那一类是留着防身的）。\n"
+                   f"   分辨方法：本轮「一条公网线路都没有的频道」是 {no_public_n} 个 —— "
+                   f"上一轮还有几十个、这轮变 0，就是前者。\n" + tail)
         out.append(
             f"⚠️ 范围规则：`{tier}` 这一档 {n} 条规则在本轮 {n_up} 条上游线路里命中的全是 0"
             f" —— 这一档等于没配上\n"
             f"   后果：{_DEAD_WHY.get(tier, '这一档的判档从此不再影响排序')}\n"
-            f"   也可能是今天这批线路里就是没有它要判的地址（`2408:` 那一类是留着防身的）。\n"
-            f"   分辨方法：本轮「一条公网线路都没有的频道」是 {no_public_n} 个 —— "
-            f"上一轮还有几十个、这轮变 0，就是前者。逐条的数写在 report.md"
-            f"「范围规则各自抓到几条」那一节。")
+            f"{how}")
+    return out
+
+
+def _indented(text: str, pad: str = "   ") -> str:
+    """把一段多行的话整体缩进 —— 屏幕上那几个子条目是靠缩进分组的。
+
+    为什么不用 `.strip()`：它只去掉整段**首尾**的空白，所以第一行的缩进没了、第二行还带着，
+    屏幕上就是一段歪的（09-24 06:44 第一次跑 D 那一轮时看见的形状）。
+
+    >>> _indented("   甲\\n   乙")
+    '   甲\\n   乙'
+    >>> _indented("   甲\\n   乙", "     ")
+    '     甲\\n     乙'
+    >>> _indented("")
+    ''
+    """
+    return "\n".join(pad + ln.strip() for ln in text.strip().splitlines() if ln.strip())
+
+
+def _pool_evidence(diff: dict | None) -> str:
+    """「是规则变了还是上游少给了」那一句 —— 三样指纹凑齐才能把话说死（2.51）。
+
+    写成一句是因为它有三个方向，漏一个就会把人带到错的那上去：
+    池子没变 + 规则文件没变 + 数变了 ⇒ 变的是**判定代码**（这一格 2.50 那把尺自己就该撞上）；
+    池子没变 + 规则文件变了 ⇒ 是这次改配置改坏的，去 diff `config/reachability.yaml`；
+    池子变了 ⇒ 先别谈规则对不对，上游少抓了一个源能把五条规则一起打成 0。
+
+    >>> _pool_evidence({"pool_same": True, "cfg_same": True, "fingerprint": "7eae708d153a"})
+    '   这批线路与上一轮**一条不差**（指纹 7eae708d153a），`config/reachability.yaml` **也没变** ——\\n   那就是判定代码变了，去查 src/check/scope.py 最近的改动。'
+    >>> _pool_evidence({"pool_same": True, "cfg_same": False, "fingerprint": "7eae708d153a"}).count("改过")
+    1
+    >>> "先确认抓取" in _pool_evidence({"pool_same": False, "cfg_same": True,
+    ...                                 "fp_prev": "7eae708d153a", "fingerprint": "aaaa5d3a"})
+    True
+    >>> _pool_evidence(None)
+    ''
+    """
+    if not diff:
+        return ""
+    fp = str(diff.get("fingerprint") or "")
+    if not diff.get("pool_same"):
+        return (f"   上游池子本身也变了（指纹 {diff.get('fp_prev')} → {fp}）："
+                f"先确认抓取有没有出问题，再谈这一档的规则对不对。")
+    if diff.get("cfg_same"):
+        return (f"   这批线路与上一轮**一条不差**（指纹 {fp}），"
+                f"`config/reachability.yaml` **也没变** ——\n"
+                f"   那就是判定代码变了，去查 src/check/scope.py 最近的改动。")
+    return (f"   这批线路与上一轮**一条不差**（指纹 {fp}），所以不是上游少给了 —— "
+            f"是 `config/reachability.yaml` 改过，去 diff 那一格。")
+
+
+# ---------------------------------------------------------------------------
+# 2.51：把上面那一节每轮的数落成一份履历，「上一轮还抓到、这轮归 0」由工具自己发现。
+#
+# 为什么非要落一份：2.50 收尾时「边界」第 1、5 两条说的是同一件事 ——
+# 「命中 0 条」这一格里「今天就是没这类地址」和「这条规则写错了」在上游那一层是**同一个 0**，
+# 工具只能把两种可能摆在一起，分辨靠人记得「上一轮这里不是 0」。而那一节每轮都算好了七行，
+# 算完就随 `report.md` 被覆盖掉了。存下来，下一轮就能自己比。
+#
+# 为什么**不**塞进 `probe-history.jsonl` 同一行（这是量出来的，不是顺手选的）：
+# 那一行只在 `--verify` 时写，而这一节离线轮也要写。把离线轮塞进去 = 给主机履历凭空加一轮，
+# 09-24 06:04 拿真履历量过：把那三次离线重出各记一行进去，`blacklist()` 从 26 族变 27 族
+# （新判死的是 `m.italkbbtv.com`）—— 同一份 09-21 21:18 的实测被数成两轮独立观测，
+# 而「要两轮才判死刑」那道防线（`blacklist` 的 `min_runs`）就是拿来防这个的。
+
+
+def pool_fingerprint(urls: Iterable[str]) -> str:
+    """这批线路本身的指纹：去重、排序、sha256 前 12 位。
+
+    取 12 位就够：这一格只回答「两次跑看到的是不是同一批地址」，不是防篡改。
+    真值（2026-09-24 06:04，`data/cache/` 那三份 09-20 21:04 的缓存 + 手工源）：
+    整池 1869 条 / 去重 1804 条 = `7eae708d153a`；
+    只去掉手工源那 1 条（去重 1803 条）就变成 `7d0ad38309be` —— 一条地址的进出足以换掉它。
+
+    >>> pool_fingerprint(["http://a/x", "http://b/y"]) == pool_fingerprint(["http://b/y", "http://a/x"])
+    True
+    >>> pool_fingerprint(["http://a/x"]) == pool_fingerprint(["http://a/x", "http://a/x"])
+    True
+    >>> len(pool_fingerprint([]))
+    12
+    >>> pool_fingerprint(["http://a/x"]) != pool_fingerprint(["http://a/y"])
+    True
+    """
+    return hashlib.sha256("\n".join(sorted({str(u) for u in urls}))
+                          .encode("utf-8")).hexdigest()[:12]
+
+
+def config_fingerprint(path: str | Path) -> str:
+    """一份配置文件的内容指纹（同样取 12 位）。读不到给空串，不抛 —— 这不是能停下的事。
+
+    >>> config_fingerprint("/does/not/exist.yaml")
+    ''
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "r.yaml"
+    ...     _ = p.write_text("iptv_intranet: [.a.com]\\n", encoding="utf-8")
+    ...     before = config_fingerprint(p)
+    ...     _ = p.write_text("iptv_intranet: [.a.com, .b.com]\\n", encoding="utf-8")
+    ...     before != config_fingerprint(p), len(before)
+    (True, 12)
+    """
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12]
+    except (OSError, ValueError):
+        return ""
+
+
+def verdict_source(row: dict) -> str:
+    """这一轮的「线路判决」是从哪来的 —— 决定进表 / 第一线那两层能不能跨轮比。
+
+    三层里只有「上游候选」不欠任何判决：它是拿规则去问抓回来的那批地址。
+    另外两层是**排序的产物**，而排序看判决：`--verify` 当场剔掉的线路、`--replay`
+    沿用那份记录里的判决剔掉的线路、纯离线轮一条都不剔（2.50 量过：226 条 vs 351 条）。
+    所以拿「上一轮的进表 41 条」比「本轮的进表 0 条」之前，得先确认这两轮是**同一种跑法**，
+    否则喊出来的是一把手艺不精的尺（计划书 2.10 那句「换一个测量点这些数字就不是同一个意思」
+    在规则这一层同样成立）。
+
+    >>> verdict_source({"mode": "offline"})                    # 本轮不判：所有线路都进表
+    'offline'
+    >>> verdict_source({"mode": "replay", "replay_at": "2026-09-21 21:18"})
+    'replay@2026-09-21 21:18'
+    >>> verdict_source({"mode": "verify", "egress": "119.39.40.124 CN"})
+    'verify@119.39.40.124 CN'
+    >>> verdict_source({"mode": "verify", "egress": ""})       # 出口查不到 → 不装成可比
+    'unknown'
+    >>> verdict_source({})
+    'unknown'
+    """
+    mode = str(row.get("mode") or "")
+    if mode == "offline":
+        return "offline"
+    if mode == "replay":
+        at = str(row.get("replay_at") or "")
+        return f"replay@{at}" if at else "unknown"
+    if mode == "verify":
+        eg = str(row.get("egress") or "")
+        return f"verify@{eg}" if eg else "unknown"
+    return "unknown"
+
+
+def _pair_rules(prev: list[dict], cur: list[dict]) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
+    """同一档里把两轮的规则配成对：先按字面，配不上的按**位置**。
+
+    为什么要有「按位置」这一半：2.50 那一族的典型坏法就是把一条规则的**字面**改坏
+    （`.chinamobile.com` → `。chinamobile.com`）。只按字面配，屏幕上会得到「删了一条、
+    多了一条」两句正确的废话；按位置配，得到的是「第 2 格被改了字面，18 条 → 0 条」，
+    那才是能照着去 diff 的那一句。
+
+    只在两边各剩一条时才配（`len == 1`）：剩两条以上就是「删了两条、加了两条」，
+    这时候硬按顺序配对是猜，而猜错的方向是「把一次正常的换血说成一次改错」。
+
+    >>> p = lambda name, **kw: {"rule": name, **kw}
+    >>> pairs, added, removed = _pair_rules([p("a"), p("b")], [p("a"), p("B")])
+    >>> [(x[0]["rule"], x[1]["rule"]) for x in pairs]
+    [('a', 'a'), ('b', 'B')]
+    >>> pairs, added, removed = _pair_rules([p("a"), p("b"), p("c")], [p("a")])
+    >>> [(x[0]["rule"], x[1]["rule"]) for x in pairs], [x["rule"] for x in added], [x["rule"] for x in removed]
+    ([('a', 'a')], [], ['b', 'c'])
+    >>> pairs, added, removed = _pair_rules([p("a")], [p("a"), p("a")])   # 同一条写了两遍：第二格算新增
+    >>> [(x[0]["rule"], x[1]["rule"]) for x in pairs], len(added)
+    ([('a', 'a')], 1)
+    """
+    cur_by_name: dict[str, int] = {}
+    for i, x in enumerate(cur):
+        cur_by_name.setdefault(str(x.get("rule")), i)
+    pairs: list[tuple[dict, dict]] = []
+    used: set[int] = set()
+    left_prev: list[dict] = []
+    for x in prev:
+        i = cur_by_name.get(str(x.get("rule")))
+        if i is not None and i not in used:
+            used.add(i)
+            pairs.append((x, cur[i]))
+        else:
+            left_prev.append(x)
+    left_cur = [x for i, x in enumerate(cur) if i not in used]
+    if len(left_prev) == 1 and len(left_cur) == 1:
+        pairs.append((left_prev[0], left_cur[0]))
+        return pairs, [], []
+    return pairs, left_cur, left_prev
+
+
+def _transition(prev_row: dict, cur_row: dict, layer: str) -> dict | None:
+    """一条规则在一层上的变化：只报「从有到无 / 从无到有 / 数变了」这三种。
+
+    >>> a = {"any_up": 210, "own_up": 18, "own_table": 0, "own_first": 0}
+    >>> b = {"any_up": 210, "own_up": 0, "own_table": 0, "own_first": 0}
+    >>> _transition(a, b, "up")["kind"]
+    '归0'
+    >>> _transition(b, a, "up")["kind"]                       # 反方向也要报：那条被修好了
+    '新抓到'
+    >>> _transition(a, b, "table") is None                    # 两层都是 0：没变化就不占一行
+    True
+    >>> _transition({"any_up": 1, "own_up": 5, "own_table": 5, "own_first": 0},
+    ...             {"any_up": 1, "own_up": 2, "own_table": 5, "own_first": 0}, "up")["kind"]
+    '数变了'
+    """
+    key = {"up": "own_up", "table": "own_table", "first": "own_first"}[layer]
+    a, b = int(prev_row.get(key) or 0), int(cur_row.get(key) or 0)
+    if a == b:
+        return None
+    kind = "归0" if (a and not b) else "新抓到" if (b and not a) else "数变了"
+    return {"layer": layer, "kind": kind, "prev": a, "cur": b}
+
+
+LAYERS = {"up": "上游候选", "table": "进表", "first": "第一线"}
+
+
+def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
+    """把本轮那一节和上一轮那一节摆在一起，问四件事（2.51）。
+
+    1. 有没有哪条规则**上一轮在上游还抓到东西、本轮归 0** —— 这是唯一值得上屏幕的那种；
+    2. 这个 0 该算在谁头上：上游池子换了（`fingerprint`）、规则文件改了（`cfg_fingerprint`）、
+       还是判定代码变了（两个指纹都说没变，数却变了）；
+    3. 进表 / 第一线那两层**能不能比**（判决来源不同就不比，见 `verdict_source`）；
+    4. 「一条公网线路都没有的频道」那个数塌了没有 —— 它是 §2.49 那句会跟着规则一起哑掉的报警。
+
+    没有上一轮（首轮、`--ignore-history`、那份履历读不出）时返回 None，
+    调用方要明说「比不了」，不能把「没量」印成「没变」。
+
+    >>> prev = {"at": "2026-09-24T05:49:00+08:00", "mode": "replay",
+    ...         "replay_at": "2026-09-21 21:18", "egress": "CN", "warnings": [],
+    ...         "fingerprint": "7eae708d153a", "cfg_fingerprint": "aaaa11112222",
+    ...         "n_up": 1869, "n_up_uniq": 1804, "no_public_n": 39,
+    ...         "rows": [{"tier": "iptv_intranet", "rule": ".chinamobile.com",
+    ...                   "any_up": 210, "own_up": 18, "own_table": 0, "own_first": 0,
+    ...                   "state": "out"},
+    ...                  {"tier": "iptv_intranet", "rule": "tvgslb.hn.chinamobile.com",
+    ...                   "any_up": 192, "own_up": 192, "own_table": 41, "own_first": 22,
+    ...                   "state": "first"}]}
+    >>> row = lambda n, own, table, first, any_=None: {
+    ...     "tier": "iptv_intranet", "rule": n, "any_up": any_ if any_ is not None else own,
+    ...     "own_up": own, "own_table": table, "own_first": first,
+    ...     "state": ("first" if first else "table" if table else
+    ...               "out" if own else "shadow" if (any_ or 0) else "none")}
+    >>> cur = {**prev, "at": "2026-09-24T06:20:00+08:00",
+    ...        "rows": [row(".chinamobile.com", 0, 0, 0, 210),
+    ...                 row("tvgslb.hn.chinamobile.com", 192, 41, 22, 192)]}
+    >>> d = diff_rule_rounds(prev, cur)
+    >>> [(x["rule"], x["layer"], x["kind"], x["prev"], x["cur"]) for x in d["items"]]
+    [('.chinamobile.com', 'up', '归0', 18, 0)]
+    >>> d["pool_same"], d["cfg_same"], d["table_comparable"]
+    (True, True, True)
+    >>> d["tier_own_prev"]                              # 档级那份数：整档全 0 那一句要用
+    {'iptv_intranet': 210}
+    >>> d["dead_now"]                                   # 本轮还没整档全 0
+    []
+    >>> d["no_public_prev"], d["no_public_cur"]
+    (39, 39)
+    >>> cur2 = {**prev, "rows": [row("。chinamobile.com", 0, 0, 0, 0),
+    ...                          row("tvgslb.hn.chinamobile.com", 192, 41, 22, 192)]}
+    >>> d2 = diff_rule_rounds(prev, cur2)
+    >>> [(x["rule"], x["prev_rule"], x["kind"]) for x in d2["items"]]   # 新字面在前，旧的记在 prev_rule
+    [('。chinamobile.com', '.chinamobile.com', '归0')]
+    >>> d2["dead_now"]                                  # 内网档还有一条抓到东西：不算整档死
+    []
+    >>> cur3 = {**prev, "rows": [row("。chinamobile.com", 0, 0, 0, 0)],
+    ...        "no_public_n": 0}
+    >>> d3 = diff_rule_rounds(prev, cur3)
+    >>> d3["dead_now"], d3["no_public_prev"], d3["no_public_cur"]
+    (['iptv_intranet'], 39, 0)
+    >>> [(x["rule"], x["kind"]) for x in d3["items"]]   # 一档同时少两条、多一条：不猜哪条对哪条
+    [('。chinamobile.com', '多了一条'), ('.chinamobile.com', '少了一条'), ('tvgslb.hn.chinamobile.com', '少了一条')]
+    >>> cur4 = {**cur, "mode": "offline", "fingerprint": "bbbb22223333"}
+    >>> d4 = diff_rule_rounds(prev, cur4)
+    >>> d4["table_comparable"], d4["pool_same"], d4["cfg_same"]
+    (False, False, True)
+    >>> [(x["rule"], x["layer"]) for x in d4["items"]]  # 不可比的那两层一条都不记
+    [('.chinamobile.com', 'up')]
+    >>> diff_rule_rounds(None, cur) is None
+    True
+    """
+    if not prev or not isinstance(prev, dict) or not prev.get("rows"):
+        return None
+    prev_rows = list(prev.get("rows") or [])
+    cur_rows = list(cur.get("rows") or [])
+    vs_prev, vs_cur = verdict_source(prev), verdict_source(cur)
+    # 排序窗口也是那两层的输入：`--max-lines 2` 跑一次会把进表那一列整个压下去，
+    # 参数不记下来就会被读成「这条规则不管用了」（上游那一层不吃这个参数，所以照旧可比）。
+    params_prev = list(prev.get("params") or [])
+    params_cur = list(cur.get("params") or [])
+    # 只有**两轮都记了**参数才谈得上「窗口换了」：上一轮那份里没有这个键
+    # （手写 fixture、或旧版本落的一行）时不该被判成「参数变了」。
+    params_same = (params_prev == params_cur
+                   if params_prev and params_cur else True)
+    comparable = vs_prev == vs_cur and vs_prev != "unknown" and params_same
+    items: list[dict] = []
+    tiers: list[str] = []
+    for r in prev_rows + cur_rows:
+        t = str(r.get("tier") or "")
+        if t and t not in tiers:
+            tiers.append(t)
+    for tier in tiers:
+        pp = [r for r in prev_rows if str(r.get("tier")) == tier]
+        cc = [r for r in cur_rows if str(r.get("tier")) == tier]
+        pairs, added, removed = _pair_rules(pp, cc)
+        for a, b in pairs:
+            edited = str(a.get("rule")) != str(b.get("rule"))
+            deltas = [d for d in (_transition(a, b, layer)
+                                  for layer in ("up", "table", "first"))
+                      if d and (d["layer"] == "up" or comparable)]
+            if not deltas:
+                if edited:                    # 只改了字面、三层数一字没动
+                    items.append({"tier": tier, "rule": b.get("rule"), "prev_rule": a.get("rule"),
+                                  "layer": "up", "kind": "改了字面", "edited": True,
+                                  "prev": int(a.get("own_up") or 0), "cur": int(b.get("own_up") or 0)})
+                continue
+            for d in deltas:
+                items.append({"tier": tier, "rule": b.get("rule"), "prev_rule": a.get("rule"),
+                              "prev_any": int(a.get("any_up") or 0),
+                              "cur_any": int(b.get("any_up") or 0), "edited": edited,
+                              # 本轮这一格归 0 的**那一种**原因也要带上（2.51 补）：
+                              # 「被排在前面的规则整个盖住」和「它自己不争气」在数上长得一样，
+                              # 但屏幕上那句话的落点完全不同 —— 前者是名单顺序变了。
+                              "cur_state": str(b.get("state") or ""), **d})
+        for x in added:
+            items.append({"tier": tier, "rule": x.get("rule"), "prev_rule": "", "layer": "list",
+                          "kind": "多了一条", "edited": False,
+                          "prev": None, "cur": int(x.get("own_up") or 0)})
+        for x in removed:
+            items.append({"tier": tier, "rule": x.get("rule"), "prev_rule": "", "layer": "list",
+                          "kind": "少了一条", "edited": False,
+                          "prev": int(x.get("own_up") or 0), "cur": None})
+    # 整档全 0 是**新**摊开的才算：上一轮就全 0 的那一档不是这一轮的事（它一直摊着）。
+    prev_dead = set(dead_tiers(prev_rows))
+    dead_now = [t for t in tiers if t in set(dead_tiers(cur_rows)) and t not in prev_dead]
+    return {
+        "items": items,
+        "prev_at": str(prev.get("at") or ""), "prev_mode": str(prev.get("mode") or ""),
+        "prev_egress": str(prev.get("egress") or ""),
+        "prev_replay_at": str(prev.get("replay_at") or ""),
+        "prev_warnings": len(prev.get("warnings") or []),
+        "cur_at": str(cur.get("at") or ""), "cur_mode": str(cur.get("mode") or ""),
+        "cur_egress": str(cur.get("egress") or ""),
+        "table_comparable": comparable, "params_same": params_same,
+        "params_prev": list(params_prev), "params_cur": list(params_cur),
+        "verdict_prev": vs_prev, "verdict_cur": vs_cur,
+        "pool_same": bool(prev.get("fingerprint")) and prev.get("fingerprint") == cur.get("fingerprint"),
+        "fingerprint": str(cur.get("fingerprint") or ""),
+        "fp_prev": str(prev.get("fingerprint") or ""),
+        "n_up_prev": int(prev.get("n_up") or 0), "n_up_cur": int(cur.get("n_up") or 0),
+        "uniq_prev": int(prev.get("n_up_uniq") or 0), "uniq_cur": int(cur.get("n_up_uniq") or 0),
+        "cfg_same": bool(prev.get("cfg_fingerprint"))
+                    and prev.get("cfg_fingerprint") == cur.get("cfg_fingerprint"),
+        "chan_same": bool(prev.get("chan_fingerprint"))
+                     and prev.get("chan_fingerprint") == cur.get("chan_fingerprint"),
+        "tier_own_prev": {t: sum(int(x.get("own_up") or 0) for x in prev_rows
+                                 if str(x.get("tier")) == t) for t in tiers},
+        # 上一轮那一档**有几条规则**：整档全 0 那一句要分开说「上一轮 6 条抓到 337」和
+        # 「本轮这 1 条全是 0」。只印本轮那个数，M8（6 条摊成 1 条）会读成
+        # 「上一轮那 1 条抓到 337 条」—— 一句话里两个数不同口径（09-24 07:33 量到的）。
+        "tier_n_prev": {t: sum(1 for x in prev_rows if str(x.get("tier")) == t) for t in tiers},
+        "dead_now": dead_now,
+        "no_public_prev": int(prev.get("no_public_n") or 0),
+        "no_public_cur": int(cur.get("no_public_n") or 0),
+    }
+
+
+def _item_text(x: dict) -> str:
+    """一条变化写成一行 —— 报告里那一串、屏幕上那几句都用它，两处不能各说各话。
+
+    >>> _item_text({"tier": "iptv_intranet", "rule": ".chinamobile.com", "layer": "up",
+    ...             "kind": "归0", "prev": 18, "cur": 0, "prev_any": 210, "cur_any": 210,
+    ...             "edited": False})
+    '`iptv_intranet` / `.chinamobile.com`：上游候选 18 条 → 0 条'
+    >>> _item_text({"tier": "iptv_intranet", "rule": "。chinamobile.com", "prev_rule": ".chinamobile.com",
+    ...             "layer": "table", "kind": "归0", "prev": 41, "cur": 0, "edited": True})
+    '`iptv_intranet` / `.chinamobile.com` → `。chinamobile.com`（这一格被改了字面）：进表 41 条 → 0 条'
+    >>> _item_text({"tier": "audio_only", "rule": ".qingting.fm", "prev_rule": "", "layer": "list",
+    ...             "kind": "少了一条", "prev": 22, "cur": None, "edited": False})
+    '`audio_only` / `.qingting.fm`：这一轮名单里没有了（上一轮上游候选 22 条）'
+    >>> _item_text({"tier": "iptv_intranet", "rule": "x", "prev_rule": "y", "layer": "up",
+    ...             "kind": "改了字面", "prev": 5, "cur": 5, "edited": True})
+    '`iptv_intranet` / `y` → `x`（这一格被改了字面）：上游候选 5 条 → 5 条，数没变'
+    >>> _item_text({"tier": "iptv_intranet", "rule": "tvgslb.hn.chinamobile.com", "prev_rule": "",
+    ...             "layer": "up", "kind": "归0", "prev": 192, "cur": 0, "prev_any": 192,
+    ...             "cur_any": 192, "edited": False, "cur_state": "shadow"})
+    '`iptv_intranet` / `tvgslb.hn.chinamobile.com`：上游候选 192 条 → 0 条（不是它坏了：这轮它字面还命中 192 条，只是归它的都被排在前面的那条盖住了）'
+    >>> _item_text({"tier": "iptv_intranet", "rule": ".a", "prev_rule": "", "layer": "up",
+    ...             "kind": "归0", "prev": 18, "cur": 0, "prev_any": 210, "cur_any": 0,
+    ...             "edited": False, "cur_state": "none"})
+    '`iptv_intranet` / `.a`：上游候选 18 条 → 0 条（字面 210 → 0）'
+    """
+    who = f"`{x['tier']}` / `{x['rule']}`"
+    if x.get("edited") and x.get("prev_rule"):
+        who = f"`{x['tier']}` / `{x['prev_rule']}` → `{x['rule']}`（这一格被改了字面）"
+    if x["layer"] == "list":
+        return (f"{who}：这一轮名单里没有了（上一轮上游候选 {x['prev']} 条）"
+                if x["kind"] == "少了一条"
+                else f"{who}：这一轮名单里新加的（本轮上游候选 {x['cur']} 条）")
+    where = LAYERS.get(x["layer"], x["layer"])
+    if x["kind"] == "改了字面":
+        return f"{who}：{where} {x['prev']} 条 → {x['cur']} 条，数没变"
+    tail = (f"（字面 {x['prev_any']} → {x['cur_any']}）"
+            if "prev_any" in x and x["prev_any"] != x["cur_any"] else "")
+    if x["kind"] == "归0" and x.get("cur_state") == "shadow":
+        tail += (f"（不是它坏了：这轮它字面还命中 {x.get('cur_any', 0)} 条，"
+                 "只是归它的都被排在前面的那条盖住了）")
+    return f"{who}：{where} {x['prev']} 条 → {x['cur']} 条{tail}"
+
+
+def rule_diff_lines(diff: dict | None, hist_name: str = "rule-history.jsonl") -> list[str]:
+    """`report.md` 里「跟上一轮比」那一段（2.51）。
+
+    三条纪律：**比不了要说**（没有上一轮时这里返回空，由调用方印「没有可比对的上一次：为什么」，
+    不能把「没量」印成「没变」，同 2.32 那一格）；
+    **不可比要说是哪两层不可比、为什么**（判决来源换了或排序窗口换了，那两列本来就跟着走）；
+    **一条都没变也印一句**（这一节每轮都在量，量到「没变化」也是量到了）。
+
+    >>> prev = {"at": "2026-09-24T05:49:00+08:00", "mode": "replay",
+    ...         "replay_at": "2026-09-21 21:18", "egress": "CN", "warnings": [],
+    ...         "fingerprint": "7eae708d153a", "cfg_fingerprint": "aaaa11112222",
+    ...         "n_up": 1869, "n_up_uniq": 1804, "no_public_n": 39, "rows": [
+    ...             {"tier": "iptv_intranet", "rule": ".chinamobile.com", "any_up": 210,
+    ...              "own_up": 18, "own_table": 0, "own_first": 0, "state": "out"}]}
+    >>> row = {"tier": "iptv_intranet", "rule": ".chinamobile.com", "any_up": 210,
+    ...        "own_up": 18, "own_table": 0, "own_first": 0, "state": "out"}
+    >>> d = diff_rule_rounds(prev, {**prev, "at": "2026-09-24T06:20:00+08:00", "rows": [row]})
+    >>> s = "\\n".join(rule_diff_lines(d))
+    >>> "一条都没有" in s and "05:49" in s
+    True
+    >>> "一条不差" in s                                       # 池子指纹相同，说得出来
+    True
+    >>> "上一层" not in s                                      # 没有的话不硬凑一段
+    True
+    >>> bad = diff_rule_rounds(prev, {**prev, "rows": [{**row, "own_up": 0}]})
+    >>> s2 = "\\n".join(rule_diff_lines(bad))
+    >>> "上游候选 18 条 → 0 条" in s2
+    True
+    >>> rule_diff_lines(None) == []                            # 没有上一轮：由调用方说那句话
+    True
+    >>> "出口" not in s                                        # 沿用记录的那轮：本机出口不是那批判决的来源
+    True
+    >>> vd = diff_rule_rounds({**prev, "mode": "verify", "egress": "119.39.40.124 CN"},
+    ...                       {**prev, "mode": "offline", "egress": "38.207.137.208 JP"})
+    >>> "出口 `119.39.40.124 CN`" in "\\n".join(rule_diff_lines(vd))   # 实测轮：出口就是要说的
+    True
+    >>> "`38.207.137.208`" not in "\\n".join(rule_diff_lines(vd))      # 只说上一轮的，本轮的出口不相干
+    True
+    >>> "本轮是 `offline`" in "\\n".join(rule_diff_lines(vd))       # 跑法换了就走「不比」那一条
+    True
+    >>> "**不比**" in "\\n".join(rule_diff_lines(vd))
+    True
+    >>> "rule-history.jsonl`（与 `report.md` 同一层" in s        # 落哪儿：只说文件名，目录跟着 --out 走
+    True
+    >>> "x.jsonl" in "\\n".join(rule_diff_lines(d, "x.jsonl"))
+    True
+    >>> w = diff_rule_rounds({**prev, "params": [3, 2]},
+    ...                      {**prev, "params": [2, 1], "at": "2026-09-24T06:20:00+08:00",
+    ...                       "rows": [{**row, "own_table": 0, "own_first": 0}]})
+    >>> s3 = "\\n".join(rule_diff_lines(w))
+    >>> "排序窗口换了" in s3 and "3 2" in s3 and "2 1" in s3      # 那两列的变动先赖参数，不赖规则
+    True
+    >>> "同一份判决" not in s3
+    True
+    >>> "按上面那句**没比**" in s3                                # 「一条都没有」不能盖住没比的那两层
+    True
+    >>> w["params_prev"], w["params_cur"]                       # 两轮各自的参数要留到渲染那一步
+    ([3, 2], [2, 1])
+    >>> diff_rule_rounds(prev, {**prev, "rows": [row]})["params_prev"]
+    []
+    """
+    if not diff:
+        return []
+    at = str(diff.get("prev_at") or "")[:16].replace("T", " ")
+    src = {"verify": "`--verify` 当场实测", "replay": "`--replay` 沿用记录",
+           "offline": "纯离线（不剔任何线路）"}.get(diff["prev_mode"], diff["prev_mode"])
+    cur_src = {"verify": "`--verify` 当场实测", "replay": "`--replay` 沿用记录",
+               "offline": "纯离线（不剔任何线路）"}.get(diff["cur_mode"], diff["cur_mode"])
+    # 出口只在 `--verify` 那一轮才有意义：它标的是「这批判决从哪张网量出来的」。
+    # 沿用记录的轮次本机出口照旧记进行里（万一有人拿它对照），但不印在这一句上 ——
+    # 09-24 06:39 第一次跑就露了馅：`--replay` 沿用的是 09-21 那批 CN 出口的判决，
+    # 标题里却写「出口 38.207.137.208 JP」，读起来像这一轮拿日本那条线测过什么东西。
+    egr = (f"，出口 `{diff['prev_egress']}`"
+           if diff["prev_egress"] and diff["prev_mode"] == "verify" else "")
+    out = ["", f"### 跟上一轮比：{at} 那一次（{src}{egr}"
+               + (f"，那一次体检报了 {diff['prev_warnings']} 句" if diff["prev_warnings"] else "")
+               + "）", ""]
+    pool = ("这批线路与上一轮**一条不差**" if diff["pool_same"] else
+            f"这批线路**换了**：上一轮 {diff['n_up_prev']} 条（去重 {diff['uniq_prev']}）"
+            f" → 本轮 {diff['n_up_cur']} 条（去重 {diff['uniq_cur']}），"
+            f"指纹 {diff['fp_prev']} → {diff['fingerprint']}")
+    cfg = ("`config/reachability.yaml` **没变**" if diff["cfg_same"]
+           else "`config/reachability.yaml` **改过了**（内容指纹不同）")
+    chan = ("" if diff["chan_same"] else
+            "；`config/channels.yaml` 也改过了（名单一变，进表那两层跟着动）")
+    if diff["table_comparable"]:
+        cmp_note = f"可比（两轮是同一份判决：{cur_src}）"
+    elif not diff["params_same"]:
+        cmp_note = (f"**不比** —— 排序窗口换了：上一轮 `--max-lines`/`--max-per-host` 是 "
+                    f"{' '.join(str(x) for x in diff['params_prev'])}，"
+                    f"本轮是 {' '.join(str(x) for x in diff['params_cur'])}，"
+                    f"那两列本来就跟着窗口走")
+    else:
+        cmp_note = (f"**不比** —— 上一轮的判决来自 `{diff['verdict_prev']}`，"
+                    f"本轮是 `{diff['verdict_cur']}`，那两列本来就会因跑法不同而不同")
+    out += [f"- {pool}；{cfg}{chan}。",
+            f"- 进表 / 第一线那两层：{cmp_note}。"]
+    items = diff["items"]
+    if not items:
+        out += ["- 变化：一条都没有。" + (
+            "七行 × 那几层全部对得上上一轮" if diff["table_comparable"] else
+            "可比的那一层（上游候选）七行全部对得上上一轮 —— "
+            "进表 / 第一线那两层按上面那句**没比**，所以这句不等于「三层都没变」")
+            + f"（「一条公网线路都没有的频道」两轮都是 {diff['no_public_cur']} 个）。"]
+    else:
+        out += [f"- 变化 {len(items)} 条（逐条）："]
+        out += [f"  - {_item_text(x)}" for x in items]
+    if diff["no_public_prev"] != diff["no_public_cur"]:
+        out += [f"- 那把会跟着规则一起哑掉的尺：「一条公网线路都没有的频道」"
+                f"{diff['no_public_prev']} 个 → {diff['no_public_cur']} 个"
+                + (" —— 规则摊开时它自己就归 0，所以这一格不能单独当判据（2.49）。"
+                   if diff["no_public_cur"] == 0 else "。")]
+    if diff["dead_now"]:
+        out += ["- ⚠️ 这一轮**新摊开**的档：" + "、".join(f"`{t}`" for t in diff["dead_now"])
+                + "（上一轮这些档在上游还有抓到东西），屏幕上那一句就是它。"]
+    out += ["", f"> 这一段每轮的数落在 `{hist_name}`（与 `report.md` 同一层，一行一轮，只追加不重写）。"
+            "它是**参考不是判据**：比出什么都不改这张表上一个字节，也不剔一条线路。"]
+    return out
+
+
+def diff_alert_lines(diff: dict | None, limit: int = 5) -> list[str]:
+    """屏幕上要喊的那几条 —— 只喊「上游候选那一层从有到无」（2.51，改错实验 M6 之后加了第二种）。
+
+    为什么只喊这一种：2.50 已经量过，逐条的 0 有三种意义、两种无害，所以那一节的报警
+    按**整档**装。但「**跨轮**从有到无」不一样 —— 上一轮它抓到过 18 条，这一轮 0 条，
+    那三种无害的解释里当场就排除了「今天就是没这类地址」这一种（除非池子也换了，
+    那一句会跟着一起喊）。所以这一档可以按条喊，代价是每一句都得带上归因。
+
+    「从有到无」有两条路走到，改错实验 M6（两档名单互换）量出来的就是第二条：
+
+      * **规则还在、抓不到了**（`归0`）—— 字面被改了、域名搬家了、被前一条盖住了。
+      * **规则本身不在了**（`少了一条`，且上一轮它还抓到过）—— 有人重写了那份 YAML，
+        少抄了一行。它的后果和上面那条**一模一样**（那一档范围重新占住第一线），
+        而这一种在旧实现里屏幕上**一个字都不喊**：那一行不再出现在 `rows` 里，
+        于是它连「归 0」都算不上，只在 report.md 那 14 行里躺着。
+        这不就是本节要抓的那件事吗 —— 「上一轮还抓到、这轮归 0」，只不过归 0 的方式是被人删掉的。
+        所以它现在也喊，标题里点明「其中 N 条是这一轮名单里没有了」。
+        上一轮本来就 0 条的那些（真配置里的 `2408:`）删掉了**不喊**：没有的东西失去不叫失去。
+
+    进表 / 第一线那两层的归 0 **不上屏幕**：它们还多一个来源（判决、窗口、台名名单），
+    写在 report.md 里让人对着看就够 —— 与 2.50 那条「逐条的数进报告、整档的 0 上屏幕」同一分法。
+    同一条分法管到这里：**整档这一轮新摊开**时那句由 `dead_tier_lines` 喊（它带档级的数），
+    这里就不再把同一档的逐条各喊一遍 —— 一个坏掉的档位屏幕上只出现一次。
+
+    >>> r = lambda n, any_, own, table=0, first=0: {
+    ...     "tier": "iptv_intranet", "rule": n, "any_up": any_, "own_up": own,
+    ...     "own_table": table, "own_first": first,
+    ...     "state": ("first" if first else "table" if table else "out" if own
+    ...               else "shadow" if any_ else "none")}
+    >>> prev = {"at": "2026-09-24T05:49:00+08:00", "mode": "offline", "egress": "",
+    ...         "fingerprint": "7eae708d153a", "cfg_fingerprint": "aaaa11112222",
+    ...         "n_up": 1869, "n_up_uniq": 1804, "no_public_n": 39,
+    ...         "rows": [r(".chinamobile.com", 210, 18), r("2409:", 67, 67),
+    ...                  r("tvgslb.hn.chinamobile.com", 192, 30, 12, 5)]}
+    >>> d = diff_rule_rounds(prev, {**prev, "rows": [r(".chinamobile.com", 210, 0),
+    ...                                              r("2409:", 67, 67),
+    ...                                              r("tvgslb.hn.chinamobile.com", 192, 30, 12, 5)]})
+    >>> s = "\\n".join(diff_alert_lines(d))
+    >>> s.startswith("⚠️ 跟上一次比（2026-09-24 05:49）：有一条范围规则")
+    True
+    >>> "18 条 → 0 条" in s and "一条不差" in s        # 归因那半句是必须的，不然等于没喊
+    True
+    >>> "2409:" not in s                                # 没掉下去的那条不喊
+    True
+    >>> "不比" not in s                                  # 表层不可比不在屏幕上说
+    True
+    >>> [l[:3] for l in s.splitlines()[1:] if l.strip()] == ["   "] * len(
+    ...     [l for l in s.splitlines()[1:] if l.strip()])   # 标题以外全是缩进着的子条目，不歪
+    True
+    >>> d2 = diff_rule_rounds(prev, {**prev, "rows": [r(".chinamobile.com", 210, 0),
+    ...                                               r("2409:", 0, 0),
+    ...                                               r("tvgslb.hn.chinamobile.com", 192, 30, 12, 5)],
+    ...                               "fingerprint": "bbbb22223333", "n_up": 100,
+    ...                               "no_public_n": 0})
+    >>> a2 = "\\n".join(diff_alert_lines(d2))
+    >>> a2.count("→ 0 条"), "2 条范围规则" in a2         # 两条一起掉：两条都列出来，归因只说一遍
+    (2, True)
+    >>> "上游池子本身也变了" in a2                       # 池子换了 → 那句改成先查抓取
+    True
+    >>> "39 个变成 0 个" in a2                           # 那把跟着哑掉的尺塌了，也上屏幕
+    True
+    >>> cur3 = {**prev, "rows": [r(".chinamobile.com", 0, 0), r("2409:", 0, 0),
+    ...                          r("tvgslb.hn.chinamobile.com", 0, 0)], "no_public_n": 0}
+    >>> d3 = diff_rule_rounds(prev, cur3)
+    >>> a3 = diff_alert_lines(d3)
+    >>> [l for l in a3 if "→ 0 条" in l], d3["dead_now"]  # 整档摊开：逐条的让给档级那一句
+    ([], ['iptv_intranet'])
+    >>> len(a3), "39 个变成 0 个" in a3[0]                # 屏幕上仍有话，但不是重复喊
+    (1, True)
+    >>> "命中的全是 0" in "\\n".join(                     # 而档级那一句确实接手了这一轮
+    ...     dead_tier_lines(cur3["rows"], cur3["n_up"], cur3["no_public_n"], diff=d3))
+    True
+    >>> d4 = diff_rule_rounds(prev, {**prev, "rows": [r("2409:", 67, 67)]})   # M6：删掉两条
+    >>> a4 = "\\n".join(diff_alert_lines(d4))
+    >>> "2 条全是这一轮名单里没有了" in a4, d4["items"][0]["prev"]   # 标题把「怎么没的」说在明处
+    (True, 18)
+    >>> a4.count("这一轮名单里没有了")                 # 标题一句 + 两条各一句
+    3
+    >>> mixed = diff_rule_rounds(prev, {**prev, "rows": [r(".chinamobile.com", 210, 0),
+    ...                                                  r("2409:", 67, 67)]})
+    >>> a5 = "\\n".join(diff_alert_lines(mixed))
+    >>> a5.count("→ 0 条"), a5.count("这一轮名单里没有了")   # 一条归 0、一条被删：两回事都在
+    (1, 2)
+    >>> "其中 1 条是这一轮名单里没有了" in a5
+    True
+    >>> "2408:" not in "\\n".join(diff_alert_lines(diff_rule_rounds(   # 本来就 0 条的被删：不喊
+    ...     {**prev, "rows": prev["rows"] + [r("2408:", 0, 0)]},
+    ...     {**prev, "rows": list(prev["rows"])})))
+    True
+    >>> ten = [r(f".x{i}.com", 9, 9) for i in range(10)]
+    >>> cur4 = [ten[0]] + [r(f".x{i}.com", 9, 0) for i in range(1, 10)]
+    >>> many = "\\n".join(diff_alert_lines(diff_rule_rounds(
+    ...     {**prev, "rows": ten}, {**prev, "rows": cur4})))
+    >>> len([l for l in many.splitlines() if "→ 0 条" in l]), "另有 4 条" in many
+    (5, True)
+    >>> diff_alert_lines(None)
+    []
+    """
+    if not diff:
+        return []
+    # 整档摊开由 `dead_tier_lines` 那一句喊（它带档级的数），这里就只喊没摊开的档里
+    # 逐条掉下去的那些 —— 同一件事不在屏幕上说两遍，2.50 那条「整档的才上屏幕」的分法照旧。
+    gone = [x for x in diff["items"]
+            if x["tier"] not in diff["dead_now"]
+            and ((x["kind"] == "归0" and x["layer"] == "up")
+                 or (x["kind"] == "少了一条" and x["prev"]))]
+    out: list[str] = []
+    if gone:
+        at = str(diff.get("prev_at") or "")[:16].replace("T", " ")
+        dropped = sum(1 for x in gone if x["kind"] == "少了一条")
+        how = ("" if not dropped else
+               f"（{len(gone)} 条全是这一轮名单里没有了的那类）" if dropped == len(gone) else
+               f"，其中 {dropped} 条是这一轮名单里没有了")
+        n = "有一条" if len(gone) == 1 else f"有 {len(gone)} 条"
+        head = f"⚠️ 跟上一次比（{at}）：{n}范围规则在上游候选那一层从有到无{how}"
+        out.append(head + "：\n" + "\n".join(f"   - {_item_text(x)}" for x in gone[:limit])
+                   + (f"\n   （另有 {len(gone) - limit} 条同样在掉，"
+                      f"逐条写在 report.md「跟上一轮比」那一段）" if len(gone) > limit else ""))
+        out.append(_indented(_pool_evidence(diff)))
+    if diff["no_public_prev"] and not diff["no_public_cur"]:
+        out.append(f"⚠️ 「一条公网线路都没有的频道」从 {diff['no_public_prev']} 个变成 0 个 —— "
+                   f"§2.49 说过那句报警会跟着规则一起哑掉：这一档要是同时出现在上面，就是它。")
     return out
 
 

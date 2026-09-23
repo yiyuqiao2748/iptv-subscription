@@ -27,6 +27,12 @@ id 由谁先创建频道桶决定」的行为。
 上一轮量到过延迟的按那时补位 —— 否则「这次没实测」会让上一轮确认的官方流被来源优先级挤掉。
 判据只认体检没报警的那些轮，参照出口见 `judgment_egress()` 的说明；`--ignore-history` 可整个关掉。
 
+`report.md` 里「范围规则各自抓到几条」那一节的七行另外落在旁边的 `data/output/rule-history.jsonl`
+（2.51）：一行一轮、**每轮都写**（不实测也写，那七行不吃网络）、**不按时段合并**。
+它只干一件事 —— 让「上一轮还抓到、这轮归 0」由工具自己发现，而不是靠人记得上一轮。
+它是**参考不是判据**：比出什么都不改动表上一个字节，也不剔一条线路，所以它不进 `probe-history.jsonl`
+（量过：并进去会让 `blacklist()` 从 26 族变 27 族，见 `src/check/history.py` 那段注释）。
+
 注意：联网抓取与 --verify 实测都从本机出口出去，所以测量点是谁必须先说清楚。
 代理客户端的 TUN 一开，DNS 就被换成 fake-IP、出口跑到境外机房，对国内运营商类地址
 全是假阴性（计划书 2.8）。跑 --verify 前会先做体检并把警告打在屏幕上，
@@ -71,7 +77,8 @@ from src.check.epg import (  # noqa: E402
     Epg, apply_ids, coverages, gzip_decompress, load_bytes, today_ok)
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
-    AUDIO, INTRANET, PUBLIC, RANK, Reachability, dead_tier_lines, load_reachability)
+    AUDIO, INTRANET, PUBLIC, RANK, Reachability, config_fingerprint, dead_tier_lines,
+    diff_alert_lines, diff_rule_rounds, load_reachability, pool_fingerprint)
 from src.keys import (  # noqa: E402
     _NOT_SET, check_keys, check_version, flag_value, order_value, shape_word, text_value)
 from src.match.matcher import load_index  # noqa: E402
@@ -1688,7 +1695,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="不读 config/sources_local.yaml（排查手工源本身时用）")
     ap.add_argument("--history", default=str(HISTORY_FILE),
                     help="实测履历 jsonl：离线生成时靠它给已知失效主机降档、给已知快的主机补位"
-                         "（默认 data/output/probe-history.jsonl）")
+                         "（默认 data/output/probe-history.jsonl）。"
+                         "只影响这一份；规则履历（2.51 的 rule-history.jsonl）跟着 --out 走，"
+                         "因为它跟着那一轮的产物一起挪")
     ap.add_argument("--ignore-history", action="store_true",
                     help="完全不看履历，只按本轮（或无本轮）的结果排 —— 复现旧行为、排查降档本身时用")
     ap.add_argument("--merge-minutes", type=int, default=hist.MERGE_WINDOW_MIN, metavar="分钟",
@@ -2000,16 +2009,67 @@ def cmd_build(argv: list[str]) -> int:
     cov_up = reach.coverage(up_urls)
     cov_first = reach.coverage(first_urls)   # 只为拿 `code_intranet`：第一线里有几条是组播（不欠规则）
     rule_rows = reach.rule_states(up_urls, table_urls, first_urls)
+    # 这一轮「是哪一种跑法」也要记进去（2.51）：那三层的数里只有「上游候选」不欠判决，
+    # 进表 / 第一线是排序的产物，而排序看判决 —— 不记下跑法，下一轮就没法说这两列能不能比。
+    round_mode = "verify" if args.verify else ("replay" if replay else "offline")
+    round_at = datetime.now().astimezone().isoformat(timespec="seconds")
     reach_rules = {"rows": rule_rows, "n_up": len(up_urls), "n_up_uniq": len(set(up_urls)),
                    "n_table": len(table_urls), "n_first": len(first_urls),
                    "no_public_n": len(no_public), "code_first": cov_first["code_intranet"],
                    "max_lines": args.max_lines, "max_per_host": args.max_per_host,
-                   "code_up": cov_up["code_intranet"], "dup": cov_up["dup"]}
-    # 屏幕上只喊「整档全 0」那一种（逐条的 0 三种里两种无害）。那几句话本身放在 scope.py，
-    # 因为钉住它只需要一条 doctest —— 留在 cmd_build 里就是一句改错了也没人管的裸 print（2.50）。
-    notes = dead_tier_lines(rule_rows, len(up_urls), len(no_public))
-    if notes:
-        print("\n\n".join(notes), file=sys.stderr)
+                   "code_up": cov_up["code_intranet"], "dup": cov_up["dup"],
+                   # 下面这几行就是落进 rule-history.jsonl 的那份来历（2.51）。
+                   # 两个内容指纹各管一头：`fingerprint` 回答「这批线路是不是同一批」，
+                   # `cfg_fingerprint` 回答「规则表改过没有」—— 两个都说没变而数变了，
+                   # 剩下的唯一解释就是判定代码变了（那正是这一节最不该自己犯的错）。
+                   "at": round_at, "mode": round_mode, "egress": egress, "warnings": warns,
+                   "replay_at": replay_at if replay else "",
+                   "fingerprint": pool_fingerprint(up_urls),
+                   "cfg_fingerprint": config_fingerprint(REACH_FILE),
+                   "chan_fingerprint": config_fingerprint(args.config),
+                   # 排序窗口也进那一份履历：`--max-lines 2` 跑一次，进表那一列必然往下掉，
+                   # 不记下参数就会把它读成「规则不管用了」。
+                   "params": [args.max_lines, args.max_per_host]}
+    # 先扣下要落盘的那一行，再往上加只给本轮渲染用的两个键。
+    # 顺序是有意义的：`no_diff` 和 `diff` 是「这一轮比出来/比不了」的话，不是观测；
+    # 写进履历，下一轮的上一轮里就自带一份上上轮的 diff，那句话会跨轮长青。
+    rule_row = dict(reach_rules)
+    # 跟上一轮比（2.51）：把「上一轮还抓到、这轮归 0」这一格从人的记忆里搬进工具。
+    # 这份履历是**参考不是判据**：读不读得到都不改这张表上一个字节（那一条有闸，见计划书）。
+    rule_hist_path = hist.rule_history_path(out_dir)
+    # 报告里那句「数落在哪儿」要说的是**这一轮真正落的那一个**，不是写死的 `data/output/…`：
+    # 沙盒跑（`--out /tmp/一份表`）和体检报警被隔离的那一轮，那份文件都不在 `data/output/`。
+    # 放在 `rule_row` 那份快照之后：它是渲染材料，不是观测，不进履历。
+    reach_rules["hist_name"] = rule_hist_path.name
+    prev_round: dict | None = None
+    if args.ignore_history:
+        reach_rules["no_diff"] = "`--ignore-history`：本轮不比对上一轮"
+    else:
+        rr_problems: list[str] = []
+        rr = hist.load_rule_history(rule_hist_path, problems=rr_problems)
+        for p in rr_problems:
+            print(f"⚠️ 规则履历：{p}", file=sys.stderr)
+        if rr:
+            prev_round = rr[-1]
+            # 有几行没读进来、但**最近一轮还是读到了**：那就照比，另把缺的那部分单独说清楚。
+            # 这里不能顺手写 `no_diff` —— 那样报告里「本轮比不了」和下面那段「### 跟上一轮比」
+            # 会同时印出来，自己打自己（改错实验 P4b 抓的就是这一格）。
+            if rr_problems:
+                reach_rules["hist_partial"] = "；".join(rr_problems)
+        elif "no_diff" not in reach_rules:
+            reach_rules["no_diff"] = (
+                "上一轮那一行读不进来（屏幕上那一句 ⚠️ 说的就是它）" if rr_problems
+                else f"{rule_hist_path.name} 里还没有更早的一次"
+                     "（这一节是 2.51 装上的，从下一次跑开始比）")
+    rule_diff = diff_rule_rounds(prev_round, reach_rules)
+    reach_rules["diff"] = rule_diff
+    # 屏幕上喊两种：整档全 0（2.50 那一条），和跨轮从有到无（2.51 这一条）。
+    # 那几句话本身放在 scope.py，因为钉住它们只需要几条 doctest ——
+    # 留在 cmd_build 里就是一句改错了也没人管的裸 print（2.50 同一条纪律）。
+    notes = dead_tier_lines(rule_rows, len(up_urls), len(no_public), diff=rule_diff)
+    alerts = diff_alert_lines(rule_diff)
+    if notes or alerts:
+        print("\n\n".join(notes + alerts), file=sys.stderr)
 
     # 第一线是循环录像的频道：电视默认就播这一条，必须点名。
     # 证据分三级，写清楚是哪一级看出来的：本轮实测的分片数最硬，L3 的「列表不动」次之，
@@ -2052,7 +2112,11 @@ def cmd_build(argv: list[str]) -> int:
               "rows": first_line_focus(hunan, results, src_of, reach),
               "fallback": second_line_options(hunan, results, reach)}]
     if args.verify:
-        at = datetime.now().astimezone().isoformat(timespec="seconds")
+        # 一轮一个时刻：这个 `at` 与上面 `reach_rules["at"]` 是同一个数（2006 那两行取的），
+        # 于是 `probe-history.jsonl` 那一行和 `rule-history.jsonl` 那一行能靠 `at` 对上 ——
+        # 原来这里再取一次 `datetime.now()`，两行的时刻差着实测那几十秒，
+        # 「同一轮的两种观测」在文件里就成了两个时刻。
+        at = round_at
         artifacts["probe.json"] = json.dumps({
             "at": at,
             "egress": egress,
@@ -2169,6 +2233,22 @@ def cmd_build(argv: list[str]) -> int:
     # 订阅目录保持上一版原样（2.37：以前是 aptv.m3u 已经盖下去、才崩在下一份）。
     write_artifacts(out_dir, artifacts)
 
+    # 规则那一节的七行落在**旁边**那份（`rule-history.jsonl`），2.51。
+    # 排在 write_artifacts 之后：表没写下去就不该留下一行履历 —— 那一行是要给下一轮比的，
+    # 比到一轮根本没出表的观测，等于把「上一轮还抓到」这句建在流沙上。
+    # 为什么不并进 `probe-history.jsonl`：量过（09-24 06:31，`/tmp/g251/pool251.py`）——
+    # 那种行没有 `hosts`，`load_history` 会跳过；一旦给 `hosts` 补上空表让它过闸，
+    # `blacklist()` 从 26 族变 27 族（`m.italkbbtv.com` 被同一轮判决数了两次就判死），
+    # 趋势也从 2 轮变 3 轮。两份各存一份才不动那两把尺。
+    # 落盘失败只报一句：表已经写好了，履历缺这一轮不影响订阅。
+    try:
+        hist.append_rule_round(rule_hist_path, rule_row)
+        rule_hist_note = f"（规则那一节的 7 行已记入 {rule_hist_path.name}，下一轮起有得比）"
+    except OSError as e:
+        rule_hist_note = ""
+        print(f"⚠️ 规则履历这一轮没记上：{e}\n"
+              f"   表照出，只是下一轮比不了「上一轮还抓到、这轮归 0」", file=sys.stderr)
+
     print(f"\n输出到 {out_dir}")
     if quarantined:
         print(f"  ⚠️ 体检报警的这一轮不碰订阅目录：上面这些文件写在 {UNTRUSTED}/ 里，"
@@ -2188,6 +2268,10 @@ def cmd_build(argv: list[str]) -> int:
         print(f"    ⚠️ {epg_info['error']} —— 节目单只是「有更好」，这一轮照旧出表")
     print(f"  可达范围：公网 {line_scope[PUBLIC]} 条 / 运营商内网 {line_scope[INTRANET]} 条 / "
           f"电台冒充 {line_scope[AUDIO]} 条；第一线是公网线路的 {scope_stats[PUBLIC]}/{len(channels)} 个频道")
+    print(f"  范围规则：{len(rule_rows)} 行 × 三层数写进 report.md，"
+          + (f"本轮的数已记入 {rule_hist_path.name}（2.51：下一轮起「上一轮还抓到、这轮归 0」由它自己发现）"
+             if rule_hist_note else
+             "本轮**没记上**那份履历（原因见上面那句 ⚠️），下一轮比不了"))
     if no_public:
         print(f"  ⚠️ 一条公网线路都没有的频道 {len(no_public)} 个（Wi-Fi 上大概率播不动）："
               + "、".join(no_public))

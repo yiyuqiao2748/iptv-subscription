@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Iterable
 
 from src.check.history import Suggestion  # 建议行的格式只有一份实现（2.17）
+from src.check.scope import (  # 「跟上一轮比」那一段的措辞只有一份实现（2.51）
+    diff_rule_rounds, rule_diff_lines)  # 前者只给下面的 doctest 当「形状由生产者给」的样板
 
 _M3U_ATTRS = ("tvg-id", "tvg-name", "tvg-logo", "group-title")
 
@@ -855,6 +857,22 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
     >>> "| 运营商 IPTV 内网 | `.chinamobile.com` | 0（字面 210） | 0 | 0 | 被排在前面的规则整个盖住 |" \\
     ...     in "\\n".join(_reach_rule_section({**meta, "rows": [shadow]}))
     True
+    >>> prev = {**meta, "at": "2026-09-24T05:49:00+08:00", "mode": "offline", "egress": "",
+    ...         "fingerprint": "7eae708d153a", "cfg_fingerprint": "aaaa11112222", "rows": rows}
+    >>> cur = {**prev, "at": "2026-09-24T06:20:00+08:00", "rows": [
+    ...     rows[0], {**rows[1], "own_up": 0, "state": "shadow"}, rows[2], rows[3], rows[4]]}
+    >>> s2 = "\\n".join(_reach_rule_section({**meta, "diff": diff_rule_rounds(prev, cur)}))
+    >>> "### 跟上一轮比：2026-09-24 05:49" in s2                   # 2.51：比出来的那一段排在七行之后
+    True
+    >>> s2.index("### 跟上一轮比") > s2.index("形状闸（2.49）")
+    True
+    >>> "`iptv_intranet` / `.chinamobile.com`：上游候选 18 条 → 0 条" in s2
+    True
+    >>> "没有可比对的上一次" not in s2                            # 有得比就不说那句
+    True
+    >>> "> 没有可比对的上一次：首轮。" in "\\n".join(              # 没得比：把为什么印出来
+    ...     _reach_rule_section({**meta, "no_diff": "首轮"}))
+    True
     """
     if meta is None:
         return []
@@ -922,7 +940,55 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
             "规则整档摊开时它自己就归 0（计划书 2.49 实测：39 → 0，报警跟着规则一起哑掉）；"
             "而这一节的「上游候选」那一列是拿规则去问上游池子，规则坏成什么样它都还写着。"
             "形状闸（2.49）管的是写错的形状，这一节管的是写对内容之外的错。"]
+    out += _reach_diff_lines(meta)
     return out
+
+
+def _reach_diff_lines(meta: dict) -> list[str]:
+    """那一节末尾的「跟上一轮比」（2.51）—— 措辞在 `scope.rule_diff_lines`，这里只管有没有得比。
+
+    比不了时必须把**为什么**印出来：首轮、`--ignore-history`、上一轮那份读不出，
+    是三件不同的事，读报告的人要能分清「这一节刚开始量」和「履历坏了」。
+    一句空话都不能省 —— 少了这一格，`report.md` 里「没有这一段」和「比了，什么都没变」
+    长得一模一样，那就是 2.32 那一格说过的「把没量印成没变」。
+
+    反过来那一格也要有：**读进来了一部分**（坏了几行、最近一轮还在）时不能说「比不了」，
+    但也不能当那几行不存在。所以那是独立的一句话，印在比对段之前 ——
+    「比了」和「那份全不全」是两件事，混成一句就总有一句是假的。
+
+    >>> prev = {"at": "2026-09-24T05:49:00+08:00", "mode": "offline", "egress": "",
+    ...         "fingerprint": "7eae708d153a", "cfg_fingerprint": "a", "n_up": 1869,
+    ...         "n_up_uniq": 1804, "no_public_n": 39,
+    ...         "rows": [{"tier": "iptv_intranet", "rule": ".a.com", "any_up": 210,
+    ...                   "own_up": 18, "own_table": 0, "own_first": 0, "state": "out"}]}
+    >>> row = dict(prev["rows"][0])
+    >>> d = diff_rule_rounds(prev, {**prev, "rows": [{**row, "own_up": 0}]})
+    >>> s = "\\n".join(_reach_diff_lines({"diff": d}))
+    >>> s.startswith("\\n### 跟上一轮比：2026-09-24 05:49") and "上游候选 18 条 → 0 条" in s
+    True
+    >>> "rule-history.jsonl" in s and "参考不是判据" in s   # 落哪、能不能改动表，写在同一格
+    True
+    >>> _reach_diff_lines({"no_diff": "`--ignore-history`：本轮不比对上一轮"})[1]
+    '> 没有可比对的上一次：`--ignore-history`：本轮不比对上一轮。'
+    >>> "为什么" in "\\n".join(_reach_diff_lines({}))       # 连原因都没给：也要留一句，不许静默消失
+    True
+    >>> partial = "\\n".join(_reach_diff_lines({"diff": d, "hist_partial": "第 1 行不是 JSON"}))
+    >>> "只读到一部分" in partial and "第 1 行不是 JSON" in partial
+    True
+    >>> "本轮比不了" not in partial                          # 比了，就不能说比不了
+    True
+    >>> partial.index("只读到一部分") < partial.index("### 跟上一轮比")   # 先说缺，再说比
+    True
+    """
+    diff = meta.get("diff")
+    note = ([f"\n> 那份履历这一轮只读到一部分：{meta['hist_partial']}。"
+             "下面比的是**最近一轮读得进来的**那些行。"]
+            if meta.get("hist_partial") else [])
+    if diff:
+        return note + rule_diff_lines(diff, meta.get("hist_name") or "rule-history.jsonl")
+    why = meta.get("no_diff") or ("这一节是计划书 2.51 才装上的，原因没记在这一轮的行里 —— "
+                                  "为什么、以及「比了但什么都没变」，两件事别混着读")
+    return ["", f"> 没有可比对的上一次：{why}。"]
 
 
 def format_report(
