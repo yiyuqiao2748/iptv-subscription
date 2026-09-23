@@ -10,9 +10,12 @@
 2026-09-22 加 `--replay` 之后这条尤其现实 —— 计划书 §14 和接入文档里各有一份命令清单，
 往后每加一个开关都要跟着改两处，人总会漏。
 
-它查两层：
+它查三层：
   * 命令层 —— 长参数（`--xxx`）在不在 `--help` 里、那个脚本 / 子命令还存在吗；
-  * 引用层 —— 正文里出现的 `scripts/xxx.py` 名字（哪怕在句子里、不在命令块里）到底有没有这个文件。
+  * 引用层 —— 正文里出现的 `scripts/xxx.py` 名字（哪怕在句子里、不在命令块里）到底有没有这个文件；
+  * 钟那一层（2.45）—— 这一条命令**今天**照抄会不会撞在「那份记录太旧」那道闸上。
+    只读 `probe.json` 的时间戳 + 履历，不发请求、不写任何东西；判决用的是
+    `src.cli.replay_gate()` 本身（和屏幕上那句同一个函数）。
 
 例外的写法：一段文字想拿**错的**命令当例子（2.21 讲那个「打错子命令也退 0」的坑时就得写出
 `src.cli bulid`），用 `<!-- check-doc-cmds: off -->` / `on` 把那段圈起来 —— 渲染出来看不见，
@@ -23,6 +26,8 @@
 由 `skip_imbalance` 当场判错。段数写在括号里是不够的 —— 会去核对分母的人本来就少。
 
 位置参数、参数的取值对不对，它不管 —— 那类漂移要靠用例，不靠这把尺。
+唯一碰取值的是钟那一层：它只问「这行里的 `--replay` 今天读得到一份能用的记录吗」，
+而且答案是从 argparse 和 `replay_gate()` 那里要的，不是自己算小时数。
 
 退码：**0** = 扫到的每一条都没问题；**1** = 有对不上的（命令、脚本名、或 off/on 没配上）；
 **2** = **一条都没扫到**
@@ -36,9 +41,14 @@ import importlib.util
 import re
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# 「会自己过期的命令」那一层要复用 `src.cli` 里的 `build_parser()` / `replay_gate()`
+# （见 `clock_inputs` 的说明：同一件事不许有两个算法），所以这里得能 import 到 src。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # `.venv/bin/python` 与 Windows 那台的 `.venv/Scripts/python.exe` 都算。
 # 注意 `(?:bin|Scripts)/` 那个斜杠：写成 `Scripts/` 而漏掉 bin 的，会只匹配到 Windows 那一行。
@@ -323,6 +333,251 @@ def importable(dotted: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# 第三层：会自己过期的命令
+# ---------------------------------------------------------------------------
+
+def clock_inputs(body: str, *, root: Path = ROOT) -> dict | None:
+    """这条命令带不带「那份记录能有多旧」那个钟；带着的话它读哪份记录、上限几小时。
+
+    不带的（包括不带 `--replay` 的 build、别的脚本、以及 argparse 直接拒掉的坏行）返回 None。
+    解析走 `src.cli.build_parser()` —— 这是它存在的一个理由：`--replay` 是 `nargs="?"`，
+    `--replay --out /tmp/x` 里 `--out` **不是**记录路径，正则看不懂这一条。
+
+    >>> from pathlib import Path
+    >>> c = clock_inputs("-m src.cli build --replay --out /tmp/x")
+    >>> c["record"] == str(ROOT / "data/output/probe.json"), c["budget"], c["force"]
+    (True, 48, False)
+    >>> c = clock_inputs("-m src.cli build --replay data/output/untrusted/probe.json --out /tmp/x",
+    ...                  root=Path("/repo"))
+    >>> c["record"], c["budget"]
+    ('/repo/data/output/untrusted/probe.json', 48)
+    >>> clock_inputs("-m src.cli build --replay --replay-max-age 6 --out /tmp/x")["budget"]
+    6
+    >>> clock_inputs("-m src.cli build --replay --allow-untrusted")["force"]
+    True
+    >>> clock_inputs("-m src.cli build --verify --replay")["contradiction"]
+    True
+    >>> clock_inputs("-m src.cli build --out /tmp/x") is None            # 没带 --replay：没这个钟
+    True
+    >>> clock_inputs("scripts/epg_check.py --replay") is None            # 不是 build：不归它管
+    True
+    >>> clock_inputs("-m src.cli build --replay --no-such-flag") is None  # argparse 自己拒的，上层报
+    True
+    """
+    tg = targets(body)
+    if tg is None or tg[:3] != ["-m", "src.cli", "build"] or "--replay" not in body:
+        return None
+    try:
+        from src.cli import build_parser
+    except ImportError:
+        return None
+    try:
+        args = build_parser().parse_args(body.split()[3:])
+    except SystemExit:          # 参数本身就不合法：那由「参数名在不在」那一层报，这里不插手
+        return None
+    if args.verify and args.replay:
+        # build 在碰任何东西之前就退 1；它跟「记录多旧」是两件事，分开说清楚。
+        return {"record": "", "budget": args.replay_max_age, "force": False,
+                "history": str(args.history), "contradiction": True}
+    rec = Path(args.replay)
+    return {
+        "record": str(rec if rec.is_absolute() else root / rec),
+        "budget": args.replay_max_age,
+        "force": bool(args.allow_untrusted),
+        "history": str(args.history),
+        "contradiction": False,
+    }
+
+
+def prose_clocks(text: str) -> list[int]:
+    """散文里提到 `build --replay`、但没写成一条能照抄的命令 —— 行号列表。
+
+    为什么单独数：上面那一层的入口是「这行有 `.venv/bin/python` 前缀」，
+    而 `docs/真机验收单.md:90` 那种是一个**步骤**里的散文（「跑一次 `build --replay` 就有」）。
+    钟对它一样在走，判决却量不到 —— 不说出来，「带钟的 20 条」就成了一个看着很齐的分母。
+    这一层只数，不判：散文里没有完整的参数，猜哪份记录、几小时上限都是编。
+
+    >>> prose_clocks("跑一次 `build --replay` 就有（计划书 2.23）")
+    [1]
+    >>> prose_clocks(".venv/bin/python -m src.cli build --replay --out /tmp/x")   # 那是命令，不算散文
+    []
+    >>> prose_clocks("`build --replay --no-epg` 也行")
+    [1]
+    """
+    out = []
+    for no, line in enumerate(text.splitlines(), 1):
+        if "build --replay" not in line and "`--replay`" not in line:
+            continue
+        if re.search(PY, line):
+            continue                    # 带解释器前缀的走命令那一层，这里只数散文
+        if line.lstrip().startswith("#"):
+            continue                    # 注释掉的那条命令是「谁都没让它跑」，不算照抄入口
+        out.append(no)
+    return out
+
+
+def clock_verdict(cfg: dict, *, now: str, root: Path = ROOT) -> tuple[str, str]:
+    """照抄这条命令今天会怎样：`(类别, 一句话)`。类别 ∈ `过` / `退` / `问不出`。
+
+    判决用的是 `src.cli.replay_gate()` 本身 —— build 屏幕上那句就是它印的，
+    这把尺不复述规则，所以两边不会各说一套（计划书 2.44 治的就是「两个读法」）。
+    时间从外面传进来（`now`）、记录从 `root` 下面找 —— 这两个都不许在函数里现取，
+    否则这一格的用例明天自己就红了。
+
+    >>> cfg = {"record": "probe.json", "budget": 48, "force": False,
+    ...        "history": "", "contradiction": False}
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     root = Path(d)
+    ...     _ = (root / "probe.json").write_text(
+    ...         '{"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",'
+    ...         ' "measurement_warnings": [], "lines": {"http://a/1": {"ok": true}}}',
+    ...         encoding="utf-8")
+    ...     print(clock_verdict(cfg, now="2026-09-22T08:00:00+08:00", root=root))
+    ...     print(clock_verdict({**cfg, "budget": 6}, now="2026-09-22T08:00:00+08:00", root=root))
+    ...     print(clock_verdict({**cfg, "force": True}, now="2026-09-24T08:00:00+08:00", root=root))
+    ...     print(clock_verdict({**cfg, "record": "gone.json"},
+    ...                         now="2026-09-22T08:00:00+08:00", root=root)[1].rsplit("/", 1)[-1])
+    ...     print(clock_verdict({**cfg, "contradiction": True},
+    ...                         now="2026-09-22T08:00:00+08:00", root=root)[0])
+    ...     # 记录上没写出口、也没报警：那种命令只有真跑才会去问「当前出口」（要发请求），
+    ...     # 这把尺一个字都不发，所以它报「问不出」而不是拿空出口去比出一道门。
+    ...     _ = (root / "noeg.json").write_text(
+    ...         '{"at": "2026-09-21T21:18:13+08:00", "lines": {"http://a/1": {"ok": true}}}',
+    ...         encoding="utf-8")
+    ...     print(clock_verdict({**cfg, "record": "noeg.json"},
+    ...                         now="2026-09-22T08:00:00+08:00", root=root)[0])
+    ...     # 同一份记录，但那一轮报过警：参照出口走履历（本地文件，不发请求），所以照样判得出来
+    ...     _ = (root / "warn.json").write_text(
+    ...         '{"at": "2026-09-21T21:18:13+08:00", "measurement_warnings": ["TUN 已开启"],'
+    ...         ' "lines": {"http://a/1": {"ok": true}}}', encoding="utf-8")
+    ...     print(clock_verdict({**cfg, "record": "warn.json"},
+    ...                         now="2026-09-22T08:00:00+08:00", root=root))
+    ...     _ = (root / "bad.json").write_text("不是 JSON", encoding="utf-8")
+    ...     print(clock_verdict({**cfg, "record": "bad.json"},
+    ...                         now="2026-09-22T08:00:00+08:00", root=root))
+    ('过', '那份记录 1 条判决、上限 48 小时，今天能过')
+    ('退', '那份记录已经 11 小时了（上限 6）——沿用太久表会冻在旧世界上，跑一轮 --verify 吧')
+    ('过', '它加了 `--allow-untrusted`：三道门全越过（1 条判决），不算量过钟')
+    gone.json 不在，猜不了
+    退
+    问不出
+    ('退', '那一轮（21:18）体检报过警，它判死的线路多半是假阴性（2.16）：TUN 已开启')
+    ('问不出', '那份记录读不了：Expecting value: line 1 column 1 (char 0)')
+    """
+    if cfg.get("contradiction"):
+        return "退", "先撞 `--verify` 与 `--replay` 只能选一个那句拒绝（跟钟无关）"
+    from src.cli import judgment_egress, load_probe, replay_gate
+    from src.check import history as hist
+
+    path = Path(cfg["record"])
+    path = path if path.is_absolute() else root / path
+    if not path.exists():
+        return "问不出", f"那把闸要读的记录 {path} 不在，猜不了"
+    try:
+        replay, meta = load_probe(path)
+    except (OSError, ValueError) as e:
+        return "问不出", f"那份记录读不了：{str(e).splitlines()[0]}"
+    warns = list(meta.get("warnings") or [])
+    if not meta.get("egress") and not warns:
+        # 记录自己没写出口时，build 拿的是「本机当前出口」—— 那是要发一次请求才知道的事，
+        # 这把尺一个字都不该发（也更不该猜）。剩下那三种落点（有出口 / 有报警走履历）都不用网络。
+        return "问不出", "那份记录没写出口，这一条要照抄才会去问当前出口 —— 我不猜"
+    # `Path("")` 是「当前目录」，`.exists()` 为真 —— 履历没给路径时不去 open 一个目录。
+    # 说清楚它守到什么程度：`hist.load_history()` 自己读到目录也只是返回 `[]`（量过），
+    # 所以这一格换成 `exists()` 用例**不会红**（2.45 改错实验 N5：拆了仍 62 条全绿）。
+    # 留着是因为「不拿目录当文件读」这件事该由这里说，而不是等下面那层替它兜。
+    hpath = Path(cfg["history"]) if cfg["history"] else None
+    runs = hist.load_history(hpath) if hpath is not None and hpath.is_file() else []
+    point = judgment_egress(str(meta.get("egress") or ""), warns, runs, measured=True)
+    ok, why = replay_gate(meta, point=point, now=now, max_age_hours=cfg["budget"],
+                          force=cfg["force"], n_lines=len(replay))
+    if cfg["force"]:
+        return "过", f"它加了 `--allow-untrusted`：三道门全越过（{len(replay)} 条判决），不算量过钟"
+    return ("过" if ok else "退"), (why or f"那份记录 {len(replay)} 条判决、上限 {cfg['budget']} 小时，今天能过")
+
+
+def clock_summary(rows: list[tuple[str, int, tuple[str, str]]], *, prose: int = 0) -> tuple[str, list[str]]:
+    """把带钟的命令收成「总结行里那一句 + 逐行明细」。没一条带钟 → `("", [])`（不印废话）。
+
+    为什么只报不判错：**时间过了一点不是文档的错**。48 是那道闸的默认上限，到点就是到点；
+    让这把尺每 48 小时红一次，它第二天就变成没人看的噪音了。但它必须**印在总结行上** ——
+    2026-09-23 21:18 之后，文档里 20 条这样的命令照抄全退 1，而总结行是
+    「140 条命令、0 条对不上；该查的都查了」，每个字都对，没有一句有用。
+
+    总结行只放「几条 + 哪几种理由」（同一条理由不重复印），具体是哪几行进明细，`--verbose` 才印。
+
+    **这句话里必须带着「照抄」两个字**：`scripts/selfcheck.py` 的 `conclusion()` 是从一屏输出的
+    末尾往前找那批结论词，找到哪句印哪句。这一句是**另外一行**，不带那个词的话 selfcheck 里
+    被印出来的永远只是上面那句「扫了 141 条…0 条对不上」—— 也就是把这一节的发现藏回原地。
+    词写在 `head` 里而不是各分支里，是为了让这个不变量**结构上成立**（「问不出」那一档第一版
+    就没有「照抄」），下面那格循环就是钉这件事的。
+
+    >>> clock_summary([])
+    ('', [])
+    >>> clock_summary([], prose=2)[0]
+    '没一条写成可照抄的命令，但另有 2 处散文里写着 `build --replay` —— 那个钟对它们一样在走，只是量不到判决'
+    >>> clock_summary([("docs/a.md", 3, ("过", "能过"))], prose=1)[0]
+    '带着「记录能有多旧」那个钟、能照抄来量的 1 条：全能过；另有 1 处散文里写着 `build --replay`（量不到判决）'
+    >>> clause, detail = clock_summary([
+    ...     ("docs/a.md", 3, ("退", "那份记录已经 49 小时了（上限 48）")),
+    ...     ("docs/a.md", 9, ("过", "那份记录 350 条判决、上限 72 小时，今天能过"))])
+    >>> clause
+    '带着「记录能有多旧」那个钟、能照抄来量的 2 条：1 条会退 1（那份记录已经 49 小时了 ×1）、1 条能过'
+    >>> detail
+    ['    会退 1：docs/a.md:3 ← 那份记录已经 49 小时了（上限 48）']
+    >>> clock_summary([("docs/a.md", 3, ("过", "能过")), ("docs/b.md", 9, ("过", "能过"))])[0]
+    '带着「记录能有多旧」那个钟、能照抄来量的 2 条：全能过'
+    >>> clock_summary([("docs/a.md", 3, ("问不出", "那份记录不在，猜不了"))])[0]
+    '带着「记录能有多旧」那个钟、能照抄来量的 1 条：1 条问不出（那份记录不在，猜不了 ×1）'
+    >>> clock_summary([("a.md", 1, ("退", "那份记录已经 49 小时了（上限 48）")),
+    ...                ("b.md", 2, ("退", "那份记录已经 49 小时了（上限 6）")),
+    ...                ("c.md", 3, ("退", "那份记录已经 49 小时了（上限 1）"))])[0]
+    '带着「记录能有多旧」那个钟、能照抄来量的 3 条：3 条会退 1（那份记录已经 49 小时了 ×3）'
+    >>> clock_summary([("a.md", 1, ("退", '那一轮（19:22）体检报过警，它判死的线路多半是假阴性（2.16）：'
+    ...                                     '本机 DNS 被虚拟网卡接管（fake-IP 段 198.18.0.0/15）：a → 198.18.0.51'))])[0]
+    '带着「记录能有多旧」那个钟、能照抄来量的 1 条：1 条会退 1（那一轮（19:22）体检报过警，它判死的线路多半是假阴性（2.16） ×1）'
+    >>> all("照抄" in clock_summary(r, prose=p)[0] for r, p in (          # selfcheck 靠这个词找它
+    ...     ([(("a.md", 1, ("退", "…")))], 0), ([(("a.md", 1, ("过", "…")))], 0),
+    ...     ([(("a.md", 1, ("问不出", "…")))], 0), ([], 3)))
+    True
+    """
+    more = (f"；另有 {prose} 处散文里写着 `build --replay`（量不到判决）" if rows and prose else
+            "" if not prose else
+            f"没一条写成可照抄的命令，但另有 {prose} 处散文里写着 `build --replay` "
+            "—— 那个钟对它们一样在走，只是量不到判决")
+    if not rows:
+        return more, []
+    bad = [(d, n, w) for d, n, (k, w) in rows if k == "退"]
+    ask = [(d, n, w) for d, n, (k, w) in rows if k == "问不出"]
+    good = [r for r in rows if r[2][0] == "过"]
+    head = f"带着「记录能有多旧」那个钟、能照抄来量的 {len(rows)} 条："
+    detail = [f"    {label}：{d}:{n} ← {w}" for label, group in
+              (("会退 1", bad), ("问不出", ask)) for d, n, w in group]
+    if not bad and not ask:
+        return head + "全能过" + more, detail
+    def gist(w: str) -> str:
+        """总结行里那条理由只留「哪一类」：破折号后面是补救建议、冒号后面是逐台明细、
+        「上限」那个数每条命令可以不一样 —— 三种都挤进总结行就没人读得完。全句在 `--verbose`。"""
+        return re.sub(r"（上限 \d+）", "", w.split("——")[0].split("：")[0]).strip()
+
+    def by_kind(group):
+        seen: dict[str, int] = {}
+        for _, _, w in group:
+            seen[gist(w)] = seen.get(gist(w), 0) + 1
+        return "、".join(f"{g} ×{c}" for g, c in seen.items())
+
+    bits = []
+    if bad:
+        bits.append(f"{len(bad)} 条会退 1（{by_kind(bad)}）")
+    if ask:
+        bits.append(f"{len(ask)} 条问不出（{by_kind(ask)}）")
+    if good:
+        bits.append(f"{len(good)} 条能过")
+    return head + "、".join(bits) + more, detail
+
+
 def check_one(target: list[str], body: str, *, verbose: bool = False) -> str:
     """一条命令的结论：空串＝没问题，否则说清哪儿不对。
 
@@ -383,6 +638,9 @@ def main(argv: list[str] | None = None) -> int:
     miss: list[tuple[str, int, str]] = []
     loose: list[tuple[str, int, str, int]] = []
     refs: set[str] = set()
+    clocks: list[tuple[str, int, tuple[str, str]]] = []
+    prose = 0
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
     for doc in paths:
         raw = (ROOT / doc).read_text(encoding="utf-8") if not doc.is_absolute() \
             else doc.read_text(encoding="utf-8")
@@ -390,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
         loose += [(str(doc), no, why, hid) for no, why, hid in skip_imbalance(raw)]
         text = strip_skipped(raw)
         refs |= script_refs(text)
+        prose += len(prose_clocks(text))
         miss += [(str(doc), no, why) for no, why in unrecognized(text)]
         for no, body in commands_in(text):
             tg = targets(body)
@@ -402,6 +661,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{doc}:{no} {why}\n    $ {body}")
             elif args.verbose:
                 print(f"{doc}:{no}    $ {body}")
+            # 第三层：这条命令带不带那个钟，带着的话今天照抄会怎样。
+            # 放在 `why` 之后：参数名本身就不对的行由上面那句报，不重复。
+            cfg = clock_inputs(body)
+            if cfg is not None:
+                verdict = clock_verdict(cfg, now=now)
+                clocks.append((str(doc), no, verdict))
+                if args.verbose:
+                    print(f"    钟：{verdict[0]} — {verdict[1]}")
 
     # 引用层：这一层不看命令，只看「文档里提到的脚本文件在不在」。
     # 一个名字可能两层都报（命令里写错、句子里也写错），所以两层的数分开列、不合并成一句。
@@ -431,9 +698,18 @@ def main(argv: list[str] | None = None) -> int:
     tail = ("；有 off/on 没配上，上面那个数是从少了命令的分母算的" if loose
             else f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose" if miss
             else "；该查的都查了" if n else "；这一轮一条都没扫到，上面那些 0 全是空的")
+    # 「哪些名字对得上」之外，还要说「哪些今天照抄跑不动」—— 后者是会不会自己过期决定的，
+    # 所以它排在最后。但**光是最后一行不够**：`selfcheck.conclusion()` 是从末尾往前找
+    # `CONCLUSION` 那批词的，这一句里必须带着其中一个词（「照抄」），否则 selfcheck 里
+    # 被印出来的还是上面那句「0 条对不上」，这一层的发现当场被藏回去（2.45 量出来的，
+    # 两边各钉了一格用例，改错实验 N11/N12 一边拆一头）。
+    clause, cdetail = clock_summary(clocks, prose=prose)
+    if args.verbose:
+        for line in cdetail:
+            print(line)
     print(f"\n扫了 {n} 条命令、{len(refs)} 个脚本名：{bad} 条命令、{len(dead)} 个脚本名对不上"
           + (f"（另有 {skipped} 段标了 off 的例子没查）" if skipped else "")
-          + tail)
+          + tail + (f"\n{clause}" if clause else ""))
     if hidden:
         print("（只提醒，没算进上面那个数）这几支脚本这些文档里没提过："
               + "、".join(f"scripts/{x}" for x in hidden))

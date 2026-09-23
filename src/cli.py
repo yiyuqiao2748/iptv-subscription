@@ -1654,7 +1654,29 @@ def stop_config(what: str, path, e: Exception, extra: str) -> int:
     return 1
 
 
-def cmd_build(argv: list[str]) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """`build` 那一条命令的参数表。单独成一个函数，是为了让**别人也能拿它解析同一行命令**。
+
+    2.45 的起因就是这件事没人能做：`scripts/check_doc_cmds.py` 想知道「文档里这行今天照抄会退几」，
+    只能自己写正则去猜 `--replay` 读的是哪份记录、上限是多少 —— 而 `--replay` 是
+    `nargs="?"`：`--replay --out /tmp/x` 里 `--out` **不是**它的取值（下一个 token 以 `-` 开头，
+    argparse 用 `const`），写正则的人十次里有八次会把 `--out` 当成记录路径。
+    那一晚我第一次量这件事就错了两次，所以这里把解析交给 argparse，不交给正则。
+
+    >>> ap = build_parser()
+    >>> ap.parse_args(["--replay"]).replay == str(PROBE_FILE)
+    True
+    >>> ap.parse_args(["--replay", "--out", "/tmp/x"]).replay == str(PROBE_FILE)   # --out 不是它的值
+    True
+    >>> ap.parse_args(["--replay", "data/output/untrusted/probe.json"]).replay
+    'data/output/untrusted/probe.json'
+    >>> ap.parse_args(["--replay"]).replay_max_age, ap.parse_args([]).replay_max_age
+    (48, 48)
+    >>> ap.parse_args(["--replay", "--replay-max-age", "6"]).replay_max_age   # 同一条命令里给它换上限
+    6
+    >>> ap.parse_args([]).replay      # 不带 --replay：空串，不是 None —— 闸只看这个
+    ''
+    """
     ap = argparse.ArgumentParser(prog="src.cli build", description="生成 APTV 订阅列表")
     ap.add_argument("--source", action="append", dest="sources",
                     help="临时指定上游（URL 或本地文件），可重复；给了它就忽略 sources.yaml")
@@ -1691,7 +1713,11 @@ def cmd_build(argv: list[str]) -> int:
                          "节目单本身优先从它的 cache 读，缓存里没有今天才联网）")
     ap.add_argument("--no-epg", action="store_true",
                     help="完全不读节目单：不改任何 tvg-id，头部地址回到「抄上游第一条」的老行为")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def cmd_build(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
     # 这两个是互相矛盾的两种「本轮的线路判决从哪来」，在碰网络之前先拦掉：
     # 再往下每一步（读上游、取节目单）都要花时间，而这个组合根本给不出答案。
     if args.verify and args.replay:

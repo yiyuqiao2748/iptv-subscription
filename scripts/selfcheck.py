@@ -166,7 +166,10 @@ def check_page(port: int) -> tuple[str, str]:
 
 
 # 各把尺的收尾句长得不一样，但都带这几个词之一。挑不到就印最后一行（不许印空）。
-CONCLUSION = ("合计", "比了", "扫了", "线路级", "同一张表", "换表了", "结论")
+# 「照抄」是 2.45 加的：命令尺那句「带着…那个钟、能照抄来量的 21 条：18 条会退 1…」是
+# **另外一行**，这个词不在名单上的时候，selfcheck 里印出来的永远是那句「0 条对不上；该查的都查了」
+# —— 也就是把这一节新装的那一层发现原样藏起来。两边各钉了一格用例（那边在 `clock_summary`）。
+CONCLUSION = ("合计", "比了", "扫了", "线路级", "同一张表", "换表了", "结论", "照抄")
 
 
 def conclusion(stdout: str) -> str:
@@ -183,6 +186,9 @@ def conclusion(stdout: str) -> str:
     '第 2 行'
     >>> conclusion("\\n \\n")
     '（没有任何输出）'
+    >>> conclusion("扫了 141 条命令：0 条对不上；该查的都查了\\n"
+    ...            "带着那个钟、能照抄来量的 21 条：18 条会退 1\\n")
+    '带着那个钟、能照抄来量的 21 条：18 条会退 1'
     """
     lines = [l.strip() for l in stdout.splitlines() if l.strip()]
     if not lines:
