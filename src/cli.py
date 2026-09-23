@@ -72,7 +72,8 @@ from src.check.epg import (  # noqa: E402
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
     AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
-from src.keys import check_keys, check_version  # noqa: E402
+from src.keys import (  # noqa: E402
+    _NOT_SET, check_keys, check_version, flag_value, order_value, shape_word, text_value)
 from src.match.matcher import load_index  # noqa: E402
 from src.match.normalize import quality_hint  # noqa: E402
 from src.output.writer import (  # noqa: E402
@@ -578,217 +579,6 @@ EPG_NOTES = {
 # `note` 是写给人看的为什么。
 # `backup_url` 从 2.44 起由这里读、跟着 `url` 一起交出去：以前是 build 和
 # `scripts/epg_check.py` 各写一份 YAML 读取，两份读法量出四种分歧（那一节有表）。
-
-
-_YAML_SHAPE = {"list": "一个列表", "dict": "一个字典（多缩进的那几行被并进来的？）",
-               "int": "一个数字", "float": "一个小数", "str": "一行字符串"}
-_FLAG_WORDS = {"true": True, "false": False, "yes": True, "no": False,
-               "on": True, "off": False, "1": True, "0": False}
-# 「没写这一格」和「写了个空值」是两件事，而 `d.get("k")` 把它们都读成 `None`。
-# 所以下面这几个助手的调用处传一个哨兵当 `.get()` 的默认值，助手才分得开这两种：
-# **没写** = 用默认值，**写了没填** = 停下来问。2.46 量出来的不是哲学：
-# `enabled:` 空着在 `config/sources.yaml` 那一侧的老读法里是「关」（那条源整个不进表），
-# 在 `config/epg.yaml` 那一侧是「开」—— 同一个空位两种相反下场，猜是不能猜的。
-_NOT_SET = object()
-# 2.44 那两句原话，原样搬出来当 `text_value()` 的默认值：节目单那几处调用不传参数，
-# 报错一个字都不该变（`text_value` 的第三格 doctest 把整句钉住，就是钉这一件事）。
-_ADDRESS_ADVICE = ("要写两条就分成 `url` 和 `backup_url`；要在一条里换行写，行首得加 `- `。"
-                   "这一格是当地址用的，安静地 str() 一下只会让它冒充成一个能用的："
-                   "非空，于是节目单算「启用」，而它又不以 http 开头。")
-
-
-# 这两个助手**收的是值**（`cfg.get("url")`），不收字典。
-# 为什么：让调用方写 `text_value(cfg, "url", …)` 更顺，但那样 `.get("url")` 就从
-# `load_epg_config` 的源码里消失了，而 2.42 那道闸量的正是「这段代码里字面读了哪些键」——
-# 名单上五格全部会变成「说是行为键却没读它」，闸当场瞎。改成收值，读取留在原处，
-# 闸一个字都不用动。（2.44 的改错实验里这一格是反着验的。）
-def shape_word(got) -> str:
-    """YAML 把那一格读成了什么形状 —— 一句人话；认不出的退回类型名。
-
-    和 `why_dead()` 同一条规矩：宁可旧说法，不编新说法。
-
-    这一格是 2.44 量出来才补的：`epg:` 直接写成一行地址时，报出来的是「读出来是**一个 str**」——
-    那句话要人自己去翻译「str = 一行字符串」，而它下面紧跟着的「不是一组键」才是重点。
-
-    >>> shape_word(["a"]), shape_word({"a": 1}), shape_word(8080), shape_word(1.5)
-    ('一个列表', '一个字典（多缩进的那几行被并进来的？）', '一个数字', '一个小数')
-    >>> shape_word("https://x/e.xml")
-    '一行字符串'
-    >>> shape_word(b"x")
-    '一个 bytes'
-    """
-    return _YAML_SHAPE.get(type(got).__name__, f"一个 {type(got).__name__}")
-
-
-def text_value(got, *, where: str, key: str, what: str = "一串地址",
-               advice: str = _ADDRESS_ADVICE) -> str:
-    """配置里那一格取成一句字符串；不是字符串就停下来，别 `str()` 成一个看着能用的样子。
-
-    `config/epg.yaml` 的 `url:` 后面直接换行缩进，YAML 就把它读成**列表**，而 2.44 之前
-    两处读法都是同一句 `str(cfg.get("url") or "").strip()` —— 列表被洗成 `"['a', 'b']"`：
-    非空（于是 `enabled` 判成 True），又不以 http 开头（于是 `epg_header_url()` 交出空串）。
-    当场跑出来的后果不在屏幕上，在表的第一行：出表退 0、那行写着
-    「节目单（缓存（epg.xml），['a', 'b']）」，而 `aptv.m3u`/`hunan.m3u` 头部的
-    `x-tvg-url` **整行没了** —— 电视从此没有节目单可拉，这个数还跟出口、网络都没关系。
-
-    认不出来的类型退回类型名（和 `why_dead()` 同一个规矩：宁可旧说法，不编新说法）。
-
-    这一层**不分**「没写这一格」和「写了个空值」（`flag_value`、`order_value` 分了）：
-    两种读出来都是空串，交给调用方那句「缺 `url` / 缺 `id`」，而那句话对两种情况都说得准。
-    开关那一格说不准 —— `enabled:` 空着到底是开还是关，只能问人，所以那里停。
-
-    `what`/`advice` 是 2.46 加的两个参数，为的是让 `config/sources.yaml` 的 `url`、`id`
-    共用这一层而**不必共用同一句建议**：那一份的 `url` 挂两条地址的修法和节目单不是一回事，
-    而 `id` 根本不是地址。两个默认值就是 2.44 那两句原话，所以节目单那几处一个字都没变
-    （下面第三格整句打出来，就是钉这一件事）。
-
-    >>> text_value("  https://x/e.xml  ", where="epg 段", key="url")
-    'https://x/e.xml'
-    >>> text_value(None, where="epg 段", key="url")     # 没写这一格 / `url:` 空着：交给默认值
-    ''
-    >>> try:
-    ...     text_value(["a", "b"], where="epg 段", key="url")
-    ... except ValueError as e:
-    ...     print(str(e))
-    epg 段 的 `url` 读出来是一个列表（['a', 'b']），不是一串地址 —— 要写两条就分成 `url` 和 `backup_url`；要在一条里换行写，行首得加 `- `。这一格是当地址用的，安静地 str() 一下只会让它冒充成一个能用的：非空，于是节目单算「启用」，而它又不以 http 开头。
-    >>> try:
-    ...     text_value(20260923, where="epg 段", key="cache")
-    ... except ValueError as e:
-    ...     print(str(e).split(" —— ")[0])
-    epg 段 的 `cache` 读出来是一个数字（20260923），不是一串地址
-    >>> try:
-    ...     text_value({"a": 1}, where="epg 段", key="url")
-    ... except ValueError as e:
-    ...     print(str(e).split(" —— ")[0])
-    epg 段 的 `url` 读出来是一个字典（多缩进的那几行被并进来的？）（{'a': 1}），不是一串地址
-    >>> try:                                   # 2.46：`id` 那一格不是地址，换成一句人话
-    ...     text_value(123, where="第 1 条源", key="id", what="一串文字", advice="给它加引号")
-    ... except ValueError as e:
-    ...     print(str(e))
-    第 1 条源 的 `id` 读出来是一个数字（123），不是一串文字 —— 给它加引号
-    """
-    if got is None:
-        return ""
-    if isinstance(got, str):
-        return got.strip()
-    raise ValueError(f"{where} 的 `{key}` 读出来是{shape_word(got)}（{got!r}），不是{what} —— {advice}")
-
-
-def flag_value(got, *, where: str, key: str, default: bool = True) -> bool:
-    """`enabled` 那一类：只认「是/否」那几种写法，别拿 Python 的真假去猜人的意思。
-
-    同一句 `bool(cfg.get("enabled", True))` 在 2.44 之前会把 `enabled: "false"` 读成
-    **真** —— 引号一打，「关掉节目单」这件事就反了。而这正是这个项目反复钉的那一种：
-    `enabled` 写歪等于没写（2.39），而 `enabled: "false"` 比写歪更糟，它长得完全正确。
-
-    YAML 自己认的 `yes`/`no`/`on`/`off` 到 pyyaml 手里已经是布尔了；这里补的是**人加了引号**、
-    或者写成 `0`/`1` 的那几种。认不出来的照样停下来 —— 「到底开没开」不该有个模糊答案。
-
-    `None` 和 `_NOT_SET` 在 2.46 之前是同一件事（都走「交给默认值」），量过才发现不是：
-    没写这一格 = 按默认，写了 `enabled:` 而后面空着 = 一个谁都没填过的格子，
-    而老读法在两份配置里把它猜成相反的两个意思（`_NOT_SET` 上面那段记着是哪两种）。
-
-    >>> flag_value(False, where="epg 段", key="enabled")
-    False
-    >>> flag_value("false", where="epg 段", key="enabled")      # 加引号的那个：照人的意思办
-    False
-    >>> flag_value("TRUE", where="epg 段", key="enabled")
-    True
-    >>> flag_value(_NOT_SET, where="epg 段", key="enabled")      # 没写这一格 = 默认开
-    True
-    >>> flag_value(_NOT_SET, where="epg 段", key="enabled", default=False)
-    False
-    >>> flag_value(0, where="epg 段", key="enabled")             # 裸数字：只有 0/1 算话
-    False
-    >>> try:                                 # 2.46：写了个空值，不猜
-    ...     flag_value(None, where="epg 段", key="enabled")
-    ... except ValueError as e:
-    ...     print(str(e))
-    epg 段 的 `enabled` 写了却没填值 —— 开关这一格要的是 `true` 或 `false`，空着既不算是也不算是否
-    >>> try:
-    ...     flag_value("off-ish", where="epg 段", key="enabled")
-    ... except ValueError as e:
-    ...     print(str(e).split(" —— ")[1])
-    这一格是个开关，而 bool('false') 是真：加引号反而关不掉，写成一个认不出的词更不能替你猜
-    """
-    if got is _NOT_SET:
-        return default
-    if got is None:
-        raise ValueError(f"{where} 的 `{key}` 写了却没填值 —— "
-                         "开关这一格要的是 `true` 或 `false`，空着既不算是也不算是否")
-    if isinstance(got, bool):
-        return got
-    if isinstance(got, int) and got in (0, 1):
-        return bool(got)
-    if isinstance(got, str) and got.strip().lower() in _FLAG_WORDS:
-        return _FLAG_WORDS[got.strip().lower()]
-    raise ValueError(f"{where} 的 `{key}` 是 {got!r}，是/否之外的写法认不了 —— "
-                     "这一格是个开关，而 bool('false') 是真：加引号反而关不掉，"
-                     "写成一个认不出的词更不能替你猜")
-
-
-def order_value(got, *, where: str, key: str, default: int) -> int:
-    """`priority` 那一类：要一个整数，越小越靠前；认不出来就停下来，别 `int()` 出一个数继续跑。
-
-    `int(s.get("priority", i + 1))` 是这三格里最安静的一处，因为它**几乎总能出一个数**：
-    `priority: 1.5` 砍成 1，`priority: true` 也算 1（2.46 实测），`priority: 前三` 抛的那句是
-    `invalid literal for int() with base 10: '前三'` —— 一路 ValueError 被 `cmd_build` 接住了，
-    屏幕上剩下这句英文，而它说的是「int() 失败」，不是「你把序号写成了中文」。
-    更糟的是 `priority:` 空着：`int(None)` 是 **TypeError**，不在接住的那两种里 ——
-    实测退 1、stdout 一个字都没有、`--out` 那个目录根本没建，屏幕上只有一段 traceback。
-
-    收 `_NOT_SET`（没写这一格）时退回**书写顺序**，那是这份配置自己的规矩（`priority` 的
-    注释写着「默认按本节书写顺序」），不是猜。带引号的 `"2"` 认：它和 `2` 是同一个数，
-    这里没有「加引号就反了」那件事（那是开关那一格，见 `flag_value`）。
-
-    >>> order_value(_NOT_SET, where="第 1 条源", key="priority", default=4)     # 没写 = 书写顺序
-    4
-    >>> order_value(2, where="第 1 条源", key="priority", default=4)
-    2
-    >>> order_value("2", where="第 1 条源", key="priority", default=4)           # 带引号的同一个数
-    2
-    >>> order_value(" -3 ", where="第 1 条源", key="priority", default=4)        # 手工源那种负数也认
-    -3
-    >>> try:
-    ...     order_value(1.5, where="第 1 条源", key="priority", default=4)
-    ... except ValueError as e:
-    ...     print(str(e))
-    第 1 条源 的 `priority` 是 1.5，是一个小数 —— 这一格是排序用的整数，而 `int(1.5)` 会把它砍成 1：安静地换掉你写的那个数，第一线是谁就跟着变了
-    >>> try:                              # `priority: true` 老读法算 1，因为它「是个数」
-    ...     order_value(True, where="第 1 条源", key="priority", default=4)
-    ... except ValueError as e:
-    ...     print(str(e).split(" —— ")[0])
-    第 1 条源 的 `priority` 是 True，不是一个整数
-    >>> try:
-    ...     order_value("前三", where="第 1 条源", key="priority", default=4)
-    ... except ValueError as e:
-    ...     print(str(e).split(" —— ")[0])
-    第 1 条源 的 `priority` 是 '前三'，不是一个整数（读出来是一行字符串）
-    >>> try:
-    ...     order_value(None, where="第 1 条源", key="priority", default=4)
-    ... except ValueError as e:
-    ...     print(str(e).split(" —— ")[0])
-    第 1 条源 的 `priority` 写了却没填值
-    """
-    if got is _NOT_SET:
-        return default
-    if got is None:
-        raise ValueError(f"{where} 的 `{key}` 写了却没填值 —— "
-                         "这一格要的是整数（越小越靠前），空着不算「按默认」：`int(None)` 是 TypeError，"
-                         "而它不在 `cmd_build` 接住的那两种里，整场出表连一句人话都不会有")
-    if isinstance(got, bool):
-        raise ValueError(f"{where} 的 `{key}` 是 {got!r}，不是一个整数 —— 排序权重得写数字"
-                         "（`priority: 3`），而 `int(True)` 是 1：老读法把它当成「排第一」")
-    if isinstance(got, int):
-        return got
-    if isinstance(got, str) and got.strip().lstrip("-+").isdigit():
-        return int(got.strip())
-    if isinstance(got, float):
-        raise ValueError(f"{where} 的 `{key}` 是 {got!r}，是一个小数 —— 这一格是排序用的整数，"
-                         f"而 `int({got})` 会把它砍成 {int(got)}：安静地换掉你写的那个数，"
-                         "第一线是谁就跟着变了")
-    raise ValueError(f"{where} 的 `{key}` 是 {got!r}，不是一个整数（读出来是{shape_word(got)}） —— "
-                     "这一格要写排序用的整数（`priority: 3`，越小越靠前）")
 
 
 def load_epg_config(path: Path) -> dict:
@@ -1983,8 +1773,9 @@ def cmd_build(argv: list[str]) -> int:
         print("config/sources.yaml 里没有启用的源。", file=sys.stderr)
         return 1
     # 手工线路在碰上游之前读 —— 2.37 给 channels.yaml 立过同一条规矩：读不进去这件事
-    # 该在花掉那几分钟抓网络之前说。它也不再是「跳过那一行」的宽容路径：`expires` 写歪
-    # 就是永不过期（src/keys.py），那种错只能停下来。
+    # 该在花掉那几分钟抓网络之前说。停下来的是**键名**那一档（`expires` 写歪 = 永不过期，
+    # src/keys.py）；2.47 起**值的形状**写坏只停那一条线路（理由进 `skipped`、印在屏幕上），
+    # 因为这一份的其余各条是各自核对过的 —— 分档的理由在 `parse_channels` 的 docstring 里。
     try:
         local_lines = [] if args.skip_local else load_local(LOCAL_SOURCES_FILE)
     except (OSError, ValueError, yaml.YAMLError) as e:
