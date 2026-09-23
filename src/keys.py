@@ -502,6 +502,167 @@ def date_value(got, *, where: str, key: str) -> str:
                      "裸数字请先想清楚是不是要它当文字，排成两条那是要写两件事，分开写")
 
 
+# 2.48：**列表**那一档，来自 `config/channels.yaml`。它和 `text_value` 那种「坏值被洗成
+# 一个看着能用的字符串」正相反 —— 这一族的代码一个 `str()` 都没有，它直接把值交给 stdlib
+# 去遍历（`for p in patterns`、`set(groups)`、`*aliases`），于是**一行字符串被逐字符摊开**。
+# 普查里三格量到的都是这个（`/tmp/c248.py`，改前的 dump）：
+#   `exclude_patterns: STB`  → 三个单字正则 `S`/`T`/`B`：`is_excluded("CCTV-5试验")` 变 True
+#                              （它含 `T`），带任何 s/t/b 字母的上游条目一律进不了表；
+#   `excluded_groups: 🕘️更新时间` → 六个字符，那条伪频道**不再被整组丢掉**；
+#   `aliases: 湖南经视`      → 湖/南/经/视 四个单字进匹配表，于是归一化后只剩一个「湖」的
+#                              上游条目被并进「湖南卫视」，而本来那个别名没人认得。
+# 三格全部**零告警**。所以这一档不许等下游发现：读它的那段代码就得问。
+def str_list_value(got, *, where: str, key: str, advice: str) -> list[str]:
+    """配置里那一格要写成「一条一条列出来」；写成一行文字会被逐字符读，那是最坏的一种。
+
+    三种形状各自有各自的答法：
+
+    * **没写这一格**（`_NOT_SET`）= 一份都没有，合法 —— `aliases` 十条规则里通常有几条不写；
+    * **写了这一格却没填**（`None`）= 停下来 —— 老读法在这里读成 `[]`，也就是
+      「那份黑名单整个没了」，而 `or []` 一句让「没写」和「写了没填」长得一样；
+    * **空列表 `[]`** = 放过 —— 那是显式地写「一条都没有」，和忘了填不是一件事
+      （这一条与 2.47 的 `expires` 同一口径：**合并要有文件里的话撑着**，
+      `config/channels.yaml` 的 `# ---- 名称黑名单，命中即丢 ----` 那几行说的是「命中即丢」，
+      所以空列表按人的字面意思办）。
+
+    列表里每一条还必须是**非空的一行文字**：`[湖南经视, 老名]` 里混一个 `81` 或一个空位，
+    老读法是一个交给 `normalize()` 当场崩、一个安静地少一条别名。
+
+    >>> str_list_value(["a", "b"], where="频道配置", key="aliases", advice="…")
+    ['a', 'b']
+    >>> str_list_value([" a ", "b"], where="频道配置", key="aliases", advice="…")   # 首尾空白不是另一件事
+    ['a', 'b']
+    >>> str_list_value(_NOT_SET, where="频道配置", key="aliases", advice="…")        # 没写这一格
+    []
+    >>> str_list_value([], where="频道配置", key="exclude_patterns", advice="…")     # 显式的「一条都没有」
+    []
+    >>> try:                                    # 最疼的一种：少写方括号
+    ...     str_list_value("STB", where="频道配置", key="exclude_patterns", advice="得写成列表")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[0])
+    频道配置 的 `exclude_patterns` 读出来是一行字符串（'STB'），不是一条一条列出来的名单
+    >>> try:                                    # 写了没填：老读法读成「一份都没有」
+    ...     str_list_value(None, where="频道配置", key="exclude_patterns", advice="得写成列表")
+    ... except ValueError as e:
+    ...     print("停下来" if "没填" in str(e) else str(e))
+    停下来
+    >>> try:                                    # 列表里混一个数字
+    ...     str_list_value(["测试", 81], where="第 1 条", key="aliases", advice="…")
+    ... except ValueError as e:
+    ...     print(str(e))
+    第 1 条 的 `aliases` 第 2 条读出来是一个数字（81），不是一行文字 —— 一条名单里每一条都得是可用的那一格（空着的那条会被安静地少掉，剩下的会被交给匹配）。…
+    >>> try:                                    # 列表里留一个空位
+    ...     str_list_value(["测试", "  "], where="第 1 条", key="aliases", advice="…")
+    ... except ValueError as e:
+    ...     print(str(e))
+    第 1 条 的 `aliases` 第 2 条是空的，不是一行文字 —— 一条名单里每一条都得是可用的那一格（空着的那条会被安静地少掉，剩下的会被交给匹配）。…
+    >>> try:                                    # 整个写成字典
+    ...     str_list_value({"测试": 1}, where="频道配置", key="exclude_patterns", advice="…")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[0])
+    频道配置 的 `exclude_patterns` 读出来是一个字典（多缩进的那几行被并进来的？）（{'测试': 1}），不是一条一条列出来的名单
+    >>> try:                                    # 排成两条：老读法把它当一条正则，当场崩
+    ...     str_list_value(["测试", ["STB", "广告"]], where="频道配置", key="exclude_patterns",
+    ...                    advice="…")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[0])
+    频道配置 的 `exclude_patterns` 第 2 条读出来是一个列表（['STB', '广告']），不是一行文字
+    >>> try:                                    # 每格单独一句「怎么改」：调用方给的那句原样落在末尾
+    ...     str_list_value("STB", where="w", key="k", advice="得写成 [STB]")
+    ... except ValueError as e:
+    ...     print(str(e).endswith("得写成 [STB]"))
+    True
+    """
+    if got is _NOT_SET:
+        return []
+    if got is None:
+        raise ValueError(f"{where} 的 `{key}` 写了这一格却没填 —— 老读法在这里读成「一条都没有」，"
+                         f"和整格没写一模一样，所以这一句不拦，下一轮那份名单就整个没了；"
+                         f"真想要「一条都没有」就整格删掉，或者写成 `[]`。{advice}")
+    if isinstance(got, str):
+        raise ValueError(f"{where} 的 `{key}` 读出来是一行字符串（{got!r}），"
+                         f"不是一条一条列出来的名单 —— 这一格会被逐个字符读："
+                         f"{got!r} 读成 {len(got.strip())} 条 {list(got.strip())}。{advice}")
+    if not isinstance(got, (list, tuple)):
+        raise ValueError(f"{where} 的 `{key}` 读出来是{shape_word(got)}（{got!r}），"
+                         f"不是一条一条列出来的名单 —— {advice}")
+    out = []
+    for j, item in enumerate(got, 1):
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+            continue
+        why = "是空的" if isinstance(item, str) else f"读出来是{shape_word(item)}（{item!r}）"
+        raise ValueError(f"{where} 的 `{key}` 第 {j} 条{why}，不是一行文字 —— "
+                         f"一条名单里每一条都得是可用的那一格"
+                         f"（空着的那条会被安静地少掉，剩下的会被交给匹配）。{advice}")
+    return out
+
+
+def str_map_value(got, *, where: str, key: str, advice: str) -> dict[str, str]:
+    """配置里那一格要写成「左边一个名字：右边一个名字」那种一对一；两侧的键、值都问形状。
+
+    `config/channels.yaml` 的 `upstream_group_map` 只有这一种读法在意键的形状：
+    键是**上游分组名的原文**，写成数字（`123: cctv`）以后永远匹配不上任何上游条目，
+    而它安静得像「上游就没给这一组」—— 普查 C14 量到的正是这个：整组映射那一条
+    从 `matched_by='group-map'` 变成 `None`，那个台不进表，零告警。
+    值写成两条（`{📺央视频道: [cctv, weisheng]}`）更阴：构造照样 ok，
+    **用到那一刻**才崩（`self.groups[target]` → `TypeError: unhashable type: 'list'`），
+    也就是在读上游、算完匹配之后 —— 普查 C10。
+
+    >>> str_map_value({"a": "b"}, where="频道配置", key="upstream_group_map", advice="…")
+    {'a': 'b'}
+    >>> str_map_value(_NOT_SET, where="频道配置", key="upstream_group_map", advice="…")
+    {}
+    >>> str_map_value({}, where="频道配置", key="upstream_group_map", advice="…")
+    {}
+    >>> try:                          # 写成一行
+    ...     str_map_value("cctv", where="频道配置", key="upstream_group_map", advice="…")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[0])
+    频道配置 的 `upstream_group_map` 读出来是一行字符串（'cctv'），不是一对一对的「上游分组名: 分组 id」
+    >>> try:                          # 老读法在这里是 `dict(...)` 的一句英文崩栈
+    ...     str_map_value([["a", "b"]], where="频道配置", key="upstream_group_map", advice="…")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[0])
+    频道配置 的 `upstream_group_map` 读出来是一个列表（[['a', 'b']]），不是一对一对的「上游分组名: 分组 id」
+    >>> try:                          # 键是数字：永远不会命中
+    ...     str_map_value({123: "cctv"}, where="频道配置", key="upstream_group_map", advice="…")
+    ... except ValueError as e:
+    ...     print(str(e))
+    频道配置 的 `upstream_group_map` 第 1 对的键读出来是一个数字（123），不是一行文字 —— 这一格是「上游分组名: 分组 id」一对一，左边那串要和上游 `group-title` **原文对上**，右边那串要是 `groups` 里定义过的 id。…
+    >>> try:                          # 值是列表：构造过，用到才崩
+    ...     str_map_value({"a": ["b", "c"]}, where="频道配置", key="upstream_group_map", advice="…")
+    ... except ValueError as e:
+    ...     print(str(e))
+    频道配置 的 `upstream_group_map` 第 1 对的值读出来是一个列表（['b', 'c']），不是一行文字 —— 这一格是「上游分组名: 分组 id」一对一，左边那串要和上游 `group-title` **原文对上**，右边那串要是 `groups` 里定义过的 id。…
+    >>> try:                          # 每格单独一句「怎么改」：调用方给的那句原样落在末尾
+    ...     str_map_value("cctv", where="w", key="k", advice="这一格要写成一对一")
+    ... except ValueError as e:
+    ...     print(str(e).endswith("这一格要写成一对一"))
+    True
+    """
+    if got is _NOT_SET:
+        return {}
+    if got is None:
+        raise ValueError(f"{where} 的 `{key}` 写了这一格却没填 —— 老读法在这里读成「一条映射都没有」，"
+                         f"于是名单没接住的上游分组整批落成未匹配；真要「一条都没有」就整格删掉。{advice}")
+    if not isinstance(got, dict):
+        raise ValueError(f"{where} 的 `{key}` 读出来是{shape_word(got)}（{got!r}），"
+                         f"不是一对一对的「上游分组名: 分组 id」 —— {advice}")
+    out: dict[str, str] = {}
+    for j, (k, v) in enumerate(got.items(), 1):
+        for side, val in (("键", k), ("值", v)):
+            if isinstance(val, str) and val.strip():
+                continue
+            why = "是空的" if isinstance(val, str) else f"读出来是{shape_word(val)}（{val!r}）"
+            raise ValueError(f"{where} 的 `{key}` 第 {j} 对的{side}{why}，不是一行文字 —— "
+                             f"这一格是「上游分组名: 分组 id」一对一，"
+                             f"左边那串要和上游 `group-title` **原文对上**，"
+                             f"右边那串要是 `groups` 里定义过的 id。{advice}")
+        out[k.strip()] = v.strip()
+    return out
+
+
 def reads(src: str) -> set[str]:
     """那段代码里以**字面量**读到的键名：`d.get("k")` 和 `d["k"]`，只算读、不算写。
 

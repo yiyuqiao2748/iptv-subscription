@@ -16,7 +16,8 @@ from typing import Any, Iterable
 
 import yaml
 
-from src.keys import check_keys, check_version
+from src.keys import (_NOT_SET, check_keys, check_version, shape_word, str_list_value,
+                      str_map_value, text_value)
 from src.match.normalize import normalize
 from src.parse.m3u import Entry
 
@@ -43,6 +44,41 @@ RULE_NOTES = {
     "aliases": "上游那些花名认不认得它 —— 少一个别名就安静地少对上一批线路",
     "tvg_id": "电子节目单把它对到谁",
 }
+
+# 2.48：每格单独一句「怎么改」（§2.46/§2.47 各记过一次：抄一句通用建议等于把人赶到错的那一行）。
+# 这一族的坏法与 `sources.yaml` 不同：代码不 `str()` 洗值，而是**把值直接交给 stdlib 遍历**
+# （`for p in patterns`、`set(groups)`、`*aliases`、`unicodedata.normalize`），
+# 所以一行字符串会被逐字符摊开、一个数字会当场崩、一个 0 会被说成「缺这一格」。
+# 下面每一句都带着普查里量到的那个后果，不写「请检查格式」。
+_ALIASES_ADVICE = ("这一格是上游可能出现的其他写法，得写成列表（`aliases: [湖南经视, 经视]`，"
+                   "或者一行一条 `- 湖南经视`）。2.48 实测：`aliases: 湖南经视` 会被逐个字符读，"
+                   "于是 湖/南/经/视 四个单字进了匹配表 —— 归一化后只剩一个「湖」的上游条目"
+                   "会被并进这个台，而本来那个别名反而没人认得（表上只是少了几条线路，看不出来）")
+_PATTERNS_ADVICE = ("这一格是名称黑名单，每一条是一段正则片段，得写成列表（`exclude_patterns: [测试, STB]`，"
+                    "或一行一条）。2.48 实测：`exclude_patterns: STB` 会被逐个字符读成 "
+                    "`S`、`T`、`B` 三条正则，于是名字里带任何一个 s/t/b 的上游条目一律被丢掉"
+                    "（`CCTV-5试验` 含 `T` 也算命中），而屏幕上什么都不会说")
+_EXCLUDED_ADVICE = ("这一格是「整组丢掉」的上游分组名，得写成列表（一行一条 `- 🕘️更新时间`）。"
+                    "2.48 实测：写成一行会被逐个字符读成六个字符（含 emoji 的变体选择符），"
+                    "于是那一条伪频道不再被丢掉，会跟着上游整组进表")
+_MAP_ADVICE = ("这一格是「上游分组名: 本文件的分组 id」的一对一，得写成缩进的对（"
+               "`📺央视频道: cctv` 一行一对）。2.48 实测：键写成数字永远匹配不上"
+               "（那一组的台安静地不进表），值写成两条则是构造通过、用到那一刻才崩")
+_NAME_ADVICE = ("这一格是这个台的标准名，表上显示的就是它，得写成一行文字（`name: 湖南卫视`）。"
+                "它是拿去匹配的那把钥匙：2.48 实测 `name:` 排成两条时老读法直接崩在 "
+                "`normalize()` 上（一段 traceback，`cmd_build` 接不住），而 R08 量到 `name: 0` "
+                "会被说成「缺 name」—— 明明写了，只是不是文字")
+_GROUP_ADVICE = ("这一格是 `groups` 里定义过的分组 id（`group: hunan_local`），得写成一行文字。"
+                 "2.48 实测 `group: 0` 会被说成「缺 group」（其实写了），R10 量到排成两条 "
+                 "会崩在「这一组在不在 groups 里」那一步 —— 而这一句本来要说的只是 id 对不对得上")
+_TVG_ADVICE = ("这一格是电子节目单里这个台的名字（`tvg_id: hunan`），得写成一行文字；"
+               "留空就是沿用上游那个 id（这份文件顶部写着这条规矩）。2.48 实测：写成数字"
+               "或两条时老读法崩在 `.strip()` 上，而 `0123` 那种带前导零的会被 YAML 按八进制读成 83")
+_ID_ADVICE = ("这一格是分组的内部名字，`channels` 靠它引用这一组，得写成一行文字（`id: hunan_local`）。"
+              "2.48 实测：写成两条会当场崩在「拿它当字典的键」那一步（unhashable），"
+              "G02 量到 `id: 0` 会被说成「这条不是 id+title 那种字典」—— 它是那种字典，只是这一格写歪了")
+_TITLE_ADVICE = ("这一格是电视上那一组显示出来的名字，得写成一行文字（`title: \"📍 湖南本地\"`）。"
+                 "2.48 实测 `title: 123` 一路无人拦，最后原样写进每张表的 `group-title` 里")
 
 
 @dataclass(slots=True)
@@ -127,6 +163,120 @@ class ChannelIndex:
     ...     print("`channel`" in str(e) and "最像是" in str(e))
     True
 
+    值的形状（2.48）。这一族和 `sources.yaml` 那一种不一样：这里没有 `str()` 洗值，
+    代码把值直接交给 stdlib 遍历（`for p in patterns`、`set(groups)`、`*aliases`），
+    所以「少写一个方括号」不是洗成一个假字符串，而是**逐字符摊开**。
+    下面三格就是普查里那三格零告警的（`/tmp/c248.py` 的 C02 / C06 / R01）：
+
+    >>> def one(**kw):                 # 一份什么都对的底本，只换要问的那一格
+    ...     cfg = {"groups": [{"id": "g", "title": "G"}],
+    ...            "channels": [{"name": "湖南卫视", "group": "g", "aliases": ["湖南经视"]}]}
+    ...     cfg.update(kw)
+    ...     return cfg
+    >>> def err(cfg):                  # 拿到那句人话；没报错就返回空串，断言照样是红的
+    ...     try:
+    ...         ChannelIndex(cfg)
+    ...     except ValueError as e:
+    ...         return str(e)
+    ...     return ""
+    >>> def diag(cfg):                 # 只要「诊断」那半句。「怎么改」那半句里会出现
+    ...     return err(cfg).split(" —— ")[0]   # 「缺 name」这种词，拿整句去断言会把
+    ...                                        # 「已经不说它了」断成「还在说它」——
+    ...                                        # 这一格是第一遍跑红才暴露的（见 §2.48 记的那条）
+    >>> "读成 3 条 ['S', 'T', 'B']" in err(one(exclude_patterns="STB"))   # 一条黑名单变三条单字正则
+    True
+    >>> "读成 6 条 ['🕘', '️', '更', '新', '时', '间']" in err(one(excluded_groups="🕘️更新时间"))
+    True
+    >>> print(err(one(channels=[{"name": "湖南卫视", "group": "g", "aliases": "湖南经视"}]))
+    ...       .split(" —— ")[0])
+    channels 第 1 条 的 `aliases` 读出来是一行字符串（'湖南经视'），不是一条一条列出来的名单
+
+    「没写这一格」「写了没填」「排成一个空列表」在老读法里是同一件事（`or []`），
+    现在分开：没写 = 没有，空列表 = 显式的「一条都不要」，写了没填 = 停下来问
+    （这一格合并的前提和 2.47 的 `expires` 一样，是**文件里写着的话** ——
+    `config/channels.yaml` 那句 `# ---- 名称黑名单，命中即丢 ----` 说的是命中即丢，
+    空列表按字面就是「谁都不丢」，而「写了没填」不是任何人表过态的意思）。
+
+    >>> "没填" in err(one(exclude_patterns=None))
+    True
+    >>> ChannelIndex(one(exclude_patterns=[])).exclude_res
+    []
+    >>> "exclude_patterns" in err(one())                        # 整格没写：一句话都没有
+    False
+
+    坏正则也在这格上（`测试(` 那种）：老读法抛的是 `re.error`，一段没有「第几条」的崩栈。
+
+    >>> print(err(one(exclude_patterns=["测试("])).split("——")[0].strip())
+    频道配置 的 `exclude_patterns` 第 1 条 '测试(' 不是一段能用的正则片段（missing ), unterminated subpattern，位置 2）
+
+    一对一那格（`upstream_group_map`）两侧都问：键写成数字永远匹配不上（普查 C14），
+    值排成两条更阴 —— 构造通过，**用到那一刻**才崩（普查 C10，崩在匹配算完之后）。
+
+    >>> "第 1 对的键" in err(one(upstream_group_map={123: "g"}))
+    True
+    >>> "第 1 对的值" in err(one(upstream_group_map={"📺央视频道": ["g", "h"]}))
+    True
+
+    误诊那一族（普查 G02 / R08 / R09）：写了、但不是文字，以前统一报「缺这一格」。
+
+    >>> "缺 name" in diag(one(channels=[{"name": 0, "group": "g"}]))
+    False
+    >>> "读出来是一个数字（0）" in diag(one(channels=[{"name": 0, "group": "g"}]))
+    True
+    >>> "缺 group" in diag(one(channels=[{"name": "x", "group": 0}]))
+    False
+    >>> "缺 group" in diag(one(channels=[{"name": "x"}]))         # 真漏写的还报「缺」，那句没动
+    True
+
+    「这是谁」那一半（`what`）也要每格各说一句 —— 只断言「怎么改」会在 `name` 这格漏掉：
+    改错实验 M10 把 `name` 的 `what=` 摘掉后，九格断言全绿（那句还带着自己的 advice，
+    只是「不是…」后面跟的是默认的「一串文字」）。这一格是 M10 逼出来的。
+
+    >>> "不是一个台的名字" in err(one(channels=[{"name": ["a", "b"], "group": "g"}]))
+    True
+    >>> "不是电子节目单里这个台的名字" in err(one(channels=[{"name": "x", "group": "g", "tvg_id": ["a"]}]))
+    True
+    >>> "不是一个分组 id（`groups` 里定义过的那种" in err(one(channels=[{"name": "x", "group": 0}]))
+    True
+    >>> "不是一个分组 id（一行文字）" in err(one(groups=[{"id": ["a"], "title": "T"}]))
+    True
+    >>> "不是电视上那一组显示的名字" in err(one(groups=[{"id": "g", "title": 1}]))
+    True
+
+    `groups` 那一条「写了、但是空的」仍旧报「缺」，只是这一句要报得出缺的是哪一半、
+    两个都缺时说得清是两个（普查 G03：以前 `title:` 空着会被上面那句误诊卡住）。
+
+    >>> "groups 第 1 条缺 title" in diag(one(groups=[{"id": "g", "title": ""}]))
+    True
+    >>> "缺 id 和 title" in err(one(groups=[{"id": "", "title": None}]))
+    True
+
+    九个「怎么改」各说一句，而且每一句都在被钉住的通路上（2.47 那条规矩：
+    只有走得到的分支才算量过）：
+
+    >>> probes = [(one(exclude_patterns="STB"), _PATTERNS_ADVICE),
+    ...           (one(excluded_groups="x"), _EXCLUDED_ADVICE),
+    ...           (one(channels=[{"name": "x", "group": "g", "aliases": "y"}]), _ALIASES_ADVICE),
+    ...           (one(upstream_group_map="g"), _MAP_ADVICE),
+    ...           (one(channels=[{"name": ["a", "b"], "group": "g"}]), _NAME_ADVICE),
+    ...           (one(channels=[{"name": "x", "group": 0}]), _GROUP_ADVICE),
+    ...           (one(channels=[{"name": "x", "group": "g", "tvg_id": ["a"]}]), _TVG_ADVICE),
+    ...           ({"groups": [{"id": ["a"], "title": "T"}],
+    ...            "channels": [{"name": "x", "group": "g"}]}, _ID_ADVICE),
+    ...           ({"groups": [{"id": "g", "title": 1}],
+    ...            "channels": [{"name": "x", "group": "g"}]}, _TITLE_ADVICE)]
+    >>> [advice[:8] in err(cfg) for cfg, advice in probes]
+    [True, True, True, True, True, True, True, True, True]
+    >>> len({advice for _, advice in probes})                    # 九句互不相同，不是一句通用建议
+    9
+
+    真在用的那一份过得过这道闸（闸不能只挡临时字典；96 个台、181 个匹配键）：
+
+    >>> real = Path(__file__).resolve().parents[2] / "config" / "channels.yaml"
+    >>> live = load_index(real)
+    >>> len(live.rules), sum(len(r.keys) for r in live.rules), live.group_title("hunan_local")
+    (96, 181, '📍 湖南本地')
+
     三份名单和 `__init__` 读的那批键对得上吗（2.42）—— 这份配置的名单是三层的
     （顶层 / `groups` 每条 / `channels` 每条），所以并成一次问。
 
@@ -154,20 +304,53 @@ class ChannelIndex:
         groups = cfg.get("groups") or []
         if not isinstance(groups, list):
             raise ValueError(f"groups 读出来是 {type(groups).__name__}，应该是列表")
+        # 2.48：这一层以前只有一个问题 ——「是不是 id + title 那种字典」，于是三种不同的事
+        # 挤进同一句话：`id: 0`（写了，但不是文字）、`title:`（写了没填）、整条不是字典。
+        # 前两种被说成「不是那种字典」是**误诊**（普查 G02/G04），第三种才是。现在分开问。
+        checked: list[tuple[str, str]] = []
         for i, g in enumerate(groups):
-            if not isinstance(g, dict) or not g.get("id") or not g.get("title"):
-                raise ValueError(f"groups 第 {i + 1} 条不是「id + title」那种字典（现在读到的："
-                                 f"{str(g)[:40] if isinstance(g, dict) else type(g).__name__}）")
-            for warn in check_keys(g, where=f"groups 第 {i + 1} 条", known=GROUP_KEYS,
-                                   notes=GROUP_NOTES):
+            at = f"groups 第 {i + 1} 条"
+            if not isinstance(g, dict):
+                raise ValueError(f"{at}不是「id + title」那种字典（现在读到的："
+                                 f"{type(g).__name__}）")
+            for warn in check_keys(g, where=at, known=GROUP_KEYS, notes=GROUP_NOTES):
                 print(f"⚠️ {warn}", file=sys.stderr)
+            gid = text_value(g.get("id"), where=at, key="id",
+                             what="一个分组 id（一行文字）", advice=_ID_ADVICE)
+            title = text_value(g.get("title"), where=at, key="title",
+                               what="电视上那一组显示的名字（一行文字）", advice=_TITLE_ADVICE)
+            if not gid or not title:
+                lack = " 和 ".join(n for n, v in (("id", gid), ("title", title)) if not v)
+                raise ValueError(f"{at}缺 {lack}（现在读到的：{str(g)[:40]}）—— "
+                                 "groups 这一层每条都得有 id 和 title")
+            checked.append((gid, title))
         self.groups: dict[str, dict[str, Any]] = {
-            g["id"]: {"title": g["title"], "order": i}
-            for i, g in enumerate(groups)
+            gid: {"title": title, "order": i}
+            for i, (gid, title) in enumerate(checked)
         }
-        self.group_map: dict[str, str] = dict(cfg.get("upstream_group_map") or {})
-        self.excluded_groups: set[str] = set(cfg.get("excluded_groups") or [])
-        self.exclude_res = [re.compile(p, re.I) for p in (cfg.get("exclude_patterns") or [])]
+        # 这三格都是「一条一条列出来」的名单，老读法一个形状都不问，直接把值交给 stdlib 遍历
+        # （`dict(...)`、`set(...)`、`for p in ...`），所以写成一行会被逐个字符读 ——
+        # 普查 C02/C06/C14 三格量的都是这个，而且全部零告警。理由在每句 advice 里。
+        self.group_map: dict[str, str] = str_map_value(
+            cfg.get("upstream_group_map", _NOT_SET), where="频道配置",
+            key="upstream_group_map", advice=_MAP_ADVICE)
+        self.excluded_groups: set[str] = set(str_list_value(
+            cfg.get("excluded_groups", _NOT_SET), where="频道配置",
+            key="excluded_groups", advice=_EXCLUDED_ADVICE))
+        self.exclude_res = []
+        for j, pat in enumerate(str_list_value(
+                cfg.get("exclude_patterns", _NOT_SET), where="频道配置",
+                key="exclude_patterns", advice=_PATTERNS_ADVICE), 1):
+            # 形状之外还有一层：这一格的每一条是**正则**，`测试(` 那种坏正则老读法当场抛
+            # `re.error`（普查 C11：`error: missing ), unterminated subpattern`，
+            # 一段没有文件名、没有「第几条」的崩栈）。
+            try:
+                self.exclude_res.append(re.compile(pat, re.I))
+            except re.error as e:
+                raise ValueError(f"频道配置 的 `exclude_patterns` 第 {j} 条 {pat!r} "
+                                 f"不是一段能用的正则片段（{e.msg}，位置 {e.pos}）—— "
+                                 "这一格按正则匹配，坏一条会让整份名单读不进去；"
+                                 "若只想要「名字里带这几个字」，写成普通字就行，别带 ( ) [ ] 这些") from e
 
         raw_channels = cfg.get("channels") or []
         if not isinstance(raw_channels, list):
@@ -178,26 +361,42 @@ class ChannelIndex:
         self.rules: list[ChannelRule] = []
         self._by_key: dict[str, ChannelRule] = {}
         for i, raw in enumerate(raw_channels):
+            at = f"channels 第 {i + 1} 条"
             if not isinstance(raw, dict):
-                raise ValueError(f"channels 第 {i + 1} 条不是字典（是 {type(raw).__name__}）")
-            missing = [k for k in ("name", "group") if not str(raw.get(k) or "").strip()]
+                raise ValueError(f"{at}不是字典（是 {type(raw).__name__}）")
+            # 2.48：这四格以前一个形状都不问，值直接交给 stdlib 用 ——
+            # `name`/`aliases` 进 `normalize()` 与 `*` 展开（普查 R01/R03/R04/R06/R07 五种崩法），
+            # `tvg_id` 进 `.strip()`（R11/R12），`group` 进 `in self.groups`（R10 unhashable），
+            # 而 0 那种「写了但不是文字」全被说成「缺这一格」（R08/R09）。
+            # `tvg_id` 与 `aliases` 各有一处合并：留空 = 沿用上游的 id（这份文件顶部写着），
+            # 整格没写 = 没有别名（真配置里就有一两条这么写）—— 两种都不是错。
+            name = text_value(raw.get("name"), where=at, key="name",
+                              what="一个台的名字（一行文字）", advice=_NAME_ADVICE)
+            group = text_value(raw.get("group"), where=at, key="group",
+                               what="一个分组 id（`groups` 里定义过的那种，一行文字）",
+                               advice=_GROUP_ADVICE)
+            tvg = text_value(raw.get("tvg_id"), where=at, key="tvg_id",
+                             what="电子节目单里这个台的名字（一行文字）", advice=_TVG_ADVICE)
+            aliases = str_list_value(raw.get("aliases", _NOT_SET), where=at, key="aliases",
+                                     advice=_ALIASES_ADVICE)
+            missing = [k for k, v in (("name", name), ("group", group)) if not v]
             if missing:
-                raise ValueError(f"channels 第 {i + 1} 条缺 {' 和 '.join(missing)}"
+                raise ValueError(f"{at}缺 {' 和 '.join(missing)}"
                                  f"（现在只有 {sorted(raw)}），补上再出表")
-            for warn in check_keys(raw, where=f"channels 第 {i + 1} 条（{raw['name']}）",
+            for warn in check_keys(raw, where=f"{at}（{name}）",
                                    known=RULE_KEYS, notes=RULE_NOTES):
                 print(f"⚠️ {warn}", file=sys.stderr)
             rule = ChannelRule(
-                name=raw["name"],
-                group=raw["group"],
-                tvg_id=(raw.get("tvg_id") or "").strip(),
+                name=name,
+                group=group,
+                tvg_id=tvg,
                 order=i,
             )
             if rule.group not in self.groups:
                 raise ValueError(f"频道 {rule.name}（channels 第 {i + 1} 条）引用了未定义的分组 "
                                  f"{rule.group} —— groups 里现在有："
                                  f"{'、'.join(self.groups) or '一个分组都没定义'}")
-            for alias in [rule.name, *(raw.get("aliases") or [])]:
+            for alias in [rule.name, *aliases]:
                 key = normalize(alias)
                 if key:
                     rule.keys.add(key)
