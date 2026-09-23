@@ -24,7 +24,9 @@ SOURCE_ID = "local"
 
 # 这份文件允许的键，逐条说清它管什么 —— 这份名单就是 `src/keys.py` 那道守卫的弹药，
 # 代码里 `raw.get("x")` 读了谁、以及「写给人看所以没人读」的谁，都在这里对齐一次。
+# （「对齐一次」以前只是一句承诺，2.42 起 `parse_channels` 里那条用例每天量它一遍。）
 TOP_KEYS = ["version", "channels"]
+TOP_NOTES = {"channels": "这些手工核对过的线路进不进表"}
 CHANNEL_KEYS = ["name", "url", "group", "tvg_id", "expires", "added", "note"]
 # 值是一句人话，会原样出现在报错里：写歪了这些键，表上会安静地少掉什么。
 CHANNEL_NOTES = {
@@ -133,13 +135,20 @@ def parse_channels(text: str, *,
 
     >>> parse_channels("channels:\\n  - name: 湘潭\\n    url: http://a/1.m3u8\\n    note: 自己试过\\n")[1]
     []
+
+    顶上那句「都在这里对齐一次」现在有东西盯着了（2.42）：名单少了格子会被念成
+    「这键没人读」，名单多了格子（没人读的行为键）才是真危险 —— 那一种写歪照样静默。
+
+    >>> from src.keys import drift_of
+    >>> drift_of(parse_channels, known=TOP_KEYS + CHANNEL_KEYS,
+    ...          notes={**CHANNEL_NOTES, **TOP_NOTES})
+    []
     """
     cfg = yaml.safe_load(text) or {}
     if not isinstance(cfg, dict):
         cfg = {}
     check_version(cfg, where=where)
-    for warn in check_keys(cfg, where=where, known=TOP_KEYS,
-                           notes={"channels": "这些手工核对过的线路进不进表"}):
+    for warn in check_keys(cfg, where=where, known=TOP_KEYS, notes=TOP_NOTES):
         print(f"    ⚠️ {warn}")
     out: list[Entry] = []
     skipped: list[str] = []

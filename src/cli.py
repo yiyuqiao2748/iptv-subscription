@@ -285,8 +285,10 @@ def fake_strike(url: str, r: ProbeResult | None, fake: frozenset[str]) -> int:
 
 
 # 源清单允许的键，连同「这个键一改，表上就有东西跟着变」那句话一起交给 `src/keys.py`。
-# 为什么名单写在这儿而不是 keys.py 里：谁被读是读它的那段代码的事，放在一起才看得出漂没漂。
+# 为什么名单写在这儿而不是 keys.py 里：谁被读是读它的那段代码的事，放在一起才看得出漂没漂
+# —— 而「看得出」从 2.42 起是一条真用例（`load_sources` 末尾那句 `drift_of`），不是排版。
 SOURCES_TOP_KEYS = ["version", "sources"]
+SOURCES_TOP_NOTES = {"sources": "这一轮有哪几个上游"}
 SOURCE_KEYS = ["id", "url", "enabled", "priority", "probe", "note"]
 SOURCE_NOTES = {
     "id": "缓存文件名、报告里的源名、履历里的出处",
@@ -341,6 +343,14 @@ def load_sources(path: Path, *, fresh: bool) -> list[dict]:
     ...     except ValueError as e:
     ...         print("最像是 `enabled`" in str(e), "参不参与出表" in str(e))
     True True
+
+    上面那两份名单和这段代码说的是不是同一批键 —— 这一条不问配置，问这把闸自己（2.42）。
+    名单写在这段代码旁边还只是排版上的旁边，「旁边」得有一条用例盯着才不作废：
+
+    >>> from src.keys import drift_of
+    >>> drift_of(load_sources, known=SOURCE_KEYS + SOURCES_TOP_KEYS,
+    ...          notes={**SOURCE_NOTES, **SOURCES_TOP_NOTES})
+    []
     """
     text = Path(path).read_text(encoding="utf-8")
     cfg = yaml.safe_load(text)
@@ -349,7 +359,7 @@ def load_sources(path: Path, *, fresh: bool) -> list[dict]:
                          f"{type(cfg).__name__}），这一份不能当源清单用")
     check_version(cfg, where=str(path))
     for warn in check_keys(cfg, where=str(path), known=SOURCES_TOP_KEYS,
-                           notes={"sources": "这一轮有哪几个上游"}):
+                           notes=SOURCES_TOP_NOTES):
         print(f"⚠️ {warn}", file=sys.stderr)
     out = []
     for i, s in enumerate(cfg.get("sources") or []):
@@ -451,6 +461,7 @@ def epg_header_url(cfg: dict, upstream_urls: list[str]) -> str:
 
 
 EPG_TOP_KEYS = ["version", "epg"]
+EPG_TOP_NOTES = {"epg": "tvg-id 照哪一份节目单对"}
 EPG_KEYS = ["url", "backup_url", "cache", "enabled", "caveat", "note"]
 EPG_NOTES = {
     "url": "节目单从哪儿取，tvg-id 就照着谁对",
@@ -510,6 +521,14 @@ def load_epg_config(path: Path) -> dict:
     ...     except ValueError:
     ...         print("拦下了")
     拦下了
+
+    名单与这段代码对得上吗（2.42）—— `backup_url` 在名单上却不在 `EPG_NOTES` 里，
+    是因为它由 `scripts/epg_check.py` 读、而不是这儿，那种「给人看的 / 别人读的」键不算漂。
+
+    >>> from src.keys import drift_of
+    >>> drift_of(load_epg_config, known=EPG_KEYS + EPG_TOP_KEYS,
+    ...          notes={**EPG_NOTES, **EPG_TOP_NOTES})
+    []
     """
     try:
         top = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
@@ -526,7 +545,7 @@ def load_epg_config(path: Path) -> dict:
     if top:
         check_version(top, where=str(path))
         for warn in check_keys(top, where=str(path), known=EPG_TOP_KEYS,
-                               notes={"epg": "tvg-id 照哪一份节目单对"}):
+                               notes=EPG_TOP_NOTES):
             print(f"⚠️ {warn}", file=sys.stderr)
     if cfg:
         for warn in check_keys(cfg, where=f"{path} 的 epg 段", known=EPG_KEYS, notes=EPG_NOTES):

@@ -110,6 +110,13 @@ def load_reachability(path: str | Path) -> Reachability:
     ...     except ValueError as e:
     ...         print("audio_only" in str(e))
     True
+
+    名单和这段代码读的是同一批键（2.42）—— 这一档规则整档少掉，表上只是「那些该往后压的台
+    没往后压」，看不出来，所以这一条盯的是闸自己别睡着。
+
+    >>> from src.keys import drift_of
+    >>> drift_of(load_reachability, known=REACH_KEYS, notes=REACH_NOTES)
+    []
     """
     p = Path(path)
     if not p.exists():

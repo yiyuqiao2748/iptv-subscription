@@ -24,6 +24,9 @@
 from __future__ import annotations
 
 import difflib
+import ast
+import inspect
+import textwrap
 
 # 差多少算「像是笔误」。0.6 是试出来的：`enable`/`enabled`、`prority`/`priority`、
 # `chanels`/`channels` 落在这一侧，`owner`、`note2` 这种真没人读的键落在另一侧。
@@ -182,3 +185,132 @@ def check_version(raw: dict, *, where: str) -> None:
     raise ValueError(f"{where} 的 `version` 是 {got!r}，这份代码只认 1 —— 它按 v1 那种形状读"
                      "（键名、层级都是），版本对不上时安静地照旧读，"
                      "出错的地方会跑到表上而不是这里")
+
+
+def reads(src: str) -> set[str]:
+    """那段代码里以**字面量**读到的键名：`d.get("k")` 和 `d["k"]`，只算读、不算写。
+
+    只认字面量是因为这一层要问的就是「名单和代码说的是同一批名字吗」，
+    而 `d[k]`（键名是个变量）问不出是谁。赋值那一侧也不算 —— `info["url"] = x` 是造一个
+    内部字典，不是读配置；字典字面量里的键名（`{"url": x}`）同理。
+
+    >>> sorted(reads('def f(d):\\n    return d.get("a") + d["b"]'))
+    ['a', 'b']
+    >>> sorted(reads('def f(d):\\n    d["a"] = 1'))          # 写进去的不算读
+    []
+    >>> sorted(reads('def f(d):\\n    return {"a": 1, "b": d["b"]}'))
+    ['b']
+    >>> sorted(reads('def f(d, k):\\n    return d[k]'))      # 变量当键：问不出是谁
+    []
+    >>> sorted(reads('def f(d):\\n    return d.get("x", {})["y"]'))
+    ['x', 'y']
+    >>> sorted(reads('    def f(d):\\n        return d["a"]'))    # 方法那种带缩进的源码也吃得下
+    ['a']
+    >>> try:
+    ...     reads('def f(:')                     # 键名都取不出来，不能装作「这个函数没读键」
+    ...     print("咽下去了")
+    ... except SyntaxError:
+    ...     print("读不进源码就原样抛，让调用方去撞")
+    读不进源码就原样抛，让调用方去撞
+    """
+    tree = ast.parse(textwrap.dedent(src))
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "get" and node.args \
+                and isinstance(node.args[0], ast.Constant) \
+                and isinstance(node.args[0].value, str):
+            out.add(node.args[0].value)
+        elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load) \
+                and isinstance(node.slice, ast.Constant) \
+                and isinstance(node.slice.value, str):
+            out.add(node.slice.value)
+    return out
+
+
+def drift(fn_src: str, *more_src: str, known, notes) -> list[str]:
+    """手写的键名单和读它的那几段代码之间漂了多少；空列表 = 没漂。
+
+    2.39 那道闸的弹药全是手写的 `*_KEYS` / `*_NOTES`，而「名单 == 代码读的那批键」
+    这件事当时只写在注释里（`src/parse/local.py` 顶上那句就是这样一个承诺）。
+    这一层把那个承诺变成能跑的东西。两个方向分开问，因为坏法不一样：
+
+    ① **代码读了、名单上没写**：以后有人加一个读取忘了补名单，第一个被撞响的是
+       他自己的真配置 —— 那个合法键会被念成「没人读」，而它写歪时闸根本拦不住
+       （不在 `known` 里就谈不上「像是谁写歪了」）。方向是**喊错人**。
+    ② **名单上说是行为键、这几段代码却没读它**：那这个键写歪照样静默 —— 正是这个模块
+       要治的那一种。闸自己带着它睡觉比不装更坏，因为它会让人以为已经管住了。
+
+    两个方向量的都是**传进来的那几段代码**，不是整个模块：拿 `/tmp` 那份副本试过，
+    把 `load_sources` 里那句 `s.get("priority", i + 1)` 改成不读配置（而 `cmd_build` 里
+    还有一处 `s.get("priority")` 读的是解析好的内部字典），按「整个模块」量就是 0 失败 ——
+    名字还在、读它的代码已经搬走或没了，那种漂恰好是②要抓的那种。
+    所以真要把读它的代码搬到另一个函数去，就把那个函数一起传进来（可变参数就是为这个留的）。
+
+    `known` 里那些**写给人看**的键（`note`、`added`）不进 `notes`，所以②不管它们：
+    没人读是设计，不是漂（2.39 复核过的那半条）。
+
+    一条都没读到时不许报「没漂」，要报「没量到」—— 2.32 那一格讲的就是这个：
+    一把尺什么都没量到还退 0，会把「没查」读成「查过并且是干净的」。
+
+    >>> known = ["id", "url", "enabled", "note"]
+    >>> notes = {"enabled": "这条源参不参与出表", "url": "去哪儿抓这份列表"}
+    >>> ok = 'def f(s):\\n    return s["url"] if s.get("enabled", True) else s.get("note", "")'
+    >>> drift(ok, known=known, notes=notes)
+    []
+    >>> late = 'def f(s):\\n    return s["url"] and s.get("enabled", True) and s.get("priority", 1)'
+    >>> drift(late, known=known, notes=notes)          # 名单漏了 priority 那一格
+    ['读了却没写进名单：`priority` —— 配置里照实写它会被念成「没人读」，写歪了更拦不住；补进那份 *_KEYS（顺手把算不算行为键也定了）']
+    >>> more = dict(notes, probe="它进不进 --verify 实测")
+    >>> drift(ok, known=known, notes=more)             # 名单多了一格：没人读的行为键
+    ['名单上说是行为键、这几段代码却没读它：`probe` —— 它写歪就等于没写，先弄清是不该算行为键还是读它的那段代码已经没了']
+    >>> drift('def f(s):\\n    return 1', known=known, notes=notes)   # 什么都没量到
+    ['那段代码里一条字面量键读取都没有 —— 闸没量到东西，别把这一格读成「名单和代码对得上」']
+
+    几段代码一起量（读它的代码分在两处时就这么传）：
+
+    >>> a = 'def f(s):\\n    return s.get("url")'
+    >>> b = 'def g(s):\\n    return s["enabled"]'
+    >>> drift(a, b, known=known, notes=notes)
+    []
+    >>> drift(a, known=known, notes=notes)            # 少传一段，②就该响
+    ['名单上说是行为键、这几段代码却没读它：`enabled` —— 它写歪就等于没写，先弄清是不该算行为键还是读它的那段代码已经没了']
+    """
+    used: set[str] = set()
+    for src in (fn_src, *more_src):
+        used |= reads(src)
+    if not used:
+        return ["那段代码里一条字面量键读取都没有 —— 闸没量到东西，"
+                "别把这一格读成「名单和代码对得上」"]
+    out: list[str] = []
+    undeclared = sorted(used - {str(k) for k in known})
+    if undeclared:
+        out.append(f"读了却没写进名单：{' '.join(f'`{k}`' for k in undeclared)} —— "
+                   "配置里照实写它会被念成「没人读」，写歪了更拦不住；"
+                   "补进那份 *_KEYS（顺手把算不算行为键也定了）")
+    dead = [k for k in notes if k not in used]
+    if dead:
+        out.append(f"名单上说是行为键、这几段代码却没读它："
+                   f"{' '.join(f'`{k}`' for k in dead)} —— "
+                   "它写歪就等于没写，先弄清是不该算行为键还是读它的那段代码已经没了")
+    return out
+
+
+def drift_of(fn, *more, known, notes) -> list[str]:
+    """`drift()` 的取样版：那几段代码的源码自己去取，只问一句「漂没漂」。
+
+    五处加载器各自的用例就是这一句 —— 名单写在那段代码旁边，而这条用例保证
+    「旁边」不只是排版上的旁边。用法：`drift_of(load_sources, known=..., notes=...)`，
+    读它的代码若在两处，就 `drift_of(f, g, ...)`。
+
+    >>> drift_of(check_version, known=["version"], notes={})
+    []
+    >>> drift_of(check_version, known=["version"], notes={"url": "去哪儿抓这份列表"})
+    ['名单上说是行为键、这几段代码却没读它：`url` —— 它写歪就等于没写，先弄清是不该算行为键还是读它的那段代码已经没了']
+    >>> drift_of(unknown_keys, known=["known"], notes={})   # 这个函数自己不读字面量键
+    ['那段代码里一条字面量键读取都没有 —— 闸没量到东西，别把这一格读成「名单和代码对得上」']
+    >>> drift_of(check_version, unknown_keys, known=["version", "raw"], notes={})  # 两段一起
+    []
+    """
+    return drift(inspect.getsource(fn), *(inspect.getsource(f) for f in more),
+                 known=known, notes=notes)

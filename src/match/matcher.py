@@ -126,6 +126,14 @@ class ChannelIndex:
     ... except ValueError as e:
     ...     print("`channel`" in str(e) and "最像是" in str(e))
     True
+
+    三份名单和 `__init__` 读的那批键对得上吗（2.42）—— 这份配置的名单是三层的
+    （顶层 / `groups` 每条 / `channels` 每条），所以并成一次问。
+
+    >>> from src.keys import drift_of
+    >>> drift_of(ChannelIndex.__init__, known=CHANNELS_TOP_KEYS + GROUP_KEYS + RULE_KEYS,
+    ...          notes={**CHANNELS_TOP_NOTES, **GROUP_NOTES, **RULE_NOTES})
+    []
     """
 
     def __init__(self, cfg: dict[str, Any]):
