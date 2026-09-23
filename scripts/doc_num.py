@@ -15,9 +15,12 @@
 不认识的键、括号前面没贴着数 —— 这三种都算失败，理由和 2.27 那条一样：**静默跳过就是假绿**）；
 **2 = 一处都没比成**（文档里没有标记，或 `data/output/` 里的表读不出来）。
 
-键的认法：`<表>:<量>`，表是 `aptv` / `hunan` / `pack`，例子 —— `aptv:suspect`（全量表第一线可疑的
+键的认法：`<表>:<量>`，表是 `aptv` / `hunan` / `pack` / `probe`，例子 —— `aptv:suspect`（全量表第一线可疑的
 台数）、`hunan:no-alt`（湖南表里没有备选线路的台数）、`aptv:focus:tvgslb.hn.chinamobile.com`
-（全量表里第一线挂在这家主机上的台数）。所以「算出来不一样」有两种意思，脚本会分开说：
+（全量表里第一线挂在这家主机上的台数）。`probe:` 那一族不是表上的数，是**那一轮实测**的数
+（`probe:host-lines:<主机>` / `probe:host-passed:<主机>`，就是报告「实测逐主机」那张表的分子分母）——
+文档抄那句「整族失效的主机比如 X 0/36」时，36 说的是那一轮量过几条，不是表里剩几条。
+所以「算出来不一样」有两种意思，脚本会分开说：
 数真的过期了（表换过一轮），或者表还没换、是我抄错了（`table_drift.py` 会帮你分清）。
 """
 
@@ -36,7 +39,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from probe_pack import (base_of, channel_groups, focus_by_host,  # noqa: E402
-                        host_of, load_results)
+                        host_of, load_results, load_stats)
 from src.check.scope import PUBLIC, load_reachability            # noqa: E402
 from src.cli import REACH_FILE, second_line_options              # noqa: E402
 from src.output.writer import OutputChannel                      # noqa: E402
@@ -76,7 +79,13 @@ METRIC_DOC = {
     "items": "试播包几条",
     "cover": "试播包覆盖全量表多少个台的第一线",
     "families": "试播包里几个主机族",
+    # 下面这两个不在任何一张表上，在 probe.json 那份「实测逐主机」汇总里（键的第一段是 `probe`）。
+    "host-lines": "本轮实测里挂在某家主机名下的线路条数（报告那张表的分母）",
+    "host-passed": "其中实测连通的条数（同表分子；0 就是整族失效）",
 }
+
+# 每张「表」出自哪个文件 —— 取不到值时那句「整个没读出来」要点名文件，不能印成默认那张。
+SOURCES = TABLES | {"pack": PACK, "probe": "probe.json"}
 
 
 def parse_marks(text: str) -> list[tuple[int, int | None, str, str]]:
@@ -130,7 +139,8 @@ def parse_marks(text: str) -> list[tuple[int, int | None, str, str]]:
 def lookup(values: dict[str, int], table: str, metric: str, arg: str) -> tuple[int | None, str]:
     """按键取「现在算出来的那个数」。取不到就返回 (None, 为什么)，为什么这句要印出来。
 
-    键分三段是给 `focus` 留的：`aptv:focus:<主机>`，其余键都是两段。
+    键分三段是给带主机名那一族留的：`aptv:focus:<主机>` 和 `probe:host-lines:<主机>`，
+    其余键都是两段。
     同一份表算不出这个键（比如表文件不在）时，报的是**表**而不是**键**，
     不然读的人会以为是自己键名写错了。
 
@@ -146,18 +156,32 @@ def lookup(values: dict[str, int], table: str, metric: str, arg: str) -> tuple[i
     >>> lookup({"pack:items": 17}, "aptv", "focus", "tvgslb.hn.chinamobile.com")
     (None, 'aptv 那张表整个没读出来（aptv.m3u 不在或读不了）')
     >>> lookup(v, "jiangxi", "channels", "")
-    (None, '不认识的表 `jiangxi`（只有 aptv / hunan / pack）')
+    (None, '不认识的表 `jiangxi`（只有 aptv / hunan / pack / probe）')
     >>> lookup(v, "aptv", "nope", "")
     (None, '没有这个量 `nope`（--list 看全部）')
+    >>> # probe 那族键说的是「实测过的线路」，不是「表里第一线挂谁的台」—— 两句不能混
+    >>> lookup({"probe:host-lines:a.example": 36}, "probe", "host-passed", "a.example")
+    (None, 'probe.json 里没有 `a.example` 名下实测过的线路（`--list` 看现在有哪几家）')
+    >>> lookup({"probe:host-lines:a.example": 36}, "probe", "channels", "")
+    (None, '没有这个量 `channels`（--list 看全部）')
+    >>> # 整份记录读不出来时说的是 probe.json，不是「表」：它不是表，是那一轮实测的快照
+    >>> lookup({"aptv:channels": 98}, "probe", "host-lines", "a.example")
+    (None, 'probe 那一份实测记录读不出来（probe.json 不在或读不了）')
     """
-    if table not in TABLES and table != "pack":
-        return None, f"不认识的表 `{table}`（只有 {' / '.join(list(TABLES) + ['pack'])}）"
+    if table not in SOURCES:
+        return None, f"不认识的表 `{table}`（只有 {' / '.join(SOURCES)}）"
     key = f"{table}:{metric}" + (f":{arg}" if arg else "")
     if key in values:
         return values[key], ""
     if not any(k.startswith(f"{table}:") for k in values):
-        return None, f"{table} 那张表整个没读出来（{TABLES.get(table, PACK)} 不在或读不了）"
+        src = SOURCES.get(table, "")
+        if table == "probe":
+            return None, f"probe 那一份实测记录读不出来（{src} 不在或读不了）"
+        return None, f"{table} 那张表整个没读出来（{src} 不在或读不了）"
     if arg:
+        if metric.startswith("host-"):
+            return None, (f"probe.json 里没有 `{arg}` 名下实测过的线路"
+                          "（`--list` 看现在有哪几家）")
         return None, f"{table} 表里没有第一线挂在 `{arg}` 上的台（`--list` 看现在有哪些族）"
     return None, f"没有这个量 `{metric}`（--list 看全部）"
 
@@ -229,6 +253,32 @@ def pack_metrics(pack: list[tuple[str, list[str]]],
             "cover": sum(1 for _, us in main if us and base_of(host_of(us[0])) in fams)}
 
 
+def probe_metrics(stats: dict[str, dict]) -> dict[str, int]:
+    """那一轮实测里，每家主机名下量了几条、连通几条（报告「实测逐主机」那张表的口径）。
+
+    为什么要另开一张「表」，不挂到 `aptv:` 下面：文档里那句
+    「整族失效的主机比如 `stream1.freetv.fun` 0/36」，那个 36 **不在 `aptv.m3u` 里** ——
+    今天量过：这张表里这家主机名下 **0 条**（它整族连不上，删线路那一步早删干净了），
+    而 report.md 与 `probe.json` 的逐主机汇总里都是 36。挂错对象不是「数对不上」，
+    是「查了个不相干的数还退 0」，所以它得有自己的键名和自己的文件。
+
+    数直接取 `load_stats` 那份汇总，不从 `probe.json` 的逐条 URL 重新分组：
+    报告印的就是前者，重新分组等于给同一个数造第二套算法（两套哪天分叉了没人知道）。
+
+    >>> probe_metrics({"a.example": {"total": 36, "ok": 0}, "b.example": {"total": 19, "ok": 13}})
+    {'host-lines:a.example': 36, 'host-passed:a.example': 0, 'host-lines:b.example': 19, 'host-passed:b.example': 13}
+    >>> probe_metrics({})          # 没实测过就没有这一族键，标记落到「读不出来」那句
+    {}
+    >>> probe_metrics({"c.example": {}})          # 有这一族但汇总里是空的：0 条，不是缺键
+    {'host-lines:c.example': 0, 'host-passed:c.example': 0}
+    """
+    out: dict[str, int] = {}
+    for host, row in stats.items():
+        out[f"host-lines:{host}"] = int(row.get("total") or 0)
+        out[f"host-passed:{host}"] = int(row.get("ok") or 0)
+    return out
+
+
 def compute_values(base: Path) -> tuple[dict[str, int], list[str]]:
     """从 `data/output/`（或 `--base` 指的那批文件）把每个键重新算一遍。
 
@@ -263,6 +313,10 @@ def compute_values(base: Path) -> tuple[dict[str, int], list[str]]:
         missing.append(str(pp))
     if not results:
         missing.append(f"{base / 'probe.json'}（没有逐条判决，`public-passed` 会是 0）")
+    # probe 那族键（`host-lines` / `host-passed`）读的是同一份文件里的逐主机汇总，
+    # 但它是**另一份东西**：逐条判决说的是「这条线能不能连」，那张表说的是「这一族共几条」。
+    values.update({f"probe:{k}": v
+                   for k, v in probe_metrics(load_stats(base / "probe.json")).items()})
     return values, missing
 
 
@@ -326,7 +380,7 @@ def render(rows: list[tuple]) -> list[str]:
             out.append(f"✗ {where}  `{key}`  算不出来：{why or '没有这个键（`--list` 看全部）'}")
         elif problem == "bad-key":
             out.append(f"✗ {where}  〔数:{key}〕 这个标记本身有问题：键要么写成中文冒号了、"
-                       "要么漏了表名（认 `aptv:` / `hunan:` / `pack:` 开头的小写键）")
+                       "要么漏了表名（认 `aptv:` / `hunan:` / `pack:` / `probe:` 开头的小写键）")
         elif problem == "no-number":
             out.append(f"✗ {where}  `{key}`  前面没贴着数字：这个标记对不上任何数，等于没查")
         else:

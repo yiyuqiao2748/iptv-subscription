@@ -644,39 +644,184 @@ def save_history(path: Path, runs: list[dict]) -> None:
                     encoding="utf-8")
 
 
-def load_history(path: Path) -> list[dict]:
+def load_history(path: Path, *, problems: list[str] | None = None) -> list[dict]:
     """读 JSONL 历史。文件不存在返回 []，坏行跳过 —— 历史不该让生成失败。
+
+    但**跳过要能说出来**：一份读不出行的履历，效果就是那张表的排序悄悄少了
+    「整族失效往后压、上一轮延迟补位」这两判据，台数一个字不变（2.32 量过同族：
+    什么都没量到也算过）。履历只影响排序、不像少一个源那样直接少台，
+    所以这里报一句就往下走，不拦。`problems` 是给人打印的句子列表，调用方传一个空列表：
 
     >>> load_history(Path("/does/not/exist.jsonl"))
     []
+
+    缺文件不算问题（首轮本来就没有），坏行才算：
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "h.jsonl"
+    ...     _ = p.write_text("这不是 JSON\\n"
+    ...                      '{"at": "x", "hosts": [{"host": "a"}]}\\n'
+    ...                      '{"at": "y", "没有 hosts 这个字段": 1}\\n', encoding="utf-8")
+    ...     got: list[str] = []
+    ...     runs = load_history(p, problems=got)
+    ...     len(runs), len(got), got[0].split("：")[0], got[0].split("：")[1]
+    (1, 1, 'h.jsonl 里 3 行只采用 1 轮', '第 1 行不是 JSON、1 行没有 hosts 字段，不算一轮')
+
+    整个文件不是 UTF-8：也归到 problems 里，不崩栈。
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "bin.jsonl"
+    ...     _ = p.write_bytes(b"\\xff\\xfe not utf-8")
+    ...     got = []
+    ...     load_history(p, problems=got), got[0].split("（")[1].split("）")[0]
+    ([], 'invalid start byte')
+
+    不传 `problems` 时行为和以前一样（拿不到原因，但也不炸）：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "one.jsonl"
+    ...     _ = p.write_text('{"at": "x", "hosts": []}\\n', encoding="utf-8")
+    ...     len(load_history(p))
+    1
     """
+    path = Path(path)
+    runs: list[dict] = []
+    note = problems if problems is not None else []
     try:
-        raw = Path(path).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    runs = []
-    for line in raw:
+        raw = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return runs                                   # 首轮没有履历，正常
+    except (OSError, UnicodeDecodeError) as e:
+        # UnicodeDecodeError 没有 strerror（它是 ValueError 那一支），所以取 reason。
+        why = getattr(e, "strerror", None) or getattr(e, "reason", None) or type(e).__name__
+        note.append(f"{path.name} 读不进来（{why}）—— 本轮不拿履历降档、也不补位")
+        return runs
+    bad_json: list[str] = []
+    no_hosts = 0
+    for i, line in enumerate(raw):
         line = line.strip()
         if not line:
             continue
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
+            bad_json.append(f"第 {i + 1} 行不是 JSON")
             continue
         if isinstance(obj, dict) and obj.get("hosts") is not None:
             runs.append(obj)
+        else:
+            no_hosts += 1
+    drops = list(bad_json[:3])
+    if len(bad_json) > 3:
+        drops.append(f"另有 {len(bad_json) - 3} 行同样不是 JSON")
+    if no_hosts:
+        drops.append(f"{no_hosts} 行没有 hosts 字段，不算一轮")
+    if drops:
+        note.append(f"{path.name} 里 {len(raw)} 行只采用 {len(runs)} 轮：" + "、".join(drops))
     return runs
 
 
-def append_run(path: Path, run: dict, *, merge_minutes: int = 30) -> bool:
-    """把这一轮实测追加进历史；判定为同一轮的重复跑就替换最后一行。
+# 合并那一行会被一起换掉、而本轮的 `run` 里根本没有的键 —— 都是**别的工具事后补进去的观测**。
+# 换掉它们是 2.15 定过的规矩（「换了时间的观测要重新验」），这一节不推翻；
+# 要改的是「换掉了却没人说」。`cleared` 这个出参就是说那句话用的。
+_SIDE_CHANNELS = ("rolls", "srcs_note", "adopted")
+
+# 默认窗口。30 分钟这个数写在 2.9 那阵，那时候「调代码时连着跑三次算一轮」是它防的事；
+# 现在多了一个写入口（`scripts/verify_lines.py --to-history` 回填 L3），于是
+# 「隔几分钟再补跑一次」和「这是两次独立观测」开始共用同一个 30 分钟 —— 做成开关，
+# 0 = 每跑一次算一轮（`should_merge` 里 `< 0` 天然永不合并）。默认值照旧。
+MERGE_WINDOW_MIN = 30
+
+
+def append_run(path: Path, run: dict, *, merge_minutes: int = MERGE_WINDOW_MIN,
+               cleared: list[str] | None = None) -> bool:
+    """把这一轮实测追加进历史；判定为同一轮的重复跑就**整行替换**最后一行。
 
     返回 True 表示新起了一轮，False 表示合并进了上一轮。
+
+    三件事都在这一节量过（`/tmp/repro_append.py`）：
+
+    1. **合并会把旁路补记一起擦掉。** 那一行不止 `build` 在写：
+       `scripts/verify_lines.py` 回填 `rolls`（L3：分片窗口动不动），
+       `scripts/backfill_srcs.py` 补 `srcs_note`。上一行带着 2 条 `rolls`、
+       隔 5 分钟再跑一次，那两个键就不见了。按 2.15 的规矩这是**对的** ——
+       换了时刻的观测不能拿旧的顶上；但原来 stdout 只说「与上一轮同一时段，已合并」，
+       不说「顺带清掉了 N 条 L3 结论」，而 `rolls` 要再等一个干净出口才回得来。
+       所以加了 `cleared`：调用方传一个列表，这里把被换掉的键名和条数装进去。
+    2. **这份文件是整份重写的**，所以读不进来时绝不能当「没有旧行」往下写 ——
+       那等于清空履历。抛一句人话，并且一个字节都不碰原文件。
+    3. `merge_minutes=0` 表示「每跑一次算一轮」，这时旁路补记自然全部留在原位。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "h.jsonl"
+    ...     a = {"at": "2026-09-21T13:00:40+08:00", "hosts": [{"host": "x"}],
+    ...          "rolls": {"http://x/1": "stuck", "http://x/2": "moving"},
+    ...          "srcs_note": "事后补记", "adopted": True}
+    ...     got: list[str] = []
+    ...     _ = append_run(p, a)
+    ...     b = {"at": "2026-09-21T13:10:00+08:00", "hosts": [{"host": "x", "ok": 1}]}
+    ...     merged = append_run(p, b, cleared=got)
+    ...     rows = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines()]
+    ...     merged, len(rows), sorted(rows[0])
+    (False, 1, ['at', 'hosts'])
+
+    清掉了哪几样，说得出来（数字取自被换掉的那一行，不是本轮的）：
+
+    >>> got
+    ['rolls 2 条 L3 结论', 'srcs_note', 'adopted']
+
+    同一个窗口里但声明「每跑一次算一轮」，就谁也不会被顶掉：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "h.jsonl"
+    ...     _ = append_run(p, {"at": "2026-09-21T13:00:40+08:00", "hosts": [],
+    ...                        "rolls": {"u": "stuck"}})
+    ...     kept: list[str] = []
+    ...     new = append_run(p, {"at": "2026-09-21T13:10:00+08:00", "hosts": []},
+    ...                      merge_minutes=0, cleared=kept)
+    ...     rows = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines()]
+    ...     new, len(rows), rows[0].get("rolls"), kept
+    (True, 2, {'u': 'stuck'}, [])
+
+    隔得够久自然新起一轮，旧行一个字不动：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "h.jsonl"
+    ...     _ = append_run(p, {"at": "2026-09-21T13:00:40+08:00", "hosts": [],
+    ...                        "rolls": {"u": "moving"}})
+    ...     new = append_run(p, {"at": "2026-09-21T19:00:40+08:00", "hosts": []})
+    ...     rows = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines()]
+    ...     new, len(rows), rows[0].get("rolls")
+    (True, 2, {'u': 'moving'})
+
+    履历读不进来时抛话、且不碰那个文件（里面还有真测量）：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "h.jsonl"
+    ...     _ = p.write_bytes(b"\\xff\\xfe not utf-8 at all")
+    ...     before = p.read_bytes()
+    ...     try:
+    ...         append_run(p, {"at": "2026-09-21T13:00:40+08:00", "hosts": []})
+    ...     except RuntimeError as e:
+    ...         print(str(e).split("：")[0], "｜文件原样", p.read_bytes() == before)
+    履历 h.jsonl 读不进来（invalid start byte） ｜文件原样 True
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()] \
-        if path.exists() else []
+    if cleared is None:
+        cleared = []
+    if path.exists():
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            why = getattr(e, "strerror", None) or getattr(e, "reason", None) or type(e).__name__
+            raise RuntimeError(f"履历 {path.name} 读不进来（{why}）：这份文件是整份重写的，"
+                               f"读不到就不动它 —— 先把它挪开或修好，否则这一轮测完也存不下") from e
+        lines = [l for l in raw.splitlines() if l.strip()]
+    else:
+        lines = []
     merged = False
     if lines:
         try:
@@ -685,6 +830,10 @@ def append_run(path: Path, run: dict, *, merge_minutes: int = 30) -> bool:
             prev = None
         if isinstance(prev, dict) and should_merge(str(prev.get("at") or ""),
                                                   str(run.get("at") or ""), merge_minutes):
+            for k in _SIDE_CHANNELS:
+                if k in prev and k not in run:
+                    n = len(prev[k]) if isinstance(prev[k], dict) else ""
+                    cleared.append(f"{k} {n} 条 L3 结论" if k == "rolls" else str(k))
             lines[-1] = json.dumps(run, ensure_ascii=False)
             merged = True
         else:

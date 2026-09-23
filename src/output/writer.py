@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable
 
 from src.check.history import Suggestion  # 建议行的格式只有一份实现（2.17）
@@ -48,6 +50,63 @@ def one_line(value: object) -> str:
     """
     text = _MULTI_SPACE.sub(" ", _CTRL.sub(" ", str(value if value is not None else "")))
     return text.replace('"', "'").strip()
+
+
+def write_artifacts(out_dir: Path | str, files: dict[str, str]) -> list[Path]:
+    """把**已经全部算好了**的产物一份一份原子替换进目录，返回写出去的路径。
+
+    为什么要有这么一道（2.37 实测出来的）：`build` 原来是算一份写一份，
+    于是「算第二份的时候崩」会把第一份留在半截状态。一份合法、只是没有
+    `hunan_local` 分组的频道配置，就把 `aptv.m3u` 从 453 行盖成 7 行，
+    然后才崩在下一句 `group_title()` —— 而 `data/output/` 是电视正在订阅的那个目录，
+    盖掉的上一版不会自己回来。收成一个写段之后：任何一步算不出来，
+    目录里一个字节都不动；真的开始写了，每份也是 `.tmp` + `os.replace` 换上去，
+    单个文件没有「写了一半」这个状态（磁盘满只留下一个 `.tmp`，旧表还在原位）。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d)
+    ...     _ = write_artifacts(p, {"a.m3u": "#EXTM3U\\n", "b.md": "x\\n"})
+    ...     (p / "a.m3u").read_text(), sorted(x.name for x in p.iterdir())
+    ('#EXTM3U\\n', ['a.m3u', 'b.md'])
+
+    目录不存在会建出来，`.tmp` 不留残渣：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "sub" / "out"
+    ...     len(write_artifacts(p, {"a.m3u": "#EXTM3U\\n"})), p.is_dir(), sorted(x.name for x in p.iterdir())
+    (1, True, ['a.m3u'])
+
+    旧的长内容整份换掉，不留半截：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "aptv.m3u"
+    ...     _ = p.write_text("A" * 5000)
+    ...     _ = write_artifacts(d, {"aptv.m3u": "B" * 10})
+    ...     p.read_text()
+    'BBBBBBBBBB'
+
+    没有内容要写就是这个函数什么都不做（连目录都不碰），别拿它当「清空目录」用：
+
+    >>> import os
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = Path(d) / "out"
+    ...     write_artifacts(p, {}), p.exists()
+    ([], False)
+    """
+    out_dir = Path(out_dir)
+    if not files:
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for name, text in files.items():
+        dst = out_dir / name
+        tmp = out_dir / f"{name}.tmp"
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, dst)                    # 同一个目录里换，是原子的
+        written.append(dst)
+    return written
+
 
 # 报告里的可达范围表：key 与 config/reachability.yaml 的分档同名
 _SCOPE_LABEL = {

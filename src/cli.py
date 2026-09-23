@@ -74,7 +74,8 @@ from src.check.scope import (  # noqa: E402
     AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
 from src.match.matcher import load_index  # noqa: E402
 from src.match.normalize import quality_hint  # noqa: E402
-from src.output.writer import OutputChannel, format_m3u, format_report  # noqa: E402
+from src.output.writer import (  # noqa: E402
+    OutputChannel, format_m3u, format_report, write_artifacts)
 from src.parse.local import SOURCE_ID as LOCAL_ID  # noqa: E402
 from src.parse.local import load_local  # noqa: E402
 from src.parse.m3u import Entry, parse_m3u  # noqa: E402
@@ -1217,6 +1218,75 @@ def load_lean_fn():
     return mod.lean
 
 
+def build_arg_problems(max_lines: int, max_per_host: int, timeout: int,
+                       workers: int, *, verifying: bool) -> list[str]:
+    """那几个数字取到「什么都能干掉」的值时，先说清楚再去碰网络和磁盘。
+
+    2.37 实测：`--max-lines 0`（手一抖把 10 打成 0）走完整条 `build` 是
+    **退 0、无警告、四张表各自剩下一行表头**（453 行的 aptv.m3u 变成 127 字节），
+    `--max-per-host 0`、`--max-lines -1` 一样。`--workers 0` 在 `--verify` 那一支
+    是 `ValueError: max_workers must be greater than 0` 崩栈；`--timeout 0` 更阴 ——
+    它不崩，它把每一条线路都判成超时，于是那一轮既写进 `probe.json` 也追加进履历，
+    接下来几轮离线生成都照着一份「全军覆没」的记录降档。
+    合成一份全死的记录跑 `--replay` 能复现这条后果：349 条被判死、
+    公网线路归零，退码还是 0（本轮实测过的那 350 条全灭，其余没记录的按未知保留）。
+
+    数字只在它管得着的地方管：`--timeout` / `--workers` 只有实测那一支会用到，
+    离线重出表时它们根本没参与，所以不拦（拦了反而挡住「先离线试试配置」这条路）。
+
+    >>> build_arg_problems(3, 2, 12, 20, verifying=True)
+    []
+    >>> build_arg_problems(0, 2, 12, 20, verifying=False)
+    ['--max-lines 是 0：每个频道保留 0 条线路，等于一张空表。要试配置就换个 --out，别拿订阅目录试']
+    >>> build_arg_problems(3, -1, 12, 20, verifying=False)
+    ['--max-per-host 是 -1：同一主机允许 -1 条，没有任何一条线路留得下来']
+    >>> build_arg_problems(3, 2, 0, 0, verifying=False)      # 不实测就不管这两个
+    []
+    >>> print(*build_arg_problems(3, 2, 0, 0, verifying=True), sep="\\n")
+    --timeout 是 0：每条线路都会被判成超时，那一轮记录等于「全军覆没」，别把它写进履历
+    --workers 是 0：线程池开不出来（实测那一支会直接 ValueError 崩）
+    """
+    bad: list[str] = []
+    if max_lines < 1:
+        bad.append(f"--max-lines 是 {max_lines}：每个频道保留 {max_lines} 条线路，等于一张空表。"
+                   f"要试配置就换个 --out，别拿订阅目录试")
+    if max_per_host < 1:
+        bad.append(f"--max-per-host 是 {max_per_host}：同一主机允许 {max_per_host} 条，"
+                   f"没有任何一条线路留得下来")
+    if verifying:
+        if timeout < 1:
+            bad.append(f"--timeout 是 {timeout}：每条线路都会被判成超时，"
+                       f"那一轮记录等于「全军覆没」，别把它写进履历")
+        if workers < 1:
+            bad.append(f"--workers 是 {workers}：线程池开不出来（实测那一支会直接 ValueError 崩）")
+    return bad
+
+
+def history_record_note(new_run: bool, cleared: list[str]) -> str:
+    """履历记完之后那句「新起一轮 / 合并了、顺带清掉了什么」。
+
+    单独抽出来是因为 `--verify` 那一支要联网测两百多秒，而这句话是该不是该说、
+    说得对不对，跟联网没关系 —— 钉在这儿就能离线验，不用等一个干净出口。
+
+    2.37 量到的形状：`build --verify` 判成同一轮时是**整行替换**（2.15 的规矩：
+    换了时刻的观测要重新验），而那一行里可能带着 `scripts/verify_lines.py` 回填的
+    `rolls`（L3 每条要等一个间隔）和 `scripts/backfill_srcs.py` 补的出处备注。
+    原来 stdout 只有「与上一轮同一时段，已合并（上一行里本轮没测的字段留着）」——
+    那句话是**错的**：字段没留着，被整行换掉了；`rolls` 要再等一个干净出口才回得来。
+
+    >>> history_record_note(True, [])
+    '新起一轮'
+    >>> history_record_note(False, ["rolls 2 条 L3 结论", "srcs_note"])
+    '与上一轮同一时段，已合并，顺带清掉上一行的 rolls 2 条 L3 结论、srcs_note'
+    >>> history_record_note(False, [])          # 上一行本来就没有旁路补记
+    '与上一轮同一时段，已合并'
+    """
+    if new_run:
+        return "新起一轮"
+    return ("与上一轮同一时段，已合并"
+            + (f"，顺带清掉上一行的 {'、'.join(cleared)}" if cleared else ""))
+
+
 def cmd_build(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="src.cli build", description="生成 APTV 订阅列表")
     ap.add_argument("--source", action="append", dest="sources",
@@ -1237,6 +1307,10 @@ def cmd_build(argv: list[str]) -> int:
                          "（默认 data/output/probe-history.jsonl）")
     ap.add_argument("--ignore-history", action="store_true",
                     help="完全不看履历，只按本轮（或无本轮）的结果排 —— 复现旧行为、排查降档本身时用")
+    ap.add_argument("--merge-minutes", type=int, default=hist.MERGE_WINDOW_MIN, metavar="分钟",
+                    help="两轮实测隔得比这个数近，就算同一次跑：合并成履历里的一行，"
+                         "而不是两行（默认 30）。0 = 每跑一次算一轮，谁也不顶掉谁 —— "
+                         "隔一会儿补跑一次 L3、不想让上一行被整行换掉的时候用它")
     ap.add_argument("--allow-untrusted", action="store_true",
                     help="明知故犯：体检报警也照旧覆盖 data/output/（默认会把产物关进 untrusted/）")
     ap.add_argument("--replay", nargs="?", const=str(PROBE_FILE), default="",
@@ -1255,6 +1329,45 @@ def cmd_build(argv: list[str]) -> int:
     # 再往下每一步（读上游、取节目单）都要花时间，而这个组合根本给不出答案。
     if args.verify and args.replay:
         print("--verify 与 --replay 只能选一个：前者是当场测，后者是沿用记录", file=sys.stderr)
+        return 1
+    # 数字取歪了要在这里说，不能等到写盘那一刻：`--max-lines 0` 以前能把
+    # data/output/ 四张表各自盖成一行表头，然后退 0（见 build_arg_problems）。
+    problems = build_arg_problems(args.max_lines, args.max_per_host, args.timeout,
+                                  args.workers, verifying=bool(args.verify))
+    if problems:
+        for p in problems:
+            print(f"⚠️ {p}", file=sys.stderr)
+        print("   这一轮不出表。", file=sys.stderr)
+        return 1
+    # `--out` 指到一个普通文件上，以前是算完整张表、走到 mkdir 才崩一句
+    # FileExistsError（16 行崩栈，2.37 实测）—— 早问一句就好。
+    out_hint = Path(args.out)
+    if out_hint.exists() and not out_hint.is_dir():
+        print(f"⚠️ --out {out_hint} 是一个文件，不是放产物的目录。\n"
+              f"   这一轮不出表 —— 换个目录，或者先把那个文件挪走", file=sys.stderr)
+        return 1
+
+    # 频道配置决定表上有哪些台，所以它要在**读那 1868 条上游之前**先读进来。
+    # 以前它在 collect 之后：一份合法、只是缺 `hunan_local` 分组的配置，会先把上游
+    # 读完、把 aptv.m3u 盖成 7 行，然后才崩在 group_title() 的 KeyError 上（2.37 实测）。
+    try:
+        index = load_index(args.config)
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        # load_index 已经把「不在 / 是目录 / 不是 UTF-8 / 不是 YAML / 结构不对」统一成
+        # ValueError 了；留 OSError 是兜底，别让它哪天又从别的口子漏出去变成崩栈。
+        reason = (str(e).strip().splitlines() or [type(e).__name__])[0]
+        # 那几条「摸不到文件」的句子自带路径，再复述一遍就是同一个路径印两次。
+        why = (f"⚠️ {reason}" if str(args.config) in reason
+               else f"⚠️ 频道配置 {args.config} 读不了：{reason}")
+        print(f"{why}\n"
+              f"   这一轮不出表 —— 表上的台全部来自这份名单，先修它", file=sys.stderr)
+        return 1
+    lacking = index.lacking_groups(HUNAN_GROUPS)
+    if lacking:
+        print(f"⚠️ 频道配置 {args.config} 的 groups 里缺少 {'、'.join(lacking)} —— "
+              f"hunan.m3u 就是按这四个分组切的\n"
+              f"   这一轮不出表 —— 那张是电视上真正在用的，不能安静地不出；"
+              f"换 `--config` 时把 groups 一起带上", file=sys.stderr)
         return 1
 
     try:
@@ -1288,7 +1401,7 @@ def cmd_build(argv: list[str]) -> int:
         print("没有解析到任何条目，检查网络或上游地址。", file=sys.stderr)
         return 1
 
-    index = load_index(args.config)
+    # `index` 在碰网络之前就读好了（2.37：它读不进去时最晚在这里说，见函数开头）
     reach = load_reachability(REACH_FILE)
 
     # P3（计划书 2.19）：`tvg-id` 由「选定的节目单里到底有哪个 id」决定，不再由谁先创建频道桶决定。
@@ -1311,7 +1424,12 @@ def cmd_build(argv: list[str]) -> int:
     # （表是给电视用的，开发机代理在哪不影响这个依据）。
     # 出口身份现查一次就够，屏幕、probe.json、落盘、体检都用它，别重复查。
     history_path = Path(args.history)
-    runs = hist.load_history(history_path)
+    hist_problems: list[str] = []
+    runs = hist.load_history(history_path, problems=hist_problems)
+    for p in hist_problems:
+        # 履历读不出行只影响排序（不删台），所以报一句就往下走 —— 但不能不报：
+        # 不报的话这份履历读不出来和「履历里就是没有可信轮次」长成同一个样子（2.32 同族）。
+        print(f"⚠️ 实测履历：{p}", file=sys.stderr)
     egress = egress_hint()
     warns = measurement_warnings(egress) if args.verify else []   # 只查一次，后面几处复用
     # --replay：本轮不实测，但把上一轮那一份**逐条**判决当本轮结果用。于是判据出口、
@@ -1342,7 +1460,9 @@ def cmd_build(argv: list[str]) -> int:
         except (OSError, json.JSONDecodeError):
             adopted = None
         if adopted:
-            hist.append_run(history_path, adopted)
+            # merge_minutes=0：这一支在 `history_path` 不存在时才走，本来没有可合并的行；
+            # 写成 0 是不让这个前提变成依赖 —— 哪天真有一行了，补记也不该顶掉它。
+            hist.append_run(history_path, adopted, merge_minutes=0)
             runs = hist.load_history(history_path)
             print(f"已把上一版留下的 {old.name} 补为第 1 轮履历（{adopted['at'][:16]}）")
     point = judgment_egress(point_egress, warns, runs, measured=measured)
@@ -1362,7 +1482,8 @@ def cmd_build(argv: list[str]) -> int:
         print(f"\n线路判决沿用 {args.replay}：{replay_at} 那一轮"
               f"（出口 {replay_meta['egress']}，{len(replay)} 条逐条判决）"
               + (f"；⚠️ {gate_why}" if gate_why else "")
-              + f"；本轮不写 {Path(args.replay).name}、不追加履历")
+              + f"；本轮不写 {Path(args.replay).name}、也不把这一轮当实测记进履历"
+                f"（履历空时会把那份记录补成第 1 轮，那是补档不是记本轮）")
     # 报警那一轮的产物不进订阅目录（理由见 artifact_dir()）；履历照旧追加。
     trusted_dir = Path(args.out)
     out_dir, quarantined = artifact_dir(trusted_dir, warns=warns, measured=measured,
@@ -1410,17 +1531,41 @@ def cmd_build(argv: list[str]) -> int:
         preset=replay or None,
     )
 
+    # 一个台都没归上 —— 这就是要出张空表了。以前这里不问：四张表各自盖成一行表头，
+    # 退 0，屏幕上只有一句「aptv.m3u : 0 个频道 / 0 条线路」。
+    # 空表盖掉订阅目录里那张能播的表，比崩一下严重得多（2.37）。
+    if not channels:
+        print(f"⚠️ 本轮一个台都没归上：上游 {len(entries)} 条线路里，没有一条对得上 "
+              f"{args.config} 的名单（未匹配 {sum(unmatched.values())} 条、剔除 {excluded} 条"
+              + (f"、实测失效 {dead} 条" if args.verify or replay else "") + "）\n"
+              f"   这一轮不出表 —— {trusted_rel} 里那张保持原样。"
+              f"要的就是「看看现在有哪些台」就换个 --out 再跑", file=sys.stderr)
+        return 1
+    # 判决全灭是同一件事的另一种长相：台还有（都是没测过的），可用线路一条不剩。
+    # 2.37 拿一份合成的「全死」记录跑 `--replay` 量到过：350 条判决全 ok=False 时，
+    # 那张表从 453 行变成 303 行、公网线路归 0，退码还是 0。
+    # 一次测量不可能让每一条线路同时死，所以这只能判成「这一轮没量成」。
+    if results and not any(r.ok for r in results.values()) and not args.allow_untrusted:
+        print(f"⚠️ 本轮的线路判决把测过的 {len(results)} 条全判成不能用"
+              + (f"（{replay_at} 那一轮的记录）" if replay else "（本轮实测）")
+              + f"，剩下 {len(channels)} 个台靠的是「从没测过」的线路\n"
+              f"   这一轮不出表 —— 换个出口重测，或者看看 `--timeout` 是不是给小了。"
+              f"明知这份结果就是要用，加 --allow-untrusted", file=sys.stderr)
+        return 1
+
     present = {c.name for c in channels}
     empty = [(r.name, index.group_title(r.group)) for r in index.rules if r.name not in present]
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # 从这里开始**只算不写**：所有产物先进这个字典，最后一道 `write_artifacts()` 一次性换上去。
+    # 分开的理由见 writer.py：算第二份的时候崩，不该把第一份留在半截状态。
+    artifacts: dict[str, str] = {}
     # 头部那行是**电视自己去取节目单**用的地址：启用 config/epg.yaml 就用它，
     # 没启用才回到「抄上游播放列表的第一条」（那条实测 404，见 2.19）。
     epg = epg_header_url(epg_cfg, epg_urls)
     align = apply_ids(channels, epg_doc)
 
     full = format_m3u(channels, epg)
-    (out_dir / "aptv.m3u").write_text(full, encoding="utf-8")
+    artifacts["aptv.m3u"] = full
 
     hunan_titles = {index.group_title(gid) for gid in HUNAN_GROUPS}
     hunan = [c for c in channels if c.group_title in hunan_titles]
@@ -1429,13 +1574,13 @@ def cmd_build(argv: list[str]) -> int:
     align["hunan"] = sum(1 for r in align["rows"] if r["name"] in hn_names and r["how"])
     align["hunan_total"] = sum(1 for r in align["rows"] if r["name"] in hn_names)
     hunan_text = format_m3u(hunan, epg)
-    (out_dir / "hunan.m3u").write_text(hunan_text, encoding="utf-8")
+    artifacts["hunan.m3u"] = hunan_text
 
     # 诊断用副产物：局域网订阅失败时用来区分「网络不通」和「App 抓台标/EPG 卡住」
     lean = load_lean_fn()
     if lean:
-        (out_dir / "hunan-lean.m3u").write_text(lean(hunan_text), encoding="utf-8")
-        (out_dir / "test.m3u").write_text(lean(hunan_text, limit=4), encoding="utf-8")
+        artifacts["hunan-lean.m3u"] = lean(hunan_text)
+        artifacts["test.m3u"] = lean(hunan_text, limit=4)
 
     # 可达范围拆分：运营商 IPTV 内网线路要在对应运营商的 IPTV 专网里才连得上，
     # 家庭 Wi-Fi 上表现为超时；电台地址则是上游挂在电视频道名下的冒充项。
@@ -1485,7 +1630,7 @@ def cmd_build(argv: list[str]) -> int:
               "fallback": second_line_options(hunan, results, reach)}]
     if args.verify:
         at = datetime.now().astimezone().isoformat(timespec="seconds")
-        (out_dir / "probe.json").write_text(json.dumps({
+        artifacts["probe.json"] = json.dumps({
             "at": at,
             "egress": egress,
             "measurement_warnings": warns,
@@ -1493,16 +1638,29 @@ def cmd_build(argv: list[str]) -> int:
             "lines": {u: {"ok": r.ok, "http": r.http, "ms": r.ms,
                           "segments": r.segments, "kind": r.kind, "error": r.error}
                       for u, r in results.items()},
-        }, ensure_ascii=False, indent=1), encoding="utf-8")
-        new_run = hist.append_run(history_path, {
-            "at": at, "egress": egress, "warnings": warns, "hosts": hosts})
-        runs = hist.load_history(history_path)
-        # 判「该划掉谁」用最新这一轮，但报告里"本轮降档/补位了几个主机"说的是
-        # 刚才 aggregate 真正用到的那份履历 —— 本轮实测过的线路根本不看历史，两者不能混。
-        rep_now = hist.reputation(runs, current_egress=point)
-        print(f"\n实测已记入 {history_path.name}："
-              + ("新起一轮" if new_run else "与上一轮同一时段，已合并")
-              + f"（累计 {len(runs)} 轮，判据出口：{point or '未知'}）")
+        }, ensure_ascii=False, indent=1)
+        # 追加履历失败不该把这一轮实测一起毁掉：表照出、probe.json 照写（它们排在后面那个
+        # 写段里），只是履历这一轮没记上。append_run 自己是「读不进来就不动文件」的，
+        # 所以这里不会留下半截履历。
+        hist_again: list[str] = []      # 重读履历查出来的**新**问题；上面那批已经报过了
+        cleared: list[str] = []         # 合并那一行时被整行换掉的旁路补记（2.37）
+        try:
+            new_run = hist.append_run(history_path, {
+                "at": at, "egress": egress, "warnings": warns, "hosts": hosts},
+                merge_minutes=args.merge_minutes, cleared=cleared)
+            runs = hist.load_history(history_path, problems=hist_again)
+        except (RuntimeError, OSError, ValueError) as e:
+            print(f"⚠️ 这一轮没记进履历：{e}\n"
+                  f"   表和 probe.json 照出，但离线生成少一轮可依据的记录", file=sys.stderr)
+        else:
+            for p in hist_again:
+                print(f"⚠️ 实测履历：{p}", file=sys.stderr)
+            # 判「该划掉谁」用最新这一轮，但报告里"本轮降档/补位了几个主机"说的是
+            # 刚才 aggregate 真正用到的那份履历 —— 两者不能混。
+            rep_now = hist.reputation(runs, current_egress=point)
+            print(f"\n实测已记入 {history_path.name}："
+                  f"{history_record_note(new_run, cleared)}"
+                  f"（累计 {len(runs)} 轮，判据出口：{point or '未知'}）")
 
     trend = hist.run_totals(runs, current_egress=point)
     # 主机那一层的「该划掉谁」摊到上游源那一层，再落成能抄进 sources.yaml 的一行（2.17）
@@ -1582,7 +1740,10 @@ def cmd_build(argv: list[str]) -> int:
         hosts_note=hosts_note,
         history=history_note,
     )
-    (out_dir / "report.md").write_text(report, encoding="utf-8")
+    artifacts["report.md"] = report
+    # 到这一行之前，目录里一个字节都没动过。上面任何一步算不出来就崩在这里之前，
+    # 订阅目录保持上一版原样（2.37：以前是 aptv.m3u 已经盖下去、才崩在下一份）。
+    write_artifacts(out_dir, artifacts)
 
     print(f"\n输出到 {out_dir}")
     if quarantined:
