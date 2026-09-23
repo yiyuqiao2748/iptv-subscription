@@ -467,9 +467,123 @@ EPG_NOTES = {
     "url": "节目单从哪儿取，tvg-id 就照着谁对",
     "enabled": "对 id 这一层开不开（关掉就是所有台退回上游写法）",
     "cache": "取回来的节目单落在哪儿，离线重出与「今天够不够新」都读它",
+    "backup_url": "换成后备节目单时抄哪一条（`scripts/epg_check.py` 拿它当第二条候选）",
 }
-# `backup_url` 在名单上但不是这里读的：`scripts/epg_check.py` 拿它当第二条候选（2.30）。
 # `note` 是写给人看的为什么。
+# `backup_url` 从 2.44 起由这里读、跟着 `url` 一起交出去：以前是 build 和
+# `scripts/epg_check.py` 各写一份 YAML 读取，两份读法量出四种分歧（那一节有表）。
+
+
+_YAML_SHAPE = {"list": "一个列表", "dict": "一个字典（多缩进的那几行被并进来的？）",
+               "int": "一个数字", "float": "一个小数", "str": "一行字符串"}
+_FLAG_WORDS = {"true": True, "false": False, "yes": True, "no": False,
+               "on": True, "off": False, "1": True, "0": False}
+
+
+# 这两个助手**收的是值**（`cfg.get("url")`），不收字典。
+# 为什么：让调用方写 `text_value(cfg, "url", …)` 更顺，但那样 `.get("url")` 就从
+# `load_epg_config` 的源码里消失了，而 2.42 那道闸量的正是「这段代码里字面读了哪些键」——
+# 名单上五格全部会变成「说是行为键却没读它」，闸当场瞎。改成收值，读取留在原处，
+# 闸一个字都不用动。（2.44 的改错实验里这一格是反着验的。）
+def shape_word(got) -> str:
+    """YAML 把那一格读成了什么形状 —— 一句人话；认不出的退回类型名。
+
+    和 `why_dead()` 同一条规矩：宁可旧说法，不编新说法。
+
+    这一格是 2.44 量出来才补的：`epg:` 直接写成一行地址时，报出来的是「读出来是**一个 str**」——
+    那句话要人自己去翻译「str = 一行字符串」，而它下面紧跟着的「不是一组键」才是重点。
+
+    >>> shape_word(["a"]), shape_word({"a": 1}), shape_word(8080), shape_word(1.5)
+    ('一个列表', '一个字典（多缩进的那几行被并进来的？）', '一个数字', '一个小数')
+    >>> shape_word("https://x/e.xml")
+    '一行字符串'
+    >>> shape_word(b"x")
+    '一个 bytes'
+    """
+    return _YAML_SHAPE.get(type(got).__name__, f"一个 {type(got).__name__}")
+
+
+def text_value(got, *, where: str, key: str) -> str:
+    """配置里那一格取成一句字符串；不是字符串就停下来，别 `str()` 成一个看着能用的样子。
+
+    `config/epg.yaml` 的 `url:` 后面直接换行缩进，YAML 就把它读成**列表**，而 2.44 之前
+    两处读法都是同一句 `str(cfg.get("url") or "").strip()` —— 列表被洗成 `"['a', 'b']"`：
+    非空（于是 `enabled` 判成 True），又不以 http 开头（于是 `epg_header_url()` 交出空串）。
+    当场跑出来的后果不在屏幕上，在表的第一行：出表退 0、那行写着
+    「节目单（缓存（epg.xml），['a', 'b']）」，而 `aptv.m3u`/`hunan.m3u` 头部的
+    `x-tvg-url` **整行没了** —— 电视从此没有节目单可拉，这个数还跟出口、网络都没关系。
+
+    认不出来的类型退回类型名（和 `why_dead()` 同一个规矩：宁可旧说法，不编新说法）。
+
+    >>> text_value("  https://x/e.xml  ", where="epg 段", key="url")
+    'https://x/e.xml'
+    >>> text_value(None, where="epg 段", key="url")     # 没写这一格 / `url:` 空着：交给默认值
+    ''
+    >>> try:
+    ...     text_value(["a", "b"], where="epg 段", key="url")
+    ... except ValueError as e:
+    ...     print(str(e))
+    epg 段 的 `url` 读出来是一个列表（['a', 'b']），不是一串地址 —— 要写两条就分成 `url` 和 `backup_url`；要在一条里换行写，行首得加 `- `。这一格是当地址用的，安静地 str() 一下只会让它冒充成一个能用的：非空，于是节目单算「启用」，而它又不以 http 开头。
+    >>> try:
+    ...     text_value(20260923, where="epg 段", key="cache")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[0])
+    epg 段 的 `cache` 读出来是一个数字（20260923），不是一串地址
+    >>> try:
+    ...     text_value({"a": 1}, where="epg 段", key="url")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[0])
+    epg 段 的 `url` 读出来是一个字典（多缩进的那几行被并进来的？）（{'a': 1}），不是一串地址
+    """
+    if got is None:
+        return ""
+    if isinstance(got, str):
+        return got.strip()
+    raise ValueError(f"{where} 的 `{key}` 读出来是{shape_word(got)}（{got!r}），不是一串地址 —— "
+                     "要写两条就分成 `url` 和 `backup_url`；要在一条里换行写，行首得加 `- `。"
+                     "这一格是当地址用的，安静地 str() 一下只会让它冒充成一个能用的："
+                     "非空，于是节目单算「启用」，而它又不以 http 开头。")
+
+
+def flag_value(got, *, where: str, key: str, default: bool = True) -> bool:
+    """`enabled` 那一类：只认「是/否」那几种写法，别拿 Python 的真假去猜人的意思。
+
+    同一句 `bool(cfg.get("enabled", True))` 在 2.44 之前会把 `enabled: "false"` 读成
+    **真** —— 引号一打，「关掉节目单」这件事就反了。而这正是这个项目反复钉的那一种：
+    `enabled` 写歪等于没写（2.39），而 `enabled: "false"` 比写歪更糟，它长得完全正确。
+
+    YAML 自己认的 `yes`/`no`/`on`/`off` 到 pyyaml 手里已经是布尔了；这里补的是**人加了引号**、
+    或者写成 `0`/`1` 的那几种。认不出来的照样停下来 —— 「到底开没开」不该有个模糊答案。
+
+    >>> flag_value(False, where="epg 段", key="enabled")
+    False
+    >>> flag_value("false", where="epg 段", key="enabled")      # 加引号的那个：照人的意思办
+    False
+    >>> flag_value("TRUE", where="epg 段", key="enabled")
+    True
+    >>> flag_value(None, where="epg 段", key="enabled")          # 没写 = 默认开
+    True
+    >>> flag_value(None, where="epg 段", key="enabled", default=False)
+    False
+    >>> flag_value(0, where="epg 段", key="enabled")             # 裸数字：只有 0/1 算话
+    False
+    >>> try:
+    ...     flag_value("off-ish", where="epg 段", key="enabled")
+    ... except ValueError as e:
+    ...     print(str(e).split(" —— ")[1])
+    这一格是个开关，而 bool('false') 是真：加引号反而关不掉，写成一个认不出的词更不能替你猜
+    """
+    if got is None:
+        return default
+    if isinstance(got, bool):
+        return got
+    if isinstance(got, int) and got in (0, 1):
+        return bool(got)
+    if isinstance(got, str) and got.strip().lower() in _FLAG_WORDS:
+        return _FLAG_WORDS[got.strip().lower()]
+    raise ValueError(f"{where} 的 `{key}` 是 {got!r}，是/否之外的写法认不了 —— "
+                     "这一格是个开关，而 bool('false') 是真：加引号反而关不掉，"
+                     "写成一个认不出的词更不能替你猜")
 
 
 def load_epg_config(path: Path) -> dict:
@@ -481,17 +595,35 @@ def load_epg_config(path: Path) -> dict:
     >>> c = load_epg_config(EPG_FILE)
     >>> c["enabled"], c["url"].startswith("http")     # 不钉死是哪条地址，见下
     (True, True)
-    >>> c["cache"].name
-    'epg.xml'
+    >>> c["cache"].name, c["state"]
+    ('epg.xml', '在用')
+    >>> c["backup_url"] != ""                          # 换节目单时抄的那一条，2.44 起在这儿读
+    True
     >>> n = load_epg_config(ROOT / "config" / "definitely-missing.yaml")
     >>> n["enabled"], n["url"]        # 不抛，只是什么都不做
     (False, '')
+    >>> n["state"]                     # 「没启用」底下那几种各有各的修法，2.44 起分开说
+    '文件不在'
     >>> import pathlib, tempfile
     >>> with tempfile.TemporaryDirectory() as d:
     ...     p = pathlib.Path(d) / "e.yaml"
     ...     _ = p.write_text("epg:\\n  url: http://x/e.xml\\n  enabled: false\\n", encoding="utf-8")
-    ...     load_epg_config(p)["enabled"]
-    False
+    ...     load_epg_config(p)["state"]
+    '关着'
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text("version: 1\\nepg:\\n  url: [oops\\n   bad indent: x\\n",
+    ...                      encoding="utf-8")          # YAML 本身就写坏了
+    ...     load_epg_config(p)["state"]
+    'YAML 读不出来'
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text("version: 1\\nepg: https://x/e.xml\\n", encoding="utf-8")
+    ...     try:
+    ...         load_epg_config(p)
+    ...     except ValueError as e:
+    ...         print("epg` 那一格" in str(e))
+    True
 
     真配置那条只钉「启用 ⇒ 地址是 http(s)」这一件事，不钉它是 `e.erw.cc` ——
     这套设计的卖点就是「换节目单 = 改一行」（`config/epg.yaml` 的 note 里记着为什么是那条），
@@ -522,23 +654,59 @@ def load_epg_config(path: Path) -> dict:
     ...         print("拦下了")
     拦下了
 
-    名单与这段代码对得上吗（2.42）—— `backup_url` 在名单上却不在 `EPG_NOTES` 里，
-    是因为它由 `scripts/epg_check.py` 读、而不是这儿，那种「给人看的 / 别人读的」键不算漂。
+    2.44 补上的两格：形状和真假。这两格都是「长得像没写、其实写了个错的」，
+    而它们的共同点是**表上看不出来** —— 一格的后果跑到了 `aptv.m3u` 的第一行（头部那行
+    `x-tvg-url` 没了），另一格跑到了电视的节目单上（以为关了，其实一直开着）。
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text("epg:\\n  url:\\n  - http://x/e.xml\\n  - http://y/e.xml\\n",
+    ...                      encoding="utf-8")      # 换行缩进 = YAML 读成列表
+    ...     try:
+    ...         load_epg_config(p)
+    ...     except ValueError as e:
+    ...         print(str(e).split("`")[1], "拦下了")
+    url 拦下了
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text('epg:\\n  url: http://x/e.xml\\n  enabled: "false"\\n',
+    ...                      encoding="utf-8")      # 引号包住的 false
+    ...     load_epg_config(p)["enabled"]
+    False
+
+    停下来那句还要能被 `stop_config` 直接接住：文件路径只出现一次，「读不了：」后面紧跟的是
+    「epg 段」而不是「**的** epg 段」—— 2.44 第一次实测印出来的正是后者，因为 `where` 里那个
+    「的」字跟着路径一起被 `stop_message` 剥了一半（它只认开头那段相同的文件路径）。
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "e.yaml"
+    ...     _ = p.write_text("epg:\\n  url:\\n    - http://x/e.xml\\n", encoding="utf-8")
+    ...     try:
+    ...         load_epg_config(p)
+    ...     except ValueError as e:
+    ...         msg = stop_message("节目单配置", str(p), str(e), "先修那一行")
+    ...         print(msg.count(str(p)), msg.split("读不了：")[1].split("（")[0])
+    1 epg 段 的 `url` 读出来是一个列表
+
+    名单与这段代码对得上吗（2.42）。`backup_url` 从 2.44 起也进 `EPG_NOTES` 了：
+    以前它由 `scripts/epg_check.py` 另写一份 YAML 读取去拿，两份读法量出四种分歧，
+    现在只留这一处，所以它和 `url` 一样得由这段代码读到才算数。
 
     >>> from src.keys import drift_of
     >>> drift_of(load_epg_config, known=EPG_KEYS + EPG_TOP_KEYS,
     ...          notes={**EPG_NOTES, **EPG_TOP_NOTES})
     []
     """
+    missing = not Path(path).exists()
+    broken = False
     try:
         top = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        top = {}
+        top, broken = {}, True
     if not isinstance(top, dict):
         top = {}
-    cfg = top.get("epg") or {}
-    if not isinstance(cfg, dict):
-        cfg = {}
+    raw_epg = top.get("epg")
+    cfg = raw_epg if isinstance(raw_epg, dict) else {}
     # 键名守卫只在「这份文件真的读出来了」之后才谈：读不出来还是老行为（当没启用）。
     # 不然新克隆的仓库会因为一份本来就可选的配置出不了表 —— 那是跟上面那句「默认值安全」
     # 直接冲突的。写坏了 YAML 的那格同理：形状都不在，谈不上键名。
@@ -548,15 +716,67 @@ def load_epg_config(path: Path) -> dict:
                                notes=EPG_TOP_NOTES):
             print(f"⚠️ {warn}", file=sys.stderr)
     if cfg:
-        for warn in check_keys(cfg, where=f"{path} 的 epg 段", known=EPG_KEYS, notes=EPG_NOTES):
+        for warn in check_keys(cfg, where=f"{path} epg 段", known=EPG_KEYS, notes=EPG_NOTES):
             print(f"⚠️ {warn}", file=sys.stderr)
-    url = str(cfg.get("url") or "").strip()
+    # `where` 里带路径、但**不带「的」**：`stop_message` 会把理由开头那段相同的文件路径剥掉
+    # （见它的第三格），跟着的要是「的 epg 段」，屏幕上就剩下「读不了：的 epg 段 …」。
+    # 上面 `load_sources` 那处 `{path} 第 N 条源` 是同一个形状，照它写。
+    where = f"{path} epg 段"
+    if top and not isinstance(raw_epg, (dict, type(None))):
+        raise ValueError(
+            f"{path} `epg` 那一格读出来是{shape_word(raw_epg)}（{raw_epg!r}），不是一组键 —— "
+            "地址要写成下一行的 `url: …`。这一格读不出键就等于「没配地址」，"
+            "也就是把节目单安静地关掉：表上那一列 tvg-id 整列退回上游写法，而屏幕上看不出来")
+    url = text_value(cfg.get("url"), where=where, key="url")
+    on = flag_value(cfg.get("enabled"), where=where, key="enabled")
     return {
         "url": url,
-        "cache": ROOT / str(cfg.get("cache") or "data/cache/epg.xml"),
-        "enabled": bool(cfg.get("enabled", True)) and bool(url),
-        "caveat": str(cfg.get("caveat") or "").strip(),
+        "backup_url": text_value(cfg.get("backup_url"), where=where, key="backup_url"),
+        "cache": ROOT / (text_value(cfg.get("cache"), where=where, key="cache")
+                         or "data/cache/epg.xml"),
+        "enabled": on and bool(url),
+        # 「这份配置到底让不让节目单进表」的一句话来历。build 里那句「未启用」以前把
+        # 文件不在 / YAML 写坏了 / 真的没写地址 全洗成同一句（2.44），而它们的修法不一样。
+        "state": ("文件不在" if missing else "YAML 读不出来" if broken else
+                  "没写地址" if not url else "关着" if not on else "在用"),
+        "caveat": text_value(cfg.get("caveat"), where=where, key="caveat"),
     }
+
+
+def epg_off_note(cfg: dict, no_epg: bool) -> str:
+    """未启用那一行的**为什么**：把「没启用」底下那几种各有各的修法分开说。
+
+    2.44 之前这一句写死成「config/epg.yaml 没写地址、或加了 --no-epg」。前面那半是猜的：
+    文件在、YAML 写坏了，屏幕上照样是「没写地址」，而修法是两回事（一个是去补一行，
+    一个是去改缩进）。`load_epg_config()` 现在带着 `state`，这句就能照着说。
+
+    >>> epg_off_note({"state": "文件不在"}, False)
+    'config/epg.yaml 不在'
+    >>> epg_off_note({"state": "YAML 读不出来"}, False)
+    'config/epg.yaml 那份 YAML 读不出来（不是没写，是写坏了）'
+    >>> epg_off_note({"state": "关着"}, False)
+    'config/epg.yaml 里写着 `enabled: false`'
+    >>> epg_off_note({"state": "没写地址"}, False)
+    'config/epg.yaml 没写 url'
+    >>> epg_off_note({"state": "在用"}, True)          # 配置开着，是命令行关的
+    '加了 --no-epg（配置本身是在用的）'
+    >>> epg_off_note({"state": "关着"}, True)
+    'config/epg.yaml 里写着 `enabled: false`、又加了 --no-epg'
+    >>> epg_off_note({"state": "在用"}, False)   # 手搓：`在用` 走到不到这一句（见下面那段）
+    '说不清是哪儿关的'
+
+    最后一格同样是**手搓出来的输入**：`enabled` 与 `state` 由同一处算出来，
+    「在用」必然 `enabled=True`，而调用方只在 `enabled` 为假时才问这一句。
+    留一个「说不清」而不是留一个空括号，是因为这句话会被印成「未启用（），tvg-id 保持上游写法」——
+    那种空位比说错更难看，而它出现的唯一原因是这两格不再由同一段代码保证。
+    """
+    why = {"文件不在": "config/epg.yaml 不在",
+           "YAML 读不出来": "config/epg.yaml 那份 YAML 读不出来（不是没写，是写坏了）",
+           "关着": "config/epg.yaml 里写着 `enabled: false`",
+           "没写地址": "config/epg.yaml 没写 url"}.get(cfg.get("state") or "", "")
+    if no_epg and why:
+        return f"{why}、又加了 --no-epg"
+    return why or ("加了 --no-epg（配置本身是在用的）" if no_epg else "说不清是哪儿关的")
 
 
 def load_epg(cfg: dict, *, today: str, force: bool = False,
@@ -1578,7 +1798,7 @@ def cmd_build(argv: list[str]) -> int:
               f"{epg_info['coverage'] or '一条节目都没有'}"
               + (f"；⚠️ {epg_info['error']}" if epg_info["error"] else ""))
     else:
-        print("\n节目单：未启用（config/epg.yaml 没写地址、或加了 --no-epg），"
+        print(f"\n节目单：未启用（{epg_off_note(epg_cfg, args.no_epg)}），"
               "tvg-id 保持上游写法")
 
     # 实测履历：判据只认「体检没报警」的那些轮，而参照出口由 judgment_egress() 定

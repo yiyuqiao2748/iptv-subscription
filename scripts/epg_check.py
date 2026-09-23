@@ -18,15 +18,18 @@
 所以除了命中率，这里还印两张独立证据：`provenance()`（那个拆分读出来的来历）
 和 `header_url()`（表头部那行 `x-tvg-url`，它由另一条代码路径决定）。
 
-配对的那套规则（归一化、受控前缀）只有一份实现，在 `src/check/epg.py`，
+配对的那套规则（归一化、受控前缀）只有一份实现，在 `src/check/epg.py`；
+`config/epg.yaml` 也只有一份读法，在 `src/cli.py` 的 `load_epg_config()`（2.44 起这里不再
+自己 `yaml.safe_load` 一遍 —— 两份读法在四种配置形状上给出四种答案，其中两种是冒充）。
 这里只负责取数据、按订阅表对一遍、把结果打印成人话。
 
 用法：
 
-    .venv/bin/python scripts/epg_check.py                       # 查「配置里在用的那条 + 默认候选」
+    .venv/bin/python scripts/epg_check.py                       # 查「配置里那两条 + 默认候选」
     .venv/bin/python scripts/epg_check.py http://x/e.xml.gz     # 查指定地址（本地文件也行）
     .venv/bin/python scripts/epg_check.py data/cache/epg.xml    # 只问「现在这张表出自哪一轮」：不发一个请求
-    .venv/bin/python scripts/epg_check.py --playlist data/output/hunan.m3u <url>...
+    .venv/bin/python scripts/epg_check.py --playlist data/output/hunan.m3u data/cache/epg.xml  # 换成湖南那张表来量
+    .venv/bin/python scripts/epg_check.py --config /tmp/off.yaml  # 换一份配置读（那行「在用/关着」跟着变）
 
 出口提醒：这台电脑挂着全局代理时，发出去的请求走的是那条隧道（计划书 2.8 / 2.16），
 所以「境内 EPG 服务能拿到」在这里**只能证明服务活着**，不能证明家里那张 Wi-Fi 拿得到 ——
@@ -45,6 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.check.epg import align_all, coverages, load_bytes     # noqa: E402
+from src.cli import load_epg_config                            # noqa: E402
 from src.parse.m3u import parse_m3u                            # noqa: E402
 
 DEFAULT_SOURCES = [
@@ -59,25 +63,44 @@ DEFAULT_SOURCES = [
 ]
 
 
-def from_config(path: Path) -> list[str]:
-    """`config/epg.yaml` 里在用的那条 + 后备那条，排在候选最前面。
+def from_config(path: Path) -> tuple[list[str], str]:
+    """`config/epg.yaml` 里那两条地址，加一句「配置现在让不让它们进表」。
 
-    为什么要读它：`backup_url` 这一行如果没有代码看，它就是一句写在配置里的客套话 ——
-    换成后备地址这件事早晚要做，那把尺子得先认识它。
-    配置文件不在（新克隆、或者 --config 指错了）就返回空，不抛。
+    这里以前**另写一份** YAML 读取（`yaml.safe_load(...).get("epg")` + `cfg.get("url")`），
+    和 build 用的 `load_epg_config()` 一人一份。两份读法在四种配置形状上给出四种答案，
+    而体检那句「配置里在用 …」对前两种都照印不误（整张对照表在计划书 2.44）：
 
-    >>> from_config(ROOT / "config" / "epg.yaml")
-    ['https://e.erw.cc/e.xml.gz', 'https://epg.112114.xyz/pp.xml']
+      * `enabled: false` —— build 整层关掉，这里当没看见，照样印「在用」；
+      * YAML 写坏了 —— 这里返回空，冒充成「配置里没写地址」；
+      * `epg:` 写成一行字符串 —— 这里**崩栈**（那句 `except Exception` 在 try 外面），
+        build 那边却安静地当「没启用」；
+      * `url:` 排成两行 —— 这里 `str()` 成 `"['a', 'b']"` 当一个地址用。
+
+    现在只有一份实现：地址和状态都由 `load_epg_config()` 给，这里只把它的 `state`
+    原样交出去。这样「尺子说在用、产品其实没在用」这一类分歧从结构上就没有立足点。
+
+    >>> urls, state = from_config(ROOT / "config" / "epg.yaml")
+    >>> state, urls[0]
+    ('在用', 'https://e.erw.cc/e.xml.gz')
+    >>> len(urls)                                   # url + backup_url 两条
+    2
     >>> from_config(ROOT / "config" / "definitely-missing.yaml")
-    []
+    ([], '文件不在')
+    >>> import pathlib, tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "off.yaml"
+    ...     _ = p.write_text("epg:\\n  url: http://x/e.xml\\n  enabled: false\\n",
+    ...                      encoding="utf-8")
+    ...     from_config(p)
+    (['http://x/e.xml'], '关着')
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p2 = pathlib.Path(d) / "e.yaml"
+    ...     _ = p2.write_text("epg:\\n  url: [oops\\n   bad: x\\n", encoding="utf-8")
+    ...     from_config(p2)                       # 坏 YAML：不再冒充「没配置」，也不再崩
+    ([], 'YAML 读不出来')
     """
-    try:
-        import yaml
-
-        cfg = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("epg") or {}
-    except Exception:                     # 文件不在/YAML 写坏了/没装 pyyaml：都当「没配置」
-        return []
-    return [str(u).strip() for u in (cfg.get("url"), cfg.get("backup_url")) if u]
+    cfg = load_epg_config(path)
+    return ([u for u in (cfg["url"], cfg["backup_url"]) if u], cfg["state"])
 
 
 def candidates(args_targets: list[str] | None, config: Path) -> list[str]:
@@ -91,7 +114,7 @@ def candidates(args_targets: list[str] | None, config: Path) -> list[str]:
     if args_targets:
         return list(args_targets)
     out: list[str] = []
-    for u in from_config(config) + DEFAULT_SOURCES:
+    for u in from_config(config)[0] + DEFAULT_SOURCES:
         if u not in out:
             out.append(u)
     return out
@@ -375,6 +398,51 @@ def report(target: str, channels: list[tuple[str, str]], today: str,
     return out
 
 
+def config_line(rel: str, urls: list[str], state: str) -> str:
+    """「候选：N 条」后面那半句：配置到底让不让这条地址进表，说清楚。
+
+    2.44 之前这一句只分「有地址 / 没地址」两档，于是 `enabled: false` 印出来和「在用」
+    一模一样 —— 拿一份关掉的配置当场跑，屏幕上还是
+    「配置里在用 `…/epg.yaml`：https://e.erw.cc/e.xml.gz」，
+    而 build 那边那一列 tvg-id 已经整个退回上游写法了。
+    话说得比它量的范围大，和 2.29 那个「99 个台」是同一个形状。
+
+    注意「关着」那一档仍然把地址留在候选里：尺子该继续量它（哪天要打开，得先知道它活着），
+    只是不许再让人以为它现在进表。
+
+    >>> print(config_line("config/epg.yaml", ["http://a", "http://b"], "在用"))
+    ，配置里在用 `config/epg.yaml`：http://a，后备 http://b
+    >>> print(config_line("config/epg.yaml", ["http://a"], "在用"))
+    ，配置里在用 `config/epg.yaml`：http://a
+    >>> print(config_line("config/epg.yaml", ["http://a"], "关着"))
+    ，配置 `config/epg.yaml` 写着 http://a，但 `enabled: false`：这一层现在整个没参与，下面照量它、只当候选
+    >>> print(config_line("config/epg.yaml", [], "文件不在"))
+    ，配置 `config/epg.yaml` 不在，只查默认候选
+    >>> print(config_line("config/epg.yaml", [], "YAML 读不出来"))
+    ，配置 `config/epg.yaml` 那份 YAML 读不出来（不是没写，是写坏了），只查默认候选
+    >>> print(config_line("config/epg.yaml", [], "没写地址"))
+    ，配置 `config/epg.yaml` 没读到地址，只查默认候选
+    >>> print(config_line("config/epg.yaml", [], "关着"))
+    ，配置 `config/epg.yaml` 没读到地址，只查默认候选
+
+    最后那格是**手搓出来的输入**：`from_config()` 给不出「关着但没有地址」
+    （`state` 那五态是按顺序判的，`url` 空就先落进「没写地址」）。这里照样说一句实话，
+    是因为这一格函数不该知道自己只会被那一种组合喂到 —— 而「写着 、但 `enabled: false`」
+    那种带空位的句子只会让人以为少了什么，不如退回那句「没读到地址」。
+    """
+    if state == "在用" and urls:
+        return (f"，配置里在用 `{rel}`：{urls[0]}"
+                + (f"，后备 {urls[1]}" if len(urls) > 1 else ""))
+    if state == "关着" and urls:
+        return (f"，配置 `{rel}` 写着 {'、'.join(urls)}，"
+                "但 `enabled: false`：这一层现在整个没参与，下面照量它、只当候选")
+    if state == "文件不在":
+        return f"，配置 `{rel}` 不在，只查默认候选"
+    if state == "YAML 读不出来":
+        return f"，配置 `{rel}` 那份 YAML 读不出来（不是没写，是写坏了），只查默认候选"
+    return f"，配置 `{rel}` 没读到地址，只查默认候选"
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="EPG 可用性与命中率体检（只读，不写任何产物）")
     ap.add_argument("targets", nargs="*", default=None,
@@ -384,14 +452,21 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--today", default="", help="按哪天判「今天有没有节目」，YYYYMMDD；默认本机今天")
     ap.add_argument("--timeout", type=int, default=40)
     ap.add_argument("--config", default=str(ROOT / "config" / "epg.yaml"),
-                    help="读这份配置里的 url / backup_url 当作候选（默认 config/epg.yaml）")
+                    help="用 build 那同一个读法（src.cli.load_epg_config）取 url / backup_url，"
+                         "并照它的状态印一句（默认 config/epg.yaml）")
     ap.add_argument("--against", default="",
                     help="再拿另一张订阅表对一遍「同一个台名的 tvg-id 变了几个」"
                          "（跨天重出表时这里应该是 0）")
     args = ap.parse_args(argv)
 
     cfg = Path(args.config)
-    targets = candidates(args.targets, cfg)
+    try:
+        targets = candidates(args.targets, cfg)
+    except ValueError as e:
+        # 2.36 那条规矩：配置读不进去要说人话。这里和 build 共用同一个读法，
+        # 所以「键名写歪」「地址排成两行」这些年在 build 那边怎么拦，在这边就怎么拦。
+        print(f"配置读不动，不量了：{e}", file=sys.stderr)
+        return 1
     path = Path(args.playlist)
     if not path.exists():
         print(f"订阅表不在：{path}", file=sys.stderr)
@@ -412,12 +487,9 @@ def main(argv: list[str]) -> int:
     if args.targets:
         print(f"候选：命令行给的 {len(targets)} 条（--config 这次没用上）")
     else:
-        in_use = from_config(cfg)
+        in_use, state = from_config(cfg)
         rel = cfg.relative_to(ROOT) if str(cfg).startswith(str(ROOT) + "/") else cfg
-        print(f"候选：{len(targets)} 条"
-              + (f"，配置里在用 `{rel}`：{in_use[0]}"
-                 if in_use else f"，配置 `{rel}` 没读到地址，只查默认候选")
-              + (f"，后备 {in_use[1]}" if len(in_use) > 1 else ""))
+        print(f"候选：{len(targets)} 条" + config_line(str(rel), in_use, state))
     if any(is_remote(t) for t in targets):
         print("（下面这些「拿得到」是从**这台电脑**发请求量的：出口若挂着全局代理，"
               "它只证明那个服务活着，不证明家里那张 Wi-Fi 拿得到；"
