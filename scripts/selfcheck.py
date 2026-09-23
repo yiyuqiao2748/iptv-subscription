@@ -63,7 +63,8 @@ def disk_counts(files: list[str]) -> tuple[dict[str, int], list[str]]:
     要拿它自己跟自己对账就永远对得上。这里用另一份实现（`channel_groups`，
     `scripts/doc_num.py` 那个 `aptv:channels` 也走它），两条路撞出同一个数才有信息量。
 
-    第二个返回值是没法算的那些文件（表不在），不是错 —— 页面会写「文件不在」。
+    第二个返回值是**页面给了个数、磁盘上却没有这个文件**的那些。2.32 起它算失败：
+    「页面会写『文件不在』」不构成豁免 —— 那种行压根进不到这里（见 `claims` 只认带台数的行）。
     """
     sys.path.insert(0, str(ROOT / "scripts"))
     from probe_pack import channel_groups        # 唯一一处 import 放在函数里：为了可数
@@ -89,13 +90,18 @@ def fetch_page(port: int, timeout: float = 4.0) -> str:
         return r.read().decode("utf-8", "replace")
 
 
-def page_verdict(html: str, disk: dict[str, int], missing: list[str]) -> tuple[str, str]:
+def page_verdict(html: str, disk: dict[str, int], gone: list[str]) -> tuple[str, str]:
     """把「页面说的话」和「磁盘上的表」摆一起 —— 判定逻辑全在这里，IO 不在。
 
     三种结果分开说，因为**下一步要做的事不一样**：服务没起（`check_page` 给 skip）、
     跑的是旧版（重启就完事）、数对不上（那是 bug，得改代码）。
     「一行带台数的都没抓到」算失败而不是通过：那要么是老版式、要么是版式改了，
     两种情况下这一步都没量到东西 —— **「没查到错」和「没查」不是一件事**。
+
+    `gone` 那一格是 2.32 补的，以前它叫「不是错」，理由写的是「页面会写『文件不在』」——
+    那句话把两件事混成一件了：`claims()` 只认带「（N 个台）」的行，页面真写「文件不在」
+    时根本进不到这一层。所以能落进 `gone` 的只剩一个意思：**页面还在为一个磁盘上没有的
+    文件报数**，那正是 2.29 立这一条要抓的化石，不能算过。
 
     >>> disk, miss = {"aptv.m3u": 98, "test.m3u": 4}, []
     >>> # 页面行长这样，所以样例也照它的样子拼（`row` = 一行）
@@ -118,10 +124,11 @@ def page_verdict(html: str, disk: dict[str, int], missing: list[str]) -> tuple[s
     ('fail', 'aptv.m3u：页面说 99，磁盘上是 98')
     >>> page_verdict(row("hunan.m3u", "湖南本地优先（文件不在）"), disk, [])[0]
     'fail'
-    >>> # 页面写「文件不在」的那些：不算错，但要说出来，别让它变成「三行全对」
-    >>> v, why = page_verdict(row("aptv.m3u", "全量（98 个台）") + stamp, {"aptv.m3u": 98}, ["b.m3u"])
+    >>> # 页面给着数、磁盘上这个文件已经没了 —— 化石，2.32 起算不过
+    >>> v, why = page_verdict(row("aptv.m3u", "全量（98 个台）") + row("b.m3u", "另一张（7 个台）") + stamp,
+    ...                       {"aptv.m3u": 98}, ["b.m3u"])
     >>> v, why
-    ('pass', '1/1 行的台数与磁盘一致；1 行写的是「文件不在」（b.m3u）')
+    ('fail', 'b.m3u：页面说 7 个台，可磁盘上已经没有这个文件了；1/2 行的台数与磁盘一致')
     """
     said = claims(html)
     if not said:
@@ -129,14 +136,13 @@ def page_verdict(html: str, disk: dict[str, int], missing: list[str]) -> tuple[s
                         "还是版式改了？这一层什么都没量到，不算通过")
     bad = [f"{f}：页面说 {n}，磁盘上是 {disk[f]}" for f, n in sorted(said.items())
            if f in disk and disk[f] != n]
-    parts = [f"{len(said) - len(bad)}/{len(said)} 行的台数与磁盘一致"]
-    if missing:
-        parts.append(f"{len(missing)} 行写的是「文件不在」（{'、'.join(missing)}）")
-    parts = bad + parts
+    ghosts = [f"{f}：页面说 {n} 个台，可磁盘上已经没有这个文件了"
+              for f, n in sorted(said.items()) if f in gone]
+    parts = bad + ghosts + [f"{len(said) - len(bad) - len(ghosts)}/{len(said)} 行的台数与磁盘一致"]
     if STAMP_PHRASE not in html:
         parts.append("这一页还没有 2.29 那句生成时间 —— 跑着的是**旧版**，"
                      "它上面的台数是起服务那一刻抄的化石：关掉窗口、重新双击一次")
-    return ("pass" if not bad and STAMP_PHRASE in html else "fail"), "；".join(parts)
+    return ("pass" if not bad and not ghosts and STAMP_PHRASE in html else "fail"), "；".join(parts)
 
 
 def check_page(port: int) -> tuple[str, str]:
@@ -155,8 +161,8 @@ def check_page(port: int) -> tuple[str, str]:
     if "APTV" not in html:
         return "fail", f"端口 {port} 有东西在听，但那不是这个服务（页面里连 APTV 都没有）"
     said = claims(html)
-    disk, missing = disk_counts(list(said))
-    return page_verdict(html, disk, missing)
+    disk, gone = disk_counts(list(said))
+    return page_verdict(html, disk, gone)
 
 
 # 各把尺的收尾句长得不一样，但都带这几个词之一。挑不到就印最后一行（不许印空）。

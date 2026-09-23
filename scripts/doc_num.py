@@ -377,6 +377,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{base} 里一张表都读不出来，没有可对账的数。", file=sys.stderr)
         return 2
     rows, counts = check_files(docs, values)
+    absent = [str(d) for d in docs if not d.exists()]
+    if absent:
+        # 点名要查的文档不在，就等于它里面每一个 〔数:…〕 都没查 —— 别跟着别篇的成绩退 0。
+        # 最坏的一种绿是「文档改了个名，这一层少一篇覆盖，屏幕上照旧全部对得上」：
+        # 真机验收单那 28 处会整篇消失，而它正是这六步唯一能对上的那一份。
+        # （`--docs` 里给个不存在的名字，只可能是手打错了或文档搬家了，两种都不该由它替我说「没问题」。）
+        for d in absent:
+            print(f"！点名的文档不在：{d} —— 它那些标记一个都没查到，不算通过", file=sys.stderr)
+        return 2
     print(f"以 {as_of(base)} 为准")
     if missing:
         for m in missing:

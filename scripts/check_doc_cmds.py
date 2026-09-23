@@ -19,10 +19,15 @@
 总结行也会写明有几段被圈掉了，不让这个口子悄悄吞掉整篇文档。
 
 位置参数、参数的取值对不对，它不管 —— 那类漂移要靠用例，不靠这把尺。
+
+退码：**0** = 扫到的每一条都没问题；**1** = 有对不上的；**2** = **一条都没扫到**
+（2.32 补的那一格：文档被清空、文件名给错、版式改了让正则落空，三种都是这把尺自己瞎了，
+不能让「扫了 0 条、0 条对不上」冒充「查过了、没问题」）。
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import subprocess
 import sys
@@ -243,6 +248,27 @@ def undocumented(present: set[str], refs: set[str], *, skip: tuple = ("_",)) -> 
     return sorted(n for n in present - refs if not n.startswith(skip))
 
 
+def importable(dotted: str) -> bool:
+    """这个点名的模块解释器找不找得到 —— 用来分清「stdlib/第三方」和「仓库里改名了」。
+
+    为什么要有这一条：`-m` 那一支以前在模块文件不存在时把源码读成空串，
+    于是「既没有 cmd_* 也没有 argparse」成立，直接 return ""（= 没问题）。
+    结果是**把 `src/cli.py` 改名，文档里那十几条 `-m src.cli …` 会全绿**，
+    而它们照抄进终端是一条都跑不了的。这一层不跑真命令，只把「根本不存在」这件事报出来。
+
+    >>> importable("http.server")     # 标准库里的：算找得到
+    True
+    >>> importable("src.goneone")     # 父包在、子模块不在
+    False
+    >>> importable("no.such.pkg.deep")  # 连父包都没有，find_spec 会抛，不许它抛穿
+    False
+    """
+    try:
+        return importlib.util.find_spec(dotted) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def check_one(target: list[str], body: str, *, verbose: bool = False) -> str:
     """一条命令的结论：空串＝没问题，否则说清哪儿不对。
 
@@ -259,6 +285,9 @@ def check_one(target: list[str], body: str, *, verbose: bool = False) -> str:
     base = [sys.executable] + (["-m"] + target[1:] if target[0] == "-m" else [target[0]])
     if target[0] == "-m":
         mod = ROOT / (target[1].replace(".", "/") + ".py")
+        if not mod.exists() and not importable(target[1]):
+            return (f"-m {target[1]} 这个模块仓库里没有、解释器也找不到"
+                    "（改了名？文档没跟着改，这条照抄会直接报错）")
         text = mod.read_text(encoding="utf-8") if mod.exists() else ""
         names = subcommands(text)
         sub = target[2] if len(target) > 2 else ""
@@ -333,13 +362,21 @@ def main(argv: list[str] | None = None) -> int:
     # 「哪支脚本没进文档」只有把**全套**文档一起扫才有意义：单扫一份的话
     # 另外几份里提到过的一律会被误报成没人知道，那条提醒就成噪音了。
     hidden = undocumented(scripts, refs) if not args.docs else []
+    tail = (f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose" if miss
+            else "；该查的都查了" if n else "；这一轮一条都没扫到，上面那些 0 全是空的")
     print(f"\n扫了 {n} 条命令、{len(refs)} 个脚本名：{bad} 条命令、{len(dead)} 个脚本名对不上"
           + (f"（另有 {skipped} 段标了 off 的例子没查）" if skipped else "")
-          + (f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose"
-             if miss else "；该查的都查了"))
+          + tail)
     if hidden:
         print("（只提醒，没算进上面那个数）这几支脚本这些文档里没提过："
               + "、".join(f"scripts/{x}" for x in hidden))
+    # 「一条命令都没扫到」不能算过：那要么文档被清空了、要么给的文件名不对、
+    # 要么版式改了让正则全落空 —— 三种都是这把尺自己瞎了，不是文档没问题。
+    # 另外几把尺早就有这一格（selfcheck 的 2、doc_num 的 2），2.32 把它补到这条上。
+    if not n:
+        print("（三种可能：文档被清空了、`docs` 参数给错了、版式改了让 `commands_in` 全落空 —— "
+              "加 --verbose 看一眼是哪种）")
+        return 2
     return 1 if (bad or dead) else 0
 
 

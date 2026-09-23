@@ -232,6 +232,24 @@ def verdict(name: str, d: dict, att: dict) -> str:
     return f"{name}：**换表了** —— " + "；".join(bits)
 
 
+def empty_pair(d: dict) -> bool:
+    """两边都是空表：这一对「比了等于没比」。
+
+    为什么单独有这一条：`lines_same` 的定义是「频道序列一致 + 没有线路改动 + 两边线路数相等」，
+    两份空文件在这三条上全成立，于是它给「同一张表 —— 0 条线路一字不差」并且退 0。
+    那正是这把尺最不该给的一种绿：**上游抽风把两张表都写成空的**，跟「上一轮和这一轮是同一张表」
+    是两回事，前者是产物坏了，后者才是它要回答的问题。
+
+    >>> empty_pair({"lines_a": 0, "lines_b": 0})
+    True
+    >>> empty_pair({"lines_a": 226, "lines_b": 226})
+    False
+    >>> empty_pair({"lines_a": 0, "lines_b": 251})    # 只有一边空：那是「换表了」，不是「没比」
+    False
+    """
+    return not d["lines_a"] and not d["lines_b"]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="比对两张已生成的表：报告说的是不是电视上那张")
     ap.add_argument("--against", required=True, metavar="目录",
@@ -258,6 +276,11 @@ def main(argv: list[str] | None = None) -> int:
         ta, tb = pa.read_text(encoding="utf-8"), pb.read_text(encoding="utf-8")
         d = diff_tables(channel_groups(ta), channel_groups(tb))
         att = attribute_delta(ta, tb)
+        if empty_pair(d):
+            # 两份都是空的：不算比过、不算一致，也不给「同一张表」那句话留位置（见 empty_pair）
+            print(f"{fn}：两边都是 0 条线路 —— 比了等于没比，这一对不算数")
+            skipped.append(fn)
+            continue
         if att["len_diff"]:
             d["lines_same"] = False       # 行数都不等，别信「同一张表」
         print(verdict(fn, d, att))
@@ -267,14 +290,18 @@ def main(argv: list[str] | None = None) -> int:
     if not checked:
         # 一张都没比成功，就不能说「完全一致」—— 那是最容易在自动化里蒙混过关的一种假绿
         sys.stdout.flush()            # 不然这行会插到上面那几条「跳过」前面，读起来像先报错再干活
-        print(f"一张表都没比成（`--against` 那个目录里没有 {args.files} 中的任何一个）", file=sys.stderr)
+        print(f"一张表都没比成（`--against` 那个目录里没有 {args.files} 中的任何一个，"
+              "或者有但两边都是空的）", file=sys.stderr)
         return 2
     if drift:
         print(f"\n{drift} 张表和基准不是一张表 —— 报告里那些「集中度」「换线路」的数，"
               "说的已经不是电视上这份了，按新表重读一遍再据此决定。")
         return 1
-    print("\n线路级完全一致：报告里那些数说的就是这一张表。"
-          "（它不判断线路好坏，也不产生新表 —— 上面那句「同一张表」只到今天这两份文件为止。）"
+    # 「完全」只能在真的一张没落空时印：比了 1 张、跳过 1 张，说「线路级完全一致」是替没比的那张说话。
+    head = ("线路级完全一致" if not skipped else
+            f"比了的 {checked} 张线路级一致、另 {len(skipped)} 张没比")
+    print(f"\n{head}：报告里那些数说的就是这一张表。"
+          "（它不判断线路好坏，也不产生新表 —— 上面那句「同一张表」只到今天比过的这些文件为止。）"
           + (f" 没比的：{'、'.join(skipped)}" if skipped else ""))
     return 0
 
