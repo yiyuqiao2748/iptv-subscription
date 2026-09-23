@@ -29,6 +29,11 @@ _ATTR = re.compile(r'([a-zA-Z-]+)="([^"]*)"')
 # 一个 <channel> 块到哪为止：常见写法是「<channel id>…<display-name>…</channel>」，
 # 但也见过自闭合的，所以拿「下一个 channel/programme 标签」当块尾，不指望 </channel> 一定在。
 _CHANNEL = re.compile(r'<channel\b([^>]*)>(.*?)(?=<channel\b|<programme\b|</tv>|\Z)', re.S)
+# <programme> 块只取属性那一段：`start=` 和 `channel=` 谁在前各家不一样（2.34），
+# 所以属性各自搜，不写成一个顺序敏感的大正则。
+_PROGRAMME = re.compile(r'<programme\b([^>]*)>')
+_START = re.compile(r'\bstart="(\d{8})')
+_CHAN = re.compile(r'\bchannel="([^"]*)"')
 _CJK = re.compile(r'[一-鿿]{1,4}$')
 
 
@@ -39,6 +44,7 @@ class Epg:
     ids: list[str] = field(default_factory=list)
     display: dict[str, str] = field(default_factory=dict)   # channel id -> display-name
     days: Counter = field(default_factory=Counter)           # "YYYYMMDD" -> 节目条数
+    day_chans: dict[str, set] = field(default_factory=dict)  # "YYYYMMDD" -> 那天真有条目的 channel id
     progs: int = 0
     generator: str = ""
 
@@ -66,8 +72,16 @@ def parse_tv(text: str) -> Epg:
     'CCTV1'
     >>> dict(e.days)
     {'20260921': 2, '20260922': 1}
+    >>> {d: sorted(v) for d, v in e.day_chans.items()}
+    {'20260921': ['CCTV-1', '湖南卫视'], '20260922': ['湖南卫视']}
     >>> e.progs, e.generator
     (3, 'demo')
+
+    `start=` 和 `channel=` 的先后不固定（`e.erw.cc` 那份是 start 在前的），所以两个属性
+    各自在整段属性里搜，不指望谁排在谁前面：
+
+    >>> dict(parse_tv('<tv><programme start="20260921000000 +0800" channel="a"/></tv>').days)
+    {'20260921': 1}
 
     自闭合的 channel 也要收到 id，不能因为等不到 `</channel>` 就把后面整段吞进去：
 
@@ -92,7 +106,15 @@ def parse_tv(text: str) -> Epg:
         e.ids.append(cid)
         e.display[cid] = (dn.group(1).strip() if dn else "")
     e.progs = len(re.findall(r'<programme\b', text))
-    e.days.update(m[:8] for m in re.findall(r'<programme\b[^>]*\bstart="(\d{8})', text))
+    for attrs in _PROGRAMME.findall(text):
+        st = _START.search(attrs)
+        if not st:
+            continue                       # 没有 start 的节目块进不了按天的账
+        day = st.group(1)
+        e.days[day] += 1
+        ch = _CHAN.search(attrs)
+        if ch:
+            e.day_chans.setdefault(day, set()).add(ch.group(1))
     return e
 
 
@@ -299,6 +321,73 @@ def has_today(epg: Epg, today: str) -> bool:
     return bool(epg.days) and today in epg.days
 
 
+def channels_on(epg: Epg, day: str) -> int:
+    """那天**真有条目**的频道有几个（跟 `n_channels` 不是一件事：那是单子声明了多少个台）。
+
+    >>> e = parse_tv('<tv><channel id="a"/><channel id="b"/><channel id="c"/>'
+    ...              '<programme channel="a" start="20260921000000 +0800"/>'
+    ...              '<programme channel="b" start="20260921010000 +0800"/>'
+    ...              '<programme channel="a" start="20260922000000 +0800"/></tv>')
+    >>> channels_on(e, "20260921"), channels_on(e, "20260922"), channels_on(e, "20260923")
+    (2, 1, 0)
+    >>> channels_on(Epg(), "20260921")
+    0
+    """
+    return len(epg.day_chans.get(day, ()))
+
+
+THIN_FLOOR = 40      # 一份本来就没几个台的单子（各家自制的测试单）不去判它
+
+
+def thin_today(epg: Epg, today: str, *, floor: int = THIN_FLOOR, ratio: int = 4) -> bool:
+    """`today` 有节目，但满得可疑：另一天有 `floor` 个台以上，今天还不到它的 `1/ratio`。
+
+    为什么要有这一条（2.33 量出来的）：`e.erw.cc` 那份单子写着「覆盖 3 天」，按天数完是
+    今天 518 个台 / 17 764 条、另外两天各 **5** 个台 / 157 条 —— 那 5 个是山西台，我们表里
+    一个都没有。也就是说对表里那 98 个台，这份单子**只有今天**。形状反过来那天就是事故现场：
+    `has_today()` 只看日期在不在集合里，一份被截断的取回会被当好的一整天地用，
+    而 98 个台的节目条一起消失。这一条量的就是「有日期，有没有内容」。
+
+    >>> big = "".join(f'<programme channel="x{i}" start="20260920000000 +0800"/>'
+    ...               for i in range(40))
+    >>> e = parse_tv('<tv>' + big + '<programme channel="x1" start="20260921000000 +0800"/></tv>')
+    >>> thin_today(e, "20260921")                      # 昨天 40 个台、今天 1 个
+    True
+    >>> thin_today(e, "20260920")                      # 满的那天是今天，没什么可疑
+    False
+    >>> e2 = parse_tv('<tv><programme channel="a" start="20260921000000 +0800"/>'
+    ...               '<programme channel="b" start="20260921010000 +0800"/></tv>')
+    >>> thin_today(e2, "20260921")                    # 只有今天，没得比 —— 2.33 那份真单子的形状
+    False
+    >>> thin_today(e2, "20260921", floor=1)           # 门槛挪到 1 个台也不点燃：今天之外根本没有别的日子
+    False
+    >>> thin_today(Epg(), "20260921")                 # 空单归 has_today 管，不在这儿判
+    False
+    """
+    if not has_today(epg, today):
+        return False
+    best = max((channels_on(epg, d) for d in epg.days if d != today), default=0)
+    return best >= floor and channels_on(epg, today) * ratio < best
+
+
+def today_ok(epg: Epg, today: str) -> bool:
+    """这一份今天能不能用：有今天的日期，且今天不是那种「只剩几个台」的瘦今天。
+
+    `load_epg()` 拿它当「要不要重取」的判据 —— 只看 `has_today()` 的话，一份被截断的
+    取回会被当好的一整天地用（2.33），而那种单子恰好让 98 个台的节目条一起消失。
+
+    >>> big = "".join(f'<programme channel="x{i}" start="20260920000000 +0800"/>'
+    ...               for i in range(40))
+    >>> e = parse_tv('<tv>' + big + '<programme channel="x1" start="20260921000000 +0800"/></tv>')
+    >>> has_today(e, "20260921"), today_ok(e, "20260921")     # 日期对，内容不行
+    (True, False)
+    >>> e2 = parse_tv('<tv><programme channel="a" start="20260921000000 +0800"/></tv>')
+    >>> today_ok(e2, "20260921"), today_ok(e2, "20260922")
+    (True, False)
+    """
+    return has_today(epg, today) and not thin_today(epg, today)
+
+
 def gap_days(epg: Epg, today: str) -> int:
     """最新一天的节目离 `today` 有多少天（负数=比今天还新）。空单返回 0，不抛。
 
@@ -331,12 +420,38 @@ def span(days: list[str]) -> str:
 
 
 def coverages(epg: Epg, today: str) -> str:
-    """一句话说明这份节目单覆盖到哪。
+    """一句话说明这份节目单**今天到底有多少内容**。
+
+    「覆盖 N 天」那种写法被 2.33 量过一次就作废了：e.erw.cc 那份写「覆盖 3 天」，
+    实际只有今天有内容，读了的人以为有三天可翻。所以现在报的是台数，不是天数。
 
     >>> e = parse_tv('<tv><channel id="a"></channel>'
     ...              '<programme channel="a" start="20260921000000 +0800"></programme></tv>')
     >>> coverages(e, "20260921")
-    '今天有节目（覆盖 1 天：20260921）'
+    '今天有节目（1 个台有条目）'
+
+    有别的日子的话，把最满的那天摊出来，不写成区间：
+
+    >>> e3 = parse_tv('<tv>'
+    ...              '<programme channel="a" start="20260921000000 +0800"></programme>'
+    ...              '<programme channel="b" start="20260921000000 +0800"></programme>'
+    ...              '<programme channel="a" start="20260920000000 +0800"></programme>'
+    ...              '<programme channel="a" start="20260922000000 +0800"></programme></tv>')
+    >>> coverages(e3, "20260921")
+    '今天有节目（2 个台有条目；其余 2 天最多 1 个台）'
+
+    被截断的那种取回（今天只剩几个台）不复用「今天有节目」这五个字，否则 `usable()`
+    那种子串判据会把反面读成正面：
+
+    >>> big = "".join(f'<programme channel="x{i}" start="20260920000000 +0800"/>'
+    ...               for i in range(40))
+    >>> e4 = parse_tv('<tv>' + big +
+    ...               '<programme channel="x1" start="20260921000000 +0800"/></tv>')
+    >>> coverages(e4, "20260921")
+    '今天只有 1 个台有条目（另外那天 40 个 —— 这份单子像被截断了）'
+    >>> "今天有节目" in coverages(e4, "20260921")
+    False
+
     >>> e2 = parse_tv('<tv><channel id="a"></channel>'
     ...                '<programme channel="a" start="20260807000000 +0800"></programme></tv>')
     >>> coverages(e2, "20260921")
@@ -349,6 +464,10 @@ def coverages(epg: Epg, today: str) -> str:
 
     >>> "今天有节目" in "没有今天的内容（覆盖 1 天：20260807，距今 45 天）"
     False
+
+    没有今天的那一支**故意不改**：它说的「覆盖 N 天」在这里就是字面的「这单子有几天」，
+    不误导人；而且 `真机验收单.md` 与计划书 2.31／2.32 都原样引过这句话，动它等于让那些
+    记录里引的句子失效。
     """
     if not epg.days:
         return "一条节目都没有"
@@ -356,7 +475,15 @@ def coverages(epg: Epg, today: str) -> str:
     if not has_today(epg, today):
         return (f"没有今天的内容（覆盖 {len(days)} 天：{span(days)}，"
                 f"距今 {abs(gap_days(epg, today))} 天）")
-    return f"今天有节目（覆盖 {len(days)} 天：{span(days)}）"
+    n = channels_on(epg, today)
+    others = [d for d in days if d != today]
+    if thin_today(epg, today):
+        return (f"今天只有 {n} 个台有条目（另外那天 {max(channels_on(epg, d) for d in others)} 个"
+                " —— 这份单子像被截断了）")
+    if not others:
+        return f"今天有节目（{n} 个台有条目）"
+    return (f"今天有节目（{n} 个台有条目；其余 {len(others)} 天最多 "
+            f"{max(channels_on(epg, d) for d in others)} 个台）")
 
 
 def load_bytes(raw: bytes) -> tuple[Epg, str]:

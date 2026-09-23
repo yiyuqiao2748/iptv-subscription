@@ -68,7 +68,7 @@ import yaml  # noqa: E402
 from src.check import history as hist  # noqa: E402
 from src.check.env import egress_hint, measurement_warnings  # noqa: E402
 from src.check.epg import (  # noqa: E402
-    Epg, apply_ids, coverages, gzip_decompress, has_today, load_bytes)
+    Epg, apply_ids, coverages, gzip_decompress, load_bytes, today_ok)
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
     AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
@@ -398,7 +398,8 @@ def load_epg(cfg: dict, *, today: str, force: bool = False,
 
     为什么规则写成「够不够新」而不是「用户有没有让我联网」：节目单是**有时效**的东西，
     昨天那份的 `tvg-id` 对今天照样能用，但它自己覆盖不到今天，电视上就是空节目单。
-    `has_today()` 量得出这件事，所以取不取网看它，不看 `--fresh`；`--fresh` 只是顺带强制重取。
+    `today_ok()` 量得出这件事（它 = `has_today()` 且不是 `thin_today()` 那种「有日期、
+    只剩几个台」的瘦今天，2.33），所以取不取网看它，不看 `--fresh`；`--fresh` 只是顺带强制重取。
 
     三条退路都是同一条原则：这一层只负责让 id 对得上，EPG 挂了、取回来是报错页、
     缓存读不出来，任何一种都**不许影响出表**（`apply_ids()` 拿到空单什么都不改）。
@@ -423,6 +424,25 @@ def load_epg(cfg: dict, *, today: str, force: bool = False,
     (['CCTV1'], '缓存（epg.xml）', False)
     (False, '没有今天的内容（覆盖 1 天：20260921，距今 101 天）')
     (['CCTV1'], True, True, '缓存（epg.xml，联网失败后退回）')
+
+    缓存里「有今天」但今天只剩一个台（2.33 那种被截断的取回）不算 good —— 重取，
+    重取回来还是瘦的就照实说瘦，不复用「今天有节目」那五个字：
+
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     chans = "".join(f'<channel id="x{i}"><display-name>X{i}</display-name></channel>'
+    ...                     for i in range(40))
+    ...     progs = "".join(f'<programme channel="x{i}" start="20260920000000 +0800"></programme>'
+    ...                     for i in range(40))
+    ...     thin = ('<tv>' + chans + progs +
+    ...             '<programme channel="x1" start="20260921000000 +0800"></programme></tv>')
+    ...     src = pathlib.Path(d) / "e.xml"
+    ...     _ = src.write_text(thin, encoding="utf-8")
+    ...     cache = pathlib.Path(d) / "epg.xml"
+    ...     _ = cache.write_text(thin, encoding="utf-8")
+    ...     cfg = {"enabled": True, "url": str(src), "cache": cache}
+    ...     doc, info = load_epg(cfg, today="20260921")
+    ...     info["via"], info["ok"], info["coverage"]
+    ('联网', False, '今天只有 1 个台有条目（另外那天 40 个 —— 这份单子像被截断了）')
     """
     info: dict = {"url": cfg.get("url", ""), "via": "未取到", "note": "",
                   "error": "", "coverage": "", "ok": False, "refreshed": False}
@@ -438,7 +458,7 @@ def load_epg(cfg: dict, *, today: str, force: bool = False,
         except OSError as e:
             info["error"] = f"缓存读不出来：{type(e).__name__}: {e}"
 
-    if cached is not None and has_today(cached, today) and not force:
+    if cached is not None and today_ok(cached, today) and not force:
         return cached, {**info, "via": f"缓存（{cache.name}）", "note": cached_note,
                         "coverage": coverages(cached, today), "ok": True}
 
@@ -452,7 +472,7 @@ def load_epg(cfg: dict, *, today: str, force: bool = False,
             return Epg(), {**info, "error": f"{type(e).__name__}: {e}"}
         return cached, {**info, "via": f"缓存（{cache.name}，联网失败后退回）",
                         "note": cached_note, "error": f"{type(e).__name__}: {e}",
-                        "coverage": coverages(cached, today), "ok": has_today(cached, today)}
+                        "coverage": coverages(cached, today), "ok": today_ok(cached, today)}
 
     if not doc.ids:                           # 报错页/空单：不覆盖缓存，也不改任何 id
         msg = f"取回来了但一条频道都没有：{note}"
@@ -460,7 +480,7 @@ def load_epg(cfg: dict, *, today: str, force: bool = False,
             return cached, {**info, "via": f"缓存（{cache.name}，新取的那份是空单）",
                             "note": cached_note, "error": msg,
                             "coverage": coverages(cached, today),
-                            "ok": has_today(cached, today)}
+                            "ok": today_ok(cached, today)}
         return Epg(), {**info, "note": note, "error": msg}
 
     try:
@@ -469,7 +489,7 @@ def load_epg(cfg: dict, *, today: str, force: bool = False,
     except OSError as e:                      # 缓存写不进去不影响这一轮用这份节目单
         info["error"] = f"缓存没写成：{type(e).__name__}: {e}"
     return doc, {**info, "via": "联网", "note": note, "coverage": coverages(doc, today),
-                 "ok": has_today(doc, today), "refreshed": True}
+                 "ok": today_ok(doc, today), "refreshed": True}
 
 
 PROBE_FILE = ROOT / "data" / "output" / "probe.json"
