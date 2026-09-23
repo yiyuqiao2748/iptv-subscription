@@ -52,6 +52,11 @@ def parse_channels(text: str) -> tuple[list[Entry], list[str]]:
 
     name / url 缺一就跳过：宁可不进表，也不要往用户的第一线塞半条线路。
 
+    url 还必须是**一行**：`strip()` 只去首尾，中间剩下的空白是 YAML 折行弄出来的，
+    那条地址已经不是任何人测过的那一条了。字面块 `|` 更糟 —— 里面如果有换行，
+    写进 m3u 就是凭空多出一行地址（2.35 复现过：1 头 + 2 线路的表变成 4 行）。
+    这里拦下来比让 writer 悄悄改掉诚实：理由会打印，条目不会假装存在。
+
     >>> entries, skipped = parse_channels('''
     ... channels:
     ...   - name: 湘潭新闻综合
@@ -63,6 +68,10 @@ def parse_channels(text: str) -> tuple[list[Entry], list[str]]:
     [('湘潭新闻综合', 'http://live.hnxttv.com:9601/live/xwzh/800K/tzwj_video.m3u8', 'local', 'shizhou')]
     >>> skipped
     ['第 2 条：缺 url']
+    >>> parse_channels("channels:\\n  - name: 折行的\\n    url: \\"http://a/1.m3u8\\n      x.m3u8\\"\\n")[1]
+    ['第 1 条 折行的：url 里有空白，多半是 YAML 折行']
+    >>> parse_channels("channels:\\n  - name: 两行\\n    url: |\\n      http://a/1.m3u8\\n      http://b/2.m3u8\\n")[0]
+    []
     """
     cfg = yaml.safe_load(text) or {}
     out: list[Entry] = []
@@ -73,6 +82,9 @@ def parse_channels(text: str) -> tuple[list[Entry], list[str]]:
         url = str(raw.get("url") or "").strip()
         if not name or not url:
             skipped.append(f"第 {i + 1} 条：缺 {'url' if name else 'name'}")
+            continue
+        if any(c.isspace() for c in url):
+            skipped.append(f"第 {i + 1} 条 {name}：url 里有空白，多半是 YAML 折行")
             continue
         exp = str(raw.get("expires") or "").strip()
         if exp:

@@ -2,6 +2,7 @@
 
 把上游各种写法的 m3u 解析成统一的 Entry 结构，供后续匹配、检测、输出使用。
 解析过程保持宽容：缺属性、属性顺序不同、注释行夹杂都不应导致条目丢失。
+不宽容的只有一件 —— 一条地址必须是一行里不带空白的一个整体（见 `parse_m3u`）。
 """
 
 from __future__ import annotations
@@ -71,6 +72,25 @@ def parse_m3u(text: str, source: str = "") -> Playlist:
     - `#EXTINF` 缺 tvg-name 时回退用标题，缺标题时回退用 tvg-name
     - `#EXTGRP` 单独成行时作为 group 的补充来源
     - 连续多条注释行（如 `#EXTVLCOPT`）不影响取 url
+
+    不容错的一条：地址必须是一行里不含空白的一个整体。上游偶尔写出
+    `http://a/1.m3u8 后缀` 这种行（复制粘贴带上文件名备注也会这样），
+    它不是「宽容一点就能用」的写法 —— 写回我们的表就是一行两条信息，
+    而 APTV 只会取到空格前面那半截，等于一条谁也没测过的地址。
+    按畸形计入 `skipped`（`src/cli.py` 会把「跳过 N 行畸形数据」印出来）。
+
+    >>> pl = parse_m3u('''#EXTM3U
+    ... #EXTINF:-1 tvg-id="h1" group-title="湖南",湖南卫视
+    ... http://a/1.m3u8
+    ... #EXTINF:-1 tvg-id="h2" group-title="湖南",湘潭新闻综合
+    ... http://b/1.m3u8 后缀
+    ... #EXTINF:-1 ,
+    ... http://c/1.m3u8
+    ... ''')
+    >>> [(e.name, e.url) for e in pl.entries]
+    [('湖南卫视', 'http://a/1.m3u8')]
+    >>> pl.skipped                    # 带空白的那条 + 没名字的那条
+    2
     """
     playlist = Playlist()
     pending: dict[str, str] | None = None
@@ -82,7 +102,7 @@ def parse_m3u(text: str, source: str = "") -> Playlist:
         assert pending is not None
         attrs = pending
         name = attrs.get("title") or attrs.get("tvg-name") or attrs.get("tvg-id") or ""
-        if not name or not url:
+        if not name or not url or any(c.isspace() for c in url):
             playlist.skipped += 1
             return
         known = {"tvg-id", "tvg-name", "tvg-logo", "group-title", "title"}

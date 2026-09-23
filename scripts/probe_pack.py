@@ -48,7 +48,7 @@ from src.cli import (REACH_FILE, first_line_focus, load_probe, second_line_optio
                      weak_first_line)
 # _SCOPE_LABEL 是报告里那张「范围 → 人话」的表；这里直接用它，
 # 免得试播包和 report.md 对同一个主机族说出两种口径。
-from src.output.writer import _SCOPE_LABEL, OutputChannel     # noqa: E402
+from src.output.writer import _SCOPE_LABEL, OutputChannel, one_line     # noqa: E402
 
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 
@@ -383,8 +383,12 @@ def build(channels: list[tuple[str, list[str]]], top: int,
             note += f"·{st['ms']}ms"
         # 电视上看到的那一行：台数写进名字里，用户口述「第二个能动」时不用翻终端
         short = f"·{n_first}台" if n_first >= 2 else ""
-        lines.append(f'#EXTINF:-1 tvg-name="{pref}" '
-                     f'group-title="🔍 试播包",{mark} {family_label(base)}{short}｜{pref}')
+        # 这里是第二处自己拼 `#EXTINF` 的地方（第一处在 src/output/writer.py），
+        # 所以过同一个 one_line()：`pref` 是从真表里抄来的台名，它带引号或换行时
+        # 这行一样会破结构 —— 规则只有一份，不然两处会各自烂。
+        disp = one_line(f"{mark} {family_label(base)}{short}｜{pref}")
+        lines.append(f'#EXTINF:-1 tvg-name="{one_line(pref)}" '
+                     f'group-title="🔍 试播包",{disp}')
         lines.append(url)
         legend.append({"mark": mark, "host": base, "url": url,
                        "family": f"{family_label(base)}（{where(base, items)}，{len(items)} 条）",

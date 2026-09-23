@@ -2,12 +2,52 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
 from src.check.history import Suggestion  # 建议行的格式只有一份实现（2.17）
 
 _M3U_ATTRS = ("tvg-id", "tvg-name", "tvg-logo", "group-title")
+
+# 一行里装不下的字符：控制符（含 \r \n）、U+2028/29 这两行分隔符。
+_CTRL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]")
+_MULTI_SPACE = re.compile(r" {2,}")
+
+
+def one_line(value: object) -> str:
+    """把一个要写进 m3u 的值压成「待在一行里、且不顶破属性引号」的字符串。
+
+    三件事，按危害排：
+
+    1. 换行 -> 空格。不压掉的话一条 `#EXTINF` 会裂成几行，多出来的那半截被播放器
+       当成一条线路地址 —— 那是**往表里凭空加台**，比台名难看严重得多。
+    2. 双引号 -> 单引号。属性是 `k="v"` 拼出来的，值里一个 `"` 就把后面所有属性顶错位；
+       m3u 没有反斜杠转义这一说（各家都是拿正则找下一个 `"`），所以只能换个字符。
+    3. 首尾空白去掉、连续空白收成一个空格（台名本来就有空格，`CCTV 1` 不动）。
+
+    全项目**自己拼 `#EXTINF` 的只有两处**：这里的 `extinf()`，和
+    `scripts/probe_pack.py` 里那张试播包（2.35 起它 import 这个函数，规则只有一份）。
+
+    >>> one_line('CCTV"1')
+    "CCTV'1"
+    >>> one_line("湖南\\n卫视为单位")
+    '湖南 卫视为单位'
+    >>> one_line("  金鹰纪实  ")
+    '金鹰纪实'
+    >>> one_line("湖南\t综合")
+    '湖南 综合'
+    >>> one_line('http://e/x.xml"y')
+    "http://e/x.xml'y"
+    >>> one_line(None), one_line("")
+    ('', '')
+    >>> one_line("湖南\u2028本地")        # 行分隔符也算换行
+    '湖南 本地'
+    >>> one_line("金鹰纪实“高清”")        # 全角弯引号不动：顶破属性的是半角 "
+    '金鹰纪实“高清”'
+    """
+    text = _MULTI_SPACE.sub(" ", _CTRL.sub(" ", str(value if value is not None else "")))
+    return text.replace('"', "'").strip()
 
 # 报告里的可达范围表：key 与 config/reachability.yaml 的分档同名
 _SCOPE_LABEL = {
@@ -27,12 +67,25 @@ class OutputChannel:
     order: tuple = ()
 
     def extinf(self) -> str:
-        attrs = " ".join(
-            f'{k}="{v}"'
-            for k, v in zip(_M3U_ATTRS, (self.tvg_id, self.name, self.logo, self.group_title))
-            if v
-        )
-        return f"#EXTINF:-1 {attrs},{self.name}"
+        """渲染一条 `#EXTINF`。
+
+        值全部过 `one_line()`：这一行的结构靠 `k="v"` 和「一行一条」撑着，
+        台名里冒出一个 `"` 或换行就是**破结构**，不是难看（2.35 复现过）。
+
+        >>> ch = OutputChannel(name="湖南卫视", group_title="湖南本地", tvg_id="hunan1")
+        >>> print(ch.extinf())
+        #EXTINF:-1 tvg-id="hunan1" tvg-name="湖南卫视" group-title="湖南本地",湖南卫视
+        >>> ch = OutputChannel(name='CCTV"1', group_title="央视", tvg_id="cctv1")
+        >>> print(ch.extinf())                       # 引号换掉，后面那个属性才没被顶错位
+        #EXTINF:-1 tvg-id="cctv1" tvg-name="CCTV'1" group-title="央视",CCTV'1
+        >>> print(OutputChannel(name="湖南\\n卫视为单位", group_title="", tvg_id="").extinf())
+        #EXTINF:-1 tvg-name="湖南 卫视为单位",湖南 卫视为单位
+        >>> print(OutputChannel(name="\\n", group_title="", tvg_id="").extinf())
+        #EXTINF:-1 ,
+        """
+        vals = (one_line(v) for v in (self.tvg_id, self.name, self.logo, self.group_title))
+        attrs = " ".join(f'{k}="{v}"' for k, v in zip(_M3U_ATTRS, vals) if v)
+        return f"#EXTINF:-1 {attrs},{one_line(self.name)}"
 
 
 def format_m3u(channels: Iterable[OutputChannel], epg_url: str = "") -> str:
@@ -40,13 +93,56 @@ def format_m3u(channels: Iterable[OutputChannel], epg_url: str = "") -> str:
 
     同名频道连续出现即为 APTV 的多线路；这里每个 OutputChannel 只输出一条，
     多线路靠调用方把同一频道的多条 url 合并进 urls 实现。
+
+    两条性质都是「结构」而不是「好看」：头部一行、一条线路恰好两行（`#EXTINF` + 地址）。
+    地址本身不加工（判断线路好坏不归这里管），但 `strip()` 掉首尾空白，
+    空地址不写 —— 写了就是凭空多出一行会被当成地址的东西。
+
+    >>> a = OutputChannel(name="湖南卫视", group_title="湖南本地", tvg_id="hunan1",
+    ...                   urls=["http://x/1.m3u8", "http://y/2.m3u8"])
+    >>> b = OutputChannel(name="金鹰卡通", group_title="金鹰系", tvg_id="",
+    ...                   logo="http://l/p.png", urls=["http://z/3.m3u8"])
+    >>> print(format_m3u([a, b], epg_url="https://e.erw.cc/e.xml.gz"), end="")
+    #EXTM3U x-tvg-url="https://e.erw.cc/e.xml.gz"
+    #EXTINF:-1 tvg-id="hunan1" tvg-name="湖南卫视" group-title="湖南本地",湖南卫视
+    http://x/1.m3u8
+    #EXTINF:-1 tvg-id="hunan1" tvg-name="湖南卫视" group-title="湖南本地",湖南卫视
+    http://y/2.m3u8
+    #EXTINF:-1 tvg-name="金鹰卡通" tvg-logo="http://l/p.png" group-title="金鹰系",金鹰卡通
+    http://z/3.m3u8
+    >>> len(format_m3u([a]).strip().splitlines())    # 2 条线路 = 1 头 + 4 行
+    5
+    >>> format_m3u([]) == "#EXTM3U" + chr(10)        # 空表：一行头部，且以换行结尾
+    True
+    >>> lone = OutputChannel(name="x", group_title="", tvg_id="", urls=[])
+    >>> format_m3u([lone]) == "#EXTM3U" + chr(10)    # 一个台没有线路 = 除了头部什么都不写
+    True
+    >>> one = OutputChannel(name="x", group_title="", tvg_id="", urls=["http://x/1.m3u8"])
+    >>> print(format_m3u([one], epg_url='http://e/x.xml"y'), end="")   # 头部同样不许被顶破
+    #EXTM3U x-tvg-url="http://e/x.xml'y"
+    #EXTINF:-1 tvg-name="x",x
+    http://x/1.m3u8
+
+    写出去的东西拿**本项目自己的解析器**读回来（另一条实现，不是自己印证自己）：
+
+    >>> from src.parse.m3u import parse_m3u
+    >>> nasty = [OutputChannel(name='CCTV"1\\n综合', group_title='央"视', tvg_id="cctv1",
+    ...                        urls=["http://x/1.m3u8", "  ", "http://y/2.m3u8"])]
+    >>> pl = parse_m3u(format_m3u(nasty, epg_url="https://e/x.gz"))
+    >>> [(e.name, e.tvg_id, e.group, e.url) for e in pl.entries]
+    [("CCTV'1 综合", 'cctv1', "央'视", 'http://x/1.m3u8'), ("CCTV'1 综合", 'cctv1', "央'视", 'http://y/2.m3u8')]
+    >>> pl.x_tvg_url, pl.skipped                     # 头部完好；那个空地址没变成一条假线路
+    ('https://e/x.gz', 0)
     """
-    head = f'#EXTM3U x-tvg-url="{epg_url}"' if epg_url else "#EXTM3U"
+    head = f'#EXTM3U x-tvg-url="{one_line(epg_url)}"' if epg_url else "#EXTM3U"
     out = [head]
     for ch in channels:
         for url in ch.urls:
+            u = str(url).strip()
+            if not u:
+                continue
             out.append(ch.extinf())
-            out.append(url)
+            out.append(u)
     out.append("")
     return "\n".join(out)
 
