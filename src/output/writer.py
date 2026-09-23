@@ -750,6 +750,181 @@ def _focus_section(views: list[dict] | None) -> list[str]:
     return out
 
 
+# 每一条范围规则的「说法」：那一列只描述事实，好坏交给表底下那三句。
+_STATE_NOTE = {
+    "first": "有台子的第一线就是它管出来的",
+    "table": "进了表、没占住第一线",
+    "out": "上游有货、表里没有",
+    "shadow": "被排在前面的规则整个盖住",
+    "none": "上游一条都没命中",
+}
+
+
+def _cell(text: str) -> str:
+    """规则原文进 markdown 表格：一个 `|` 能把整张表断开，而这一格正是「内容错」那把尺要量的。
+
+    >>> _cell("a.com")
+    'a.com'
+    >>> _cell("a|b")
+    'a\\\\|b'
+    """
+    return str(text).replace("|", "\\|")
+
+
+def _reach_rule_section(meta: dict | None) -> list[str]:
+    """渲染「范围规则各自抓到几条」：config 里那几条规则一条一行，摆出它在三层的数（2.50）。
+
+    为什么要有这一节：§2.49 那道闸问的是**形状**（这一格是不是「一段名单」），
+    它看不见「形状对、内容错」—— `。chinamobile.com` 那个点是全角的、
+    `http://tvgslb…` 带了协议前缀、域名搬家了、同一条写了两遍，全都方方正正地过闸。
+    这一节问的是**效果**：这一条今天到底匹到几条线路、匹到的那些进没进表、有没有压住某个台的第一线。
+
+    它要回答的是 §2.49 收尾时留下的那句：「命中 0 条」在这一格**有几种**意义。
+    量完是三种，全靠那三层数把它们分开（括号里是 09-24 05:18 那一轮真跑出来的数）：
+
+      * **上游 0**（`none`）—— 这批线路里没有它要判的地址，或者这条本身写错了。
+        三种里只有这一种值得去动 `config/reachability.yaml`（本轮只有 `2408:` 一条：0 / 1869）。
+      * **上游有货、表里没有**（`out`）—— 被窗口挡的：每个频道最多留 `--max-lines` 条、
+        同一频道内同一主机最多 `--max-per-host` 条，都是我们自己的排序；或者是那些线路所在的台
+        根本不在名单里。真配置里五条是这一种，最典型的是 `.qingting.fm`（上游 22 条、表里 0 条）
+        和 `2409:`（上游 67 条、摊在 29 家主机上、表里 0 条）—— 它们**都在起作用**，
+        2.49 之前这句话只能靠人拿正则去数 m3u 才敢说。
+      * **字面命中、归它 0**（`shadow`）—— 排在它前面那条规则把它整个盖住了，
+        它没坏、只是轮不到它。本轮一条都没有，但 `.chinamobile.com` 已经很接近：
+        字面 210 条、归它 18 条，另外 192 条全落在 `tvgslb.hn.chinamobile.com` 那一条精确匹配里。
+        这一格留着的理由就是最后这半句：**「命中几条」和「归它几条」是两个问题**，
+        只问前者会把一条吃不到分的规则读成一条在起作用的规则，反过来也一样。
+
+    所以「0 命中就提醒」那把尺不能按**条**装（三种 0 里两种无害），只按**整档**装：
+    一档里每条都是 `none` 时 `src/cli.py` 往屏幕喊一句，而这一档在这张表里会连成一排 0。
+    这正是 §2.49 那个「报警跟着规则一起哑掉」的替代品 ——
+    上一节那句「一条公网线路都没有的 39 个频道」是**拿规则量的**，规则摊开了它自己就归 0（实测 39 → 0），
+    而这一节的「上游候选」那一列不欠任何规则：它是拿这批规则去问上游池子，
+    规则坏成什么样，它都会把 0 写在那些行上。
+
+    >>> # 这五行就是 2026-09-24 05:18 那一轮真跑出来的数（上游 1869 条 / 进表 226 条 / 第一线 98 条）
+    >>> rows = [{"tier": "iptv_intranet", "rule": "tvgslb.hn.chinamobile.com",
+    ...          "any_up": 192, "own_up": 192, "own_table": 41, "own_first": 22, "state": "first"},
+    ...         {"tier": "iptv_intranet", "rule": ".chinamobile.com",
+    ...          "any_up": 210, "own_up": 18, "own_table": 0, "own_first": 0, "state": "out"},
+    ...         {"tier": "iptv_intranet", "rule": "58.20.64.92",
+    ...          "any_up": 57, "own_up": 57, "own_table": 18, "own_first": 17, "state": "first"},
+    ...         {"tier": "iptv_intranet", "rule": "2408:",
+    ...          "any_up": 0, "own_up": 0, "own_table": 0, "own_first": 0, "state": "none"},
+    ...         {"tier": "audio_only", "rule": ".qingting.fm",
+    ...          "any_up": 22, "own_up": 22, "own_table": 0, "own_first": 0, "state": "out"}]
+    >>> meta = {"rows": rows, "n_up": 1869, "n_up_uniq": 1804, "n_table": 226, "n_first": 98,
+    ...         "no_public_n": 39, "max_lines": 3, "max_per_host": 2, "code_up": 3}
+    >>> s = "\\n".join(_reach_rule_section(meta))
+    >>> "范围规则各自抓到几条" in s
+    True
+    >>> "去重之后上游是 1804 条" in s                        # 口径写明：数的是条目，不是去重后的主机
+    True
+    >>> "写进 aptv 那张表的 226 条（另外三张表是它的子集" in s   # 「进表」是哪一批：05:41 逐张量过
+    True
+    >>> "| 运营商 IPTV 内网 | `tvgslb.hn.chinamobile.com` | 192 | 41 | 22 |" in s
+    True
+    >>> "| 运营商 IPTV 内网 | `.chinamobile.com` | 18（字面 210） | 0 | 0 | 上游有货、表里没有 |" in s
+    True
+    >>> s.count("上游一条都没命中"), s.count("上游有货、表里没有")
+    (1, 3)
+    >>> "每个频道最多留 3 条" in s                          # 窗口是参数，写死的那个数会骗人
+    True
+    >>> "1 条规则在上游共归它 22 条" in s                    # 档级那句：本轮的数
+    True
+    >>> "交叉核对：「第一线」那一列合计 39 台，与那句「一条公网线路都没有的频道」39 个" in s
+    True
+    >>> "对不上" in "\\n".join(_reach_rule_section({**meta, "no_public_n": 41}))  # 两把尺不咬合就明说
+    True
+    >>> "0 台（规则管的）" not in s
+    True
+    >>> "\\n".join(_reach_rule_section(None))
+    ''
+    >>> "一条规则都没配上" in "\\n".join(_reach_rule_section({**meta, "rows": []}))
+    True
+    >>> "239.130" in "\\n".join(_reach_rule_section({**meta, "code_up": 12}))  # 组播那条另算一句
+    True
+    >>> "交叉核对" not in "\\n".join(_reach_rule_section({k: v for k, v in meta.items()
+    ...                                                   if k != "no_public_n"}))  # 没给那句就不核对
+    True
+    >>> "同一条写了两遍" in "\\n".join(_reach_rule_section({**meta, "dup": ["2408:"]}))
+    True
+    >>> "同一条写了两遍" not in "\\n".join(_reach_rule_section(meta))
+    True
+    >>> shadow = {**rows[1], "own_up": 0, "state": "shadow"}   # 字面全被前一条盖住（本轮没有这一种）
+    >>> "| 运营商 IPTV 内网 | `.chinamobile.com` | 0（字面 210） | 0 | 0 | 被排在前面的规则整个盖住 |" \\
+    ...     in "\\n".join(_reach_rule_section({**meta, "rows": [shadow]}))
+    True
+    """
+    if meta is None:
+        return []
+    rows = meta.get("rows") or []
+    out = ["", "## 范围规则各自抓到几条（这一档今天到底有没有在起作用）", ""]
+    if not rows:
+        return out + ["- `config/reachability.yaml` 里一条规则都没配上（文件不在，或者两格都留了空）："
+                      "本轮所有 http 线路一律按**公网**排，运营商内网地址会重新占住第一线 —— "
+                      "计划书 2.9 那个「订阅加得上、湖南台全部超时」就是这个形状。"]
+    out += ["| 档 | 规则 | 上游候选 | 进表 | 第一线 | 说法 |",
+            "|---|---|---:|---:|---:|---|"]
+    for x in rows:
+        name, _ = _SCOPE_LABEL.get(x["tier"], (x["tier"], ""))
+        own, any_ = x["own_up"], x["any_up"]
+        up = str(own) if any_ == own else f"{own}（字面 {any_}）"
+        out.append(f"| {name} | `{_cell(x['rule'])}` | {up} | {x['own_table']} | "
+                   f"{x['own_first']} | {_STATE_NOTE.get(x['state'], x['state'])} |")
+    out += ["",
+            f"> 三列是同一条规则看到的三层：**上游候选** = 本轮抓到的 {meta.get('n_up', 0)} 条原始线路地址；"
+            f"**进表** = 写进 aptv 那张表的 {meta.get('n_table', 0)} 条"
+            "（另外三张表是它的子集，四张并起来去重还是这些）；"
+            f"**第一线** = 表上每个台的第一条、共 {meta.get('n_first', 0)} 条 —— "
+            "APTV 只自动播这一条。三层数的都是**条目**："
+            "同一条地址在两个源里各出现一次算两条（去重之后上游是 "
+            f"{meta.get('n_up_uniq', meta.get('n_up', 0))} 条），因为那个窗口本身就是按条目切的。"]
+    out += ["", "> **三种 0 别读成一种**：「上游候选」写 0 = 这批线路里没有它要判的地址，"
+            "或者这一条本身写错了（全角点、带了 `http://`、域名搬家）—— "
+            "**只有这一种值得去改配置**；"
+            "「上游有货、表里没有」= 被排序窗口挡的（每个频道最多留 "
+            f"{meta.get('max_lines', 3)} 条、同一频道内同一主机最多 {meta.get('max_per_host', 2)} 条，"
+            "都是我们自己的规则），或者是那些线路所在的台根本不在名单里；"
+            "「0（字面 N）」= 排在它前面那条规则把它整个盖住了，它没坏、只是轮不到它。"]
+    tiers: dict[str, dict] = {}
+    for x in rows:
+        t = tiers.setdefault(x["tier"], {"rules": 0, "own": 0, "dead": 0})
+        t["rules"] += 1
+        t["own"] += x["own_up"]
+        t["dead"] += 1 if not x["own_up"] and not x["any_up"] else 0
+    parts = [f"**{_SCOPE_LABEL.get(k, (k, ''))[0]}**：{v['rules']} 条规则在上游共归它 {v['own']} 条"
+             + (f"，其中 {v['dead']} 条规则上游 0 命中" if v["dead"] else "")
+             for k, v in tiers.items()]
+    out += ["", "> 本轮的数：" + "；".join(parts) + "。"]
+    code = meta.get("code_up") or 0
+    if code:
+        out += ["", f"> 另有 {code} 条上游地址是非 http 协议（rtp/udp 组播、rtmp/srt 推流），"
+                    "由代码直接定成内网，不欠上面任何一条规则（所以「各条规则归它的」加起来"
+                    "不等于表上的内网线路数）。它们长这样：`rtp://@239.130.1.6:6002`。"]
+    if meta.get("dup"):
+        out += ["", "> ⚠️ 同一条写了两遍：" + "、".join(f"`{_cell(r)}`" for r in meta["dup"])
+                + " —— 形状没问题，后面那条永远轮不到（`_classify` 记给第一个匹配上的）。"]
+    npr = meta.get("no_public_n")
+    if npr is not None:
+        by_rule = sum(x["own_first"] for x in rows)
+        code_first = meta.get("code_first") or 0
+        s = by_rule + code_first
+        who = (f"{by_rule} 台（规则管的）+ {code_first} 台（组播，代码定档）" if code_first
+               else f"{by_rule} 台")
+        tail = ("**是同一个数** —— 两把尺咬住了：一个台只要没有公网线路，"
+                "它的第一线就必然归这一节的某一行管。" if s == npr else
+                f"**对不上**，差 {abs(npr - s)} 台 —— 先查排序是不是还按范围分先后（`RANK`），"
+                "以及「第一线」那一层取的是不是同一批地址。")
+        out += ["", f"> 交叉核对：「第一线」那一列合计 {who}，"
+                    f"与那句「一条公网线路都没有的频道」{npr} 个{tail}"]
+    out += ["", "> 这一节是「一条公网线路都没有的频道」那一句的**独立佐证**：那一句是拿规则量的，"
+            "规则整档摊开时它自己就归 0（计划书 2.49 实测：39 → 0，报警跟着规则一起哑掉）；"
+            "而这一节的「上游候选」那一列是拿规则去问上游池子，规则坏成什么样它都还写着。"
+            "形状闸（2.49）管的是写错的形状，这一节管的是写对内容之外的错。"]
+    return out
+
+
 def format_report(
     *,
     sources: list[str],
@@ -764,6 +939,7 @@ def format_report(
     no_public: list[str] | None = None,
     fake_live: list[str] | None = None,
     focus: list[dict] | None = None,
+    reach_rules: dict | None = None,
     hosts: list[dict] | None = None,
     hosts_note: str = "",
     history: dict | None = None,
@@ -776,6 +952,8 @@ def format_report(
     history 是 src/check/history.py 算出来的履历摘要，传了才渲染趋势那一节；
     focus 是 first_line_focus() 按表算出来的第一线主机集中度（计划书 2.23），
     一个元素一张表（全量 / 湖南），传了才渲染那一节 —— 没传就不硬凑。
+    reach_rules 是 `reach.rule_states()` 的三层数（2.50），传了才渲染「范围规则各自抓到几条」：
+    那一节回答的是「config 里这几条规则今天各抓到几条」，与「这一档有没有在起作用」是同一个问题的两种问法。
     epg_note 是 `load_epg()` + `apply_ids()` 的材料，传了才渲染「EPG 对齐」那一节 ——
     **未启用时也要传**，那一节会写明「这一轮没有对齐这回事」，否则读报告的人分不清
     「没启用」和「功能坏了没渲染」。
@@ -814,6 +992,17 @@ def format_report(
     ...                   "examples": ["x", "y"]}]}
     >>> f2 = format_report(**{**kw, "hosts": [], "focus": [one]})
     >>> "第一线主机集中度" in f2 and "aptv.m3u（2 个台）" in f2
+    True
+    >>> "范围规则各自抓到几条" not in format_report(**{**kw, "hosts": []})  # 没传 reach_rules 就不加
+    True
+    >>> f3 = format_report(**{**kw, "hosts": [], "reach_rules": {
+    ...     "rows": [{"tier": "audio_only", "rule": ".qingting.fm", "any_up": 22, "own_up": 22,
+    ...               "own_table": 0, "own_first": 0, "state": "out"}],
+    ...     "n_up": 1869, "n_table": 226, "n_first": 98, "max_lines": 3, "max_per_host": 2}})
+    >>> "范围规则各自抓到几条" in f3 and "纯音频电台" in f3      # 传了才渲染，与 focus 同一套路
+    True
+    >>> "一条规则都没配上" in format_report(                    # 传了但一条规则都没配上：也要说一句话
+    ...     **{**kw, "hosts": [], "reach_rules": {"rows": []}})
     True
     >>> "未启用" in format_report(**{**kw, "hosts": [], "epg_note": {"enabled": False}})
     True
@@ -874,6 +1063,8 @@ def format_report(
                       "、".join(no_public), "",
                       "> 这些台目前唯一的来源是运营商 IPTV 内网，或只有电台同播（见 config/reachability.yaml）。"
                       "要在电视上看，只能走 IPTV 机顶盒那个 VLAN，或者等 P5 找到它们的公网视频流。"]
+
+    lines += _reach_rule_section(reach_rules)
 
     if fake_live:
         lines += ["", "### 但第一条线路是循环录像的频道（有画，不是直播）", ""]

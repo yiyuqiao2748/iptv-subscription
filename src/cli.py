@@ -71,7 +71,7 @@ from src.check.epg import (  # noqa: E402
     Epg, apply_ids, coverages, gzip_decompress, load_bytes, today_ok)
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
-    AUDIO, INTRANET, PUBLIC, RANK, Reachability, load_reachability)
+    AUDIO, INTRANET, PUBLIC, RANK, Reachability, dead_tier_lines, load_reachability)
 from src.keys import (  # noqa: E402
     _NOT_SET, check_keys, check_version, flag_value, order_value, shape_word, text_value)
 from src.match.matcher import load_index  # noqa: E402
@@ -1991,6 +1991,26 @@ def cmd_build(argv: list[str]) -> int:
     line_scope = Counter(reach.scope(u) for c in channels for u in c.urls)
     no_public = [c.name for c in channels
                  if all(reach.scope(u) != PUBLIC for u in c.urls)]
+    # 范围规则各自抓到几条（计划书 2.50）：同一批规则去问三层 —— 上游池子 / 进了表的 / 每个台的第一条。
+    # 为什么要问「上游」而不是只问表：「命中 0 条」在这一格有三种意义（被窗口挤掉、被前一条规则盖住、
+    # 今天就没有这类地址），只回问表会把前两种读成「这条规则坏了」—— 那是 §2.49 收尾时记下的那一格。
+    up_urls = [e.url for e in entries]
+    table_urls = [u for c in channels for u in c.urls]
+    first_urls = [c.urls[0] for c in channels]
+    cov_up = reach.coverage(up_urls)
+    cov_first = reach.coverage(first_urls)   # 只为拿 `code_intranet`：第一线里有几条是组播（不欠规则）
+    rule_rows = reach.rule_states(up_urls, table_urls, first_urls)
+    reach_rules = {"rows": rule_rows, "n_up": len(up_urls), "n_up_uniq": len(set(up_urls)),
+                   "n_table": len(table_urls), "n_first": len(first_urls),
+                   "no_public_n": len(no_public), "code_first": cov_first["code_intranet"],
+                   "max_lines": args.max_lines, "max_per_host": args.max_per_host,
+                   "code_up": cov_up["code_intranet"], "dup": cov_up["dup"]}
+    # 屏幕上只喊「整档全 0」那一种（逐条的 0 三种里两种无害）。那几句话本身放在 scope.py，
+    # 因为钉住它只需要一条 doctest —— 留在 cmd_build 里就是一句改错了也没人管的裸 print（2.50）。
+    notes = dead_tier_lines(rule_rows, len(up_urls), len(no_public))
+    if notes:
+        print("\n\n".join(notes), file=sys.stderr)
+
     # 第一线是循环录像的频道：电视默认就播这一条，必须点名。
     # 证据分三级，写清楚是哪一级看出来的：本轮实测的分片数最硬，L3 的「列表不动」次之，
     # 整族那种只是「上一轮这主机全是录像」，本轮没重测时才用。
@@ -2139,6 +2159,7 @@ def cmd_build(argv: list[str]) -> int:
         no_public=no_public,
         fake_live=fake_live,
         focus=focus,
+        reach_rules=reach_rules,
         hosts=hosts,
         hosts_note=hosts_note,
         history=history_note,
