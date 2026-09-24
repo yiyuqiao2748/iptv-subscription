@@ -11,12 +11,11 @@
 
     ./.venv/bin/python -X utf8 scripts/baseline_guard.py     # 跑它自己的用例
 
-退码：**0** = 用例全过（这一档只有 doctest）；非 0 = 有用例失败。
+退码（2.68 起按那三档）：**0** = 收到的用例全过；**1** = 有用例失败；
+**2** = 一条用例都没收到 —— 这一档以前退 0，屏幕上还是 0 字节，跟「全过」同形。
 """
 from __future__ import annotations
 
-import doctest
-import sys
 from typing import Iterable, Sequence
 
 SEPARATOR = "、"
@@ -59,4 +58,12 @@ def guard(names: Sequence[str], label: str = "格子名") -> str | None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(doctest.testmod(verbose=False).failed)
+    # 这两个 import 为什么写在块里而不是顶上：`baseline_guard` 是被别人 import 的那一个
+    # （命令尺、数尺、报数尺都 import 它），顶上一个邻居都不认才干净。
+    # 2.68 之前这里是 `raise SystemExit(doctest.testmod(verbose=False).failed)`：
+    # 跑掉 7 条用例、印 0 字节、退 0 —— 和「一条都没收到」完全同形。
+    # 顶上那两个 import（`doctest`、`sys`）跟着这一支一起搬进来了：`sys` 本来就没别处在用。
+    import sys
+
+    from run_doctests import run_own
+    raise SystemExit(run_own(sys.modules["__main__"]))

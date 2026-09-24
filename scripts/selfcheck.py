@@ -41,13 +41,13 @@
 所以那条 ✓ 里**没有**「没问题」的意思 —— 候选点几条都不改退码，那口单一开始就写在
 `scripts/unmarked_nums.py` 第一段。既然它报的是处数，那把尺自己也得有人问一句还咬不咬得动
 （2.56 那个理由第四次管用），于是它的 `--self-test` 跟着挂上，成一比一的那对
-（2.59 那一遍 22 格；2.67 起 30 格）。
+（2.59 那一遍种的是 22 个格子；2.67 起 30 格）。
 **2.60 追记**：再把那两个数各加二 —— 多的是 `claims` 与 `claims-test`，第五把「量那把尺」的尺
-（`scripts/code_claims.py` 读 .py 的 docstring，22 格基线）。2.60 那一遍的口径是「默认十二条 = 十一条离线尺」
+（`scripts/code_claims.py` 读 .py 的 docstring，2.60 那遍 22 个格子、2.68 起 23 格）。2.60 那一遍的口径是「默认十二条 = 十一条离线尺」
 加 `page`。这一节的顺序是反的，值得记下来：先加两条步骤，才有人来报上面那两句里哪几个字变了 ——
 18:32:30 那一遍 `claims` 自己数出 6 处对不上，全部出自这一个原因（第 3 行的注释、2.59 那句、
 `check_page` 与 `steps` 各自那份说明书）。放在以前那四轮里，这 6 处是人拿着日志逐条改的。
-它自己那 22 格也是这么被咬的：加第 22 格（`G10_引号不在句首`）之后第一遍，红的就是它自己说明书里
+它自己那 22 个格子也是这么被咬的：加进第 22 个格子（`G10_引号不在句首`）之后第一遍，红的就是它自己说明书里
 那句「种 21 格」—— 一把量散文的尺第一处抓到的是它自己，这一条算它 work 的证据，不算它意外。
 **2.64 追记**：那两个数再加二 —— 多的是 `drift-test` 与 `epg-test`，第六、七把「量那把尺」的尺
 （`scripts/table_drift.py` 9 格、`scripts/epg_check.py` 14 格）。当时的口径写成「默认十四条 = 十三条离线尺
@@ -359,7 +359,7 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     仓库今天 0 颗，`names` 的退 0 既可能是干净也可能是那把尺瞎了，只有往临时树里种过名字
     才知道它咬得动 —— 所以它跟 `names` 是一对，缺一个另一个就不能读。
     `num-test`（2.58）是第三把：`numbers` 说「比了 74 处：全部对得上」，那句话同样有两种读法。
-    14:26 那遍探针（22 格）还量出它带着一种比 2.57 更狠的错法：点名的两篇里有一篇不在时，
+    14:26 那遍探针（22 个格子）还量出它带着一种比 2.57 更狠的错法：点名的两篇里有一篇不在时，
     它把另一篇比出来的成绩**一个字都不印**，只留一句「点名的文档不在」；同一遍还量到
     `--docs` 指到目录或非 UTF-8 的文件会裸崩。那一格现在由 `B7`／`B8`／`B9` 三格钉着。
     `doc-test`（2.57）是同一个理由递给命令尺的那一半：`doc-cmds` 说「143 条命令、0 条对不上」
@@ -441,7 +441,7 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/unmarked_nums.py", "--self-test"])),
         ("claims", "写在代码里的那些话，报的数对不对（只读 .py 的 docstring，不跑它们）",
          lambda: run_script(["scripts/code_claims.py"])),
-        ("claims-test", "那把读散文的尺自己还咬得动吗（往临时目录里种 22 格假件）",
+        ("claims-test", "那把读散文的尺自己还咬得动吗（往临时目录里种 23 格假件）",
          lambda: run_script(["scripts/code_claims.py", "--self-test"])),
         ("drift-test", "比表那把尺自己还咬得动吗（往临时沙盒里种 9 格表）",
          lambda: run_script(["scripts/table_drift.py", "--self-test"])),

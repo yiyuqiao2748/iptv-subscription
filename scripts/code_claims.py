@@ -49,7 +49,6 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
-import doctest
 import io
 import re
 import sys
@@ -69,6 +68,10 @@ from doc_num import (SANDBOX, Cell, build_cell, fill, hide_tmp,  # noqa: E402
 # 就是 2.58 刚收掉的那种毛病，所以这里直接拿邻居的。
 from unmarked_nums import braced_cells  # noqa: E402
 from baseline_guard import guard as guard_names  # noqa: E402
+# 「跑自己那份用例、收尾说一句」这一支的口径只有一份（2.68）：`run_doctests` 是收用例的那一个，
+# 这句话该由它说。以前这里写的是 `doctest.testmod(verbose=False).failed` —— 量到 31 条和
+# 一条都没量到，屏幕上都是 0 字节。
+from run_doctests import run_own  # noqa: E402
 
 PY = "假件.py"                                   # 沙盒里种的那个「被量的代码」
 COPYISH = re.compile(r"\s\d+\.py$")             # `check_doc_cmds 2.py` 那种同步盘冲突副本
@@ -441,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--doctest", action="store_true", help="只跑本文件的用例")
     a = ap.parse_args(argv)
     if a.doctest:
-        return doctest.testmod(verbose=False).failed
+        return run_own(sys.modules[__name__])
     if a.self_test:
         return self_test()
     vals, holes = truth_of()
@@ -519,6 +522,10 @@ BASELINE: tuple[Cell, ...] = (
                         '真那句 {n格-stray_names} 格。"""'),),
          argv=("--py", f"{SANDBOX}/{PY}"),
          has=("✓ 假件.py:模块 说 格 {n格-stray_names}", "查到 1 处", "跳过 「」内复述 1 处")),
+    Cell("G11_自述用例", "`--doctest` 那一支要报数：2.68 之前它跑掉本件那些用例、印 0 字节、退 0",
+         0, argv=("--doctest",),
+         has=("合计", "个用例", "0 个失败", "code_claims.py"),
+         lacks=("一条用例都没收到", "扫了被量的")),
     # ———— B 组：这些情形**必须**报错。它们绿了就是尺不咬 ————
     Cell("B1_点名点错人", "句里点 `doc_num` 却写未挂尺的格数 —— 这一处是这把尺存在的理由",
          1, files=((PY, '"""`doc_num` 那 {n格-unmarked_nums} 格"""'),),
@@ -622,7 +629,7 @@ def run_cell(cell: Cell, base: Path, values: dict[str, int]) -> tuple[str, str, 
 
 
 def self_test() -> int:
-    """`--self-test`：往临时目录里种 22 格已知好坏的假件，逐格对**跑之前**写死的期望。
+    """`--self-test`：往临时目录里种 23 格已知好坏的假件，逐格对**跑之前**写死的期望。
 
     结论行带着「扫了」那个词（`scripts/selfcheck.py` 的 `conclusion()` 靠它挑句子），
     过的一格一行流水、不符期望的留在最后 —— 与 §2.56~2.59 那四档同形。
@@ -681,6 +688,7 @@ def self_test() -> int:
 
 
 if __name__ == "__main__":
-    if "--doctest" in sys.argv:
-        raise SystemExit(doctest.testmod(verbose=False).failed)
+    # 2.68 之前这里还有一条 `if "--doctest" in sys.argv:`，绕开 argparse 自己拦一遍 ——
+    # 于是同一件事有两个入口，而那两个入口量的不是同一个件：这里那个用默认的 `__main__`，
+    # `main()` 里那个用 `sys.modules[__name__]`。留一个（`main()` 里那个），少一份漂移的可能。
     raise SystemExit(main(sys.argv[1:]))

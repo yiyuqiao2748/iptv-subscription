@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import doctest
 import io
 import re
 import sys
@@ -63,6 +62,12 @@ import doc_num  # noqa: E402
 from doc_num import (DOC, SANDBOX, Cell, build_cell,  # noqa: E402
                      fill, hide_tmp, ragged_cells, unresolvable)
 from baseline_guard import guard as guard_names  # noqa: E402
+# 「跑自己那一份用例」怎么说话，口径只有一份（2.68）：这一支以前是
+# `raise SystemExit(doctest.testmod(verbose=False).failed)`，量到 50 条和一条都没量到
+# 在这一屏上完全同形 —— 都是 0 字节、都退 0。
+from run_doctests import run_own  # noqa: E402
+# 收尾那一句「合计 N 个用例」的口径只有一份（2.68）：写在这里的是调用，不是又一版判据。
+from run_doctests import run_own  # noqa: E402
 
 FENCE = re.compile(r"^\s*```")
 NUM = re.compile(r"\d[\d,]*")
@@ -814,5 +819,5 @@ def self_test() -> int:
 
 if __name__ == "__main__":
     if "--doctest" in sys.argv:
-        raise SystemExit(doctest.testmod(verbose=False).failed)
+        raise SystemExit(run_own(sys.modules[__name__]))
     raise SystemExit(main(sys.argv[1:]))
