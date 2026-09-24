@@ -10,7 +10,7 @@ from typing import Iterable
 
 from src.check.history import Suggestion  # 建议行的格式只有一份实现（2.17）
 from src.check.scope import (  # 「跟上一轮比」那一段的措辞只有一份实现（2.51）
-    diff_rule_rounds, rule_diff_lines)  # 前者只给下面的 doctest 当「形状由生产者给」的样板
+    diff_rule_rounds, eaten_clause, rule_diff_lines)  # 前者只给下面的 doctest 当「形状由生产者给」的样板
 
 _M3U_ATTRS = ("tvg-id", "tvg-name", "tvg-logo", "group-title")
 
@@ -753,11 +753,13 @@ def _focus_section(views: list[dict] | None) -> list[str]:
 
 
 # 每一条范围规则的「说法」：那一列只描述事实，好坏交给表底下那三句。
+# `shadow` 那句从 2.52 起不再说「排在它前面那条」—— 名字写在同一行的「上游候选」那一格里，
+# 而「前面」这个概括是假的：`_classify` 先扫电台档，配置里写在后面的电台规则一样能判走内网规则。
 _STATE_NOTE = {
     "first": "有台子的第一线就是它管出来的",
     "table": "进了表、没占住第一线",
     "out": "上游有货、表里没有",
-    "shadow": "被排在前面的规则整个盖住",
+    "shadow": "字面全被别条规则判走",
     "none": "上游一条都没命中",
 }
 
@@ -788,14 +790,22 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
         三种里只有这一种值得去动 `config/reachability.yaml`（本轮只有 `2408:` 一条：0 / 1869）。
       * **上游有货、表里没有**（`out`）—— 被窗口挡的：每个频道最多留 `--max-lines` 条、
         同一频道内同一主机最多 `--max-per-host` 条，都是我们自己的排序；或者是那些线路所在的台
-        根本不在名单里。真配置里五条是这一种，最典型的是 `.qingting.fm`（上游 22 条、表里 0 条）
+        根本不在名单里。真配置里**四条**是这一种（`.chinamobile.com`、`.gmcc.net`、`2409:`、
+        `.qingting.fm` —— 09-24 08:36 对着 05:18 那份产物和 08:24 这一轮各数了一遍，两处都是四条；
+        这一句到 2.52 之前写的「五条」是我凭记忆写的，多算了一条），最典型的是 `.qingting.fm`（上游 22 条、表里 0 条）
         和 `2409:`（上游 67 条、摊在 29 家主机上、表里 0 条）—— 它们**都在起作用**，
         2.49 之前这句话只能靠人拿正则去数 m3u 才敢说。
-      * **字面命中、归它 0**（`shadow`）—— 排在它前面那条规则把它整个盖住了，
+      * **字面命中、归它 0**（`shadow`）—— 那些地址一条都没判给它，**判给了谁写在这同一格的括号里**（2.52）。
         它没坏、只是轮不到它。本轮一条都没有，但 `.chinamobile.com` 已经很接近：
-        字面 210 条、归它 18 条，另外 192 条全落在 `tvgslb.hn.chinamobile.com` 那一条精确匹配里。
-        这一格留着的理由就是最后这半句：**「命中几条」和「归它几条」是两个问题**，
+        字面 210 条、归它 18 条，另外 192 条全落在 `tvgslb.hn.chinamobile.com` 那一条精确匹配里 ——
+        这一句到 2.51 为止是我手写在下面的，现在表上那一格自己会印出来。
+        这一格留着的理由还是那半句：**「命中几条」和「归它几条」是两个问题**，
         只问前者会把一条吃不到分的规则读成一条在起作用的规则，反过来也一样。
+
+    点名还顺手改掉了一句话：这一格以前叫「被排在前面的规则整个盖住」，那句里的「前面」不总成立 ——
+    `_classify` 先扫 `audio_only` 再扫 `iptv_intranet`，配置里写在**后面**的电台规则一样能判走一条
+    内网规则（`rule_states` 里 `z` 那一格钉着这件事）。名字印在表上之后，读者看见的是那一条规则，
+    不是一句概括。
 
     所以「0 命中就提醒」那把尺不能按**条**装（三种 0 里两种无害），只按**整档**装：
     一档里每条都是 `none` 时 `src/cli.py` 往屏幕喊一句，而这一档在这张表里会连成一排 0。
@@ -806,15 +816,20 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
 
     >>> # 这五行就是 2026-09-24 05:18 那一轮真跑出来的数（上游 1869 条 / 进表 226 条 / 第一线 98 条）
     >>> rows = [{"tier": "iptv_intranet", "rule": "tvgslb.hn.chinamobile.com",
-    ...          "any_up": 192, "own_up": 192, "own_table": 41, "own_first": 22, "state": "first"},
+    ...          "any_up": 192, "own_up": 192, "own_table": 41, "own_first": 22, "state": "first",
+    ...          "eaten_by": {}},
     ...         {"tier": "iptv_intranet", "rule": ".chinamobile.com",
-    ...          "any_up": 210, "own_up": 18, "own_table": 0, "own_first": 0, "state": "out"},
+    ...          "any_up": 210, "own_up": 18, "own_table": 0, "own_first": 0, "state": "out",
+    ...          "eaten_by": {"tvgslb.hn.chinamobile.com": 192}},
     ...         {"tier": "iptv_intranet", "rule": "58.20.64.92",
-    ...          "any_up": 57, "own_up": 57, "own_table": 18, "own_first": 17, "state": "first"},
+    ...          "any_up": 57, "own_up": 57, "own_table": 18, "own_first": 17, "state": "first",
+    ...          "eaten_by": {}},
     ...         {"tier": "iptv_intranet", "rule": "2408:",
-    ...          "any_up": 0, "own_up": 0, "own_table": 0, "own_first": 0, "state": "none"},
+    ...          "any_up": 0, "own_up": 0, "own_table": 0, "own_first": 0, "state": "none",
+    ...          "eaten_by": {}},
     ...         {"tier": "audio_only", "rule": ".qingting.fm",
-    ...          "any_up": 22, "own_up": 22, "own_table": 0, "own_first": 0, "state": "out"}]
+    ...          "any_up": 22, "own_up": 22, "own_table": 0, "own_first": 0, "state": "out",
+    ...          "eaten_by": {}}]
     >>> meta = {"rows": rows, "n_up": 1869, "n_up_uniq": 1804, "n_table": 226, "n_first": 98,
     ...         "no_public_n": 39, "max_lines": 3, "max_per_host": 2, "code_up": 3}
     >>> s = "\\n".join(_reach_rule_section(meta))
@@ -826,7 +841,7 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
     True
     >>> "| 运营商 IPTV 内网 | `tvgslb.hn.chinamobile.com` | 192 | 41 | 22 |" in s
     True
-    >>> "| 运营商 IPTV 内网 | `.chinamobile.com` | 18（字面 210） | 0 | 0 | 上游有货、表里没有 |" in s
+    >>> "| 运营商 IPTV 内网 | `.chinamobile.com` | 18（字面 210，192 条判给了 `tvgslb.hn.chinamobile.com`） | 0 | 0 | 上游有货、表里没有 |" in s
     True
     >>> s.count("上游一条都没命中"), s.count("上游有货、表里没有")
     (1, 3)
@@ -853,20 +868,28 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
     True
     >>> "同一条写了两遍" not in "\\n".join(_reach_rule_section(meta))
     True
-    >>> shadow = {**rows[1], "own_up": 0, "state": "shadow"}   # 字面全被前一条盖住（本轮没有这一种）
-    >>> "| 运营商 IPTV 内网 | `.chinamobile.com` | 0（字面 210） | 0 | 0 | 被排在前面的规则整个盖住 |" \\
+    >>> shadow = {**rows[1], "own_up": 0, "state": "shadow",
+    ...           "eaten_by": {"tvgslb.hn.chinamobile.com": 210}}   # 本轮没有这一种，M7 造得出
+    >>> "| 运营商 IPTV 内网 | `.chinamobile.com` | 0（字面 210，210 条判给了 `tvgslb.hn.chinamobile.com`） | 0 | 0 |" \\
     ...     in "\\n".join(_reach_rule_section({**meta, "rows": [shadow]}))
+    True
+    >>> "字面全被别条规则判走" in "\\n".join(_reach_rule_section({**meta, "rows": [shadow]}))
+    True
+    >>> old = {k: v for k, v in shadow.items() if k != "eaten_by"}   # 2.51 落的行：差额在、名字没有
+    >>> "| `.chinamobile.com` | 0（字面 210） |" in "\\n".join(_reach_rule_section({**meta, "rows": [old]}))
     True
     >>> prev = {**meta, "at": "2026-09-24T05:49:00+08:00", "mode": "offline", "egress": "",
     ...         "fingerprint": "7eae708d153a", "cfg_fingerprint": "aaaa11112222", "rows": rows}
     >>> cur = {**prev, "at": "2026-09-24T06:20:00+08:00", "rows": [
-    ...     rows[0], {**rows[1], "own_up": 0, "state": "shadow"}, rows[2], rows[3], rows[4]]}
+    ...     rows[0], shadow, rows[2], rows[3], rows[4]]}
     >>> s2 = "\\n".join(_reach_rule_section({**meta, "diff": diff_rule_rounds(prev, cur)}))
     >>> "### 跟上一轮比：2026-09-24 05:49" in s2                   # 2.51：比出来的那一段排在七行之后
     True
     >>> s2.index("### 跟上一轮比") > s2.index("形状闸（2.49）")
     True
     >>> "`iptv_intranet` / `.chinamobile.com`：上游候选 18 条 → 0 条" in s2
+    True
+    >>> "其中 210 条判给了 `tvgslb.hn.chinamobile.com`" in s2   # 2.52：跨轮那一句也点得出名字
     True
     >>> "没有可比对的上一次" not in s2                            # 有得比就不说那句
     True
@@ -887,7 +910,10 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
     for x in rows:
         name, _ = _SCOPE_LABEL.get(x["tier"], (x["tier"], ""))
         own, any_ = x["own_up"], x["any_up"]
-        up = str(own) if any_ == own else f"{own}（字面 {any_}）"
+        # 「字面 N」后面那半句（2.52）：N 减 own 那些地址判给了谁 —— 括号里那个差额以前没有名字，
+        # 于是「几乎吃不到分的规则」和「在起作用的规则」全靠读的人自己记名单顺序。
+        gap = _cell(eaten_clause(x.get("eaten_by")))
+        up = str(own) if any_ == own else f"{own}（字面 {any_}" + (f"，{gap}" if gap else "") + "）"
         out.append(f"| {name} | `{_cell(x['rule'])}` | {up} | {x['own_table']} | "
                    f"{x['own_first']} | {_STATE_NOTE.get(x['state'], x['state'])} |")
     out += ["",
@@ -904,7 +930,8 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
             "「上游有货、表里没有」= 被排序窗口挡的（每个频道最多留 "
             f"{meta.get('max_lines', 3)} 条、同一频道内同一主机最多 {meta.get('max_per_host', 2)} 条，"
             "都是我们自己的规则），或者是那些线路所在的台根本不在名单里；"
-            "「0（字面 N）」= 排在它前面那条规则把它整个盖住了，它没坏、只是轮不到它。"]
+            "「0（字面 N）」= 字面命中的那 N 条一条都没判给它，括号里点名叫给了谁就是谁判走的 —— "
+            "它没坏、只是轮不到它。"]
     tiers: dict[str, dict] = {}
     for x in rows:
         t = tiers.setdefault(x["tier"], {"rules": 0, "own": 0, "dead": 0})

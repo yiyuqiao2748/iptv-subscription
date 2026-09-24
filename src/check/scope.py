@@ -144,7 +144,12 @@ class Reachability:
         ...         "rtp://@239.130.1.6:6002"]
         >>> cov = r.coverage(urls)
         >>> cov["rules"][".chinamobile.com"]      # 字面 3 条，其中 2 条被上一条盖住，归它 1 条
-        {'tier': 'iptv_intranet', 'any': 3, 'own': 1}
+        {'tier': 'iptv_intranet', 'any': 3, 'own': 1, 'eaten_by': {'tvgslb.hn.chinamobile.com': 2}}
+        >>> cov["rules"]["tvgslb.hn.chinamobile.com"]["eaten_by"]   # 它排第一，没人抢得到它
+        {}
+        >>> # 没被抢的时候是空的，不许是 None 或缺键（缺了键，下面那句括号就没得印）
+        >>> r.coverage(["http://gw.hn.chinamobile.com/c.m3u8"])["rules"][".chinamobile.com"]["eaten_by"]
+        {}
         >>> cov["rules"]["tvgslb.hn.chinamobile.com"]["any"], cov["rules"]["tvgslb.hn.chinamobile.com"]["own"]
         (2, 2)
         >>> cov["rules"][".qingting.fm"]["own"]                  # 电台那条抓到了
@@ -154,7 +159,7 @@ class Reachability:
         >>> cov["code_intranet"], cov["total"]        # 组播那条不欠任何规则，单独记一格
         (1, 6)
         >>> r.coverage([])["rules"]["2409:"]          # 一堆地址都没有：各条都是 0，不是崩
-        {'tier': 'iptv_intranet', 'any': 0, 'own': 0}
+        {'tier': 'iptv_intranet', 'any': 0, 'own': 0, 'eaten_by': {}}
         >>> Reachability(["a.com", "a.com"]).coverage([])["dup"]   # 同一条写了两遍（形状对、内容错）
         ['a.com']
         """
@@ -166,6 +171,9 @@ class Reachability:
         urls = list(urls)
         any_n: dict[str, int] = {}
         own_n: dict[str, int] = {}
+        # 「谁抢的」（2.52）：某条规则字面命中的那些地址，实际被判给了谁。以前只说
+        # 「被排在前面的那条盖住了」，不说是哪一条 —— 那一格 2.50 留在边界里。
+        eats: dict[str, dict[str, int]] = {}
         code = 0
         for url in urls:
             parts = urlsplit(url)
@@ -173,13 +181,21 @@ class Reachability:
                 code += 1                 # 组播由代码定档；算进去会把「0 命中」读成假非 0
                 continue
             host = (parts.hostname or url).lower()
-            for rule in seen:
-                if self._matches(rule, host):
-                    any_n[rule] = any_n.get(rule, 0) + 1
+            hits = [rule for rule in seen if self._matches(rule, host)]
+            for rule in hits:
+                any_n[rule] = any_n.get(rule, 0) + 1
             own = self._classify(url)[1]
             if own is not None:
                 own_n[own] = own_n.get(own, 0) + 1
-        per_rule = {rule: {"tier": tier, "any": any_n.get(rule, 0), "own": own_n.get(rule, 0)}
+                for rule in hits:
+                    if rule != own:
+                        got = eats.setdefault(rule, {})
+                        got[own] = got.get(own, 0) + 1
+        per_rule = {rule: {"tier": tier, "any": any_n.get(rule, 0), "own": own_n.get(rule, 0),
+                           # 按条数从多到少、条数相同按名单里的先后 —— 顺序必须可重跑复现
+                           "eaten_by": dict(sorted(
+                               eats.get(rule, {}).items(),
+                               key=lambda kv: (-kv[1], [r for _, r in order].index(kv[0]))))}
                     for tier, rule in order}
         return {"rules": per_rule,
                 "tiers": {tier: {"rules": len(tiers[tier]),
@@ -198,7 +214,8 @@ class Reachability:
         * `first` —— 它压住的线路里，有台子的第一线就是它管出来的（这一档在那几个台上是唯一来源）；
         * `table` —— 进了表、没占住第一线：这正是这两档名单该干的活；
         * `out`   —— 上游归它、表里没有：被「每台 3 格 / 每家 2 条」那个窗口或者名单挡在外面，**不是坏了**；
-        * `shadow` —— 字面命中、可一条都不归它：排在它前面的那条整个盖住了它，改不改都不动本轮的表；
+        * `shadow` —— 字面命中、可一条都不归它：那些地址全被判给了别条规则（`eaten_by` 里点名，2.52），
+          改不改都不动本轮的表；
         * `none`  —— 连上游都没抓到一起：内容不对（全角点、带协议前缀、域名过期、摊成单字），
           或者今天这批线路里就是没有它要判的那种地址。
 
@@ -224,6 +241,14 @@ class Reachability:
         >>> y = r.rule_states(up[:1], [], [])[1]            # 上游只有 tvgslb 那一条：第二条被盖住
         >>> (y["any_up"], y["own_up"], y["state"])
         (1, 0, 'shadow')
+        >>> y["eaten_by"]                                   # 那句「被前面那条盖住」从此有名字（2.52）
+        {'tvgslb.hn.chinamobile.com': 1}
+        >>> all(x["any_up"] - x["own_up"] == sum(x["eaten_by"].values())   # 括号里那句必须对上差额
+        ...     for x in r.rule_states(up, up, up))
+        True
+        >>> z = Reachability(["tvgslb.hn.chinamobile.com"], [".chinamobile.com"])
+        >>> z.rule_states(up[:1], [], [])[0]["eaten_by"]   # 抢它的电台规则，在配置里写在**后面**
+        {'.chinamobile.com': 1}
         >>> dead_tiers(r.rule_states(up, [], []))           # 表整个空的：内网档还有抓到东西的规则
         []
         >>> dead_tiers(r.rule_states(up[:1], [], []))       # 内网档有 shadow/out：不算死
@@ -238,7 +263,10 @@ class Reachability:
             state = ("first" if own_f else "table" if own_t else
                      "out" if v["own"] else "shadow" if v["any"] else "none")
             rows.append({"tier": v["tier"], "rule": rule, "any_up": v["any"], "own_up": v["own"],
-                         "own_table": own_t, "own_first": own_f, "state": state})
+                         "own_table": own_t, "own_first": own_f, "state": state,
+                         # 「字面命中、归它 0」里那 0 是**谁**造成的（2.52）：2.50 的边界第 2 条
+                         # 欠的就是这个名字。差额 = 这些条数之和，上面有一行 doctest 钉着。
+                         "eaten_by": v["eaten_by"]})
         return rows
 
     def scope(self, url: str) -> str:
@@ -595,6 +623,44 @@ def _transition(prev_row: dict, cur_row: dict, layer: str) -> dict | None:
 LAYERS = {"up": "上游候选", "table": "进表", "first": "第一线"}
 
 
+def eaten_clause(eaten: dict | None, limit: int = 3) -> str:
+    """把「字面命中那些没归它的地址」说成一句带名字的话（2.52）。
+
+    为什么单独一个函数：同一件事有三处要说 —— `report.md` 那张表「上游候选」那一格的括号、
+    屏幕上与报告里那句「从有到无」、以及 2.51 那份履历读回来的行。写三遍就会有一遍不点名，
+    而「不点名」正是 2.50 边界第 2 条欠着的那格。
+
+    「排在它前面那条」这种说法在这儿一律不写：`_classify` 先扫 `audio_only` 再扫
+    `iptv_intranet`，档内的先后才起作用 —— 一条内网规则可以被配置里写在它**后面**的电台规则
+    判走（`rule_states` 的 `z` 那一格就是）。点名之后这一格由读者自己看得见，不必信那句概括。
+
+    >>> eaten_clause({"tvgslb.hn.chinamobile.com": 192})
+    '192 条判给了 `tvgslb.hn.chinamobile.com`'
+    >>> eaten_clause({"a.com": 3, "b.com": 2})           # 多家：按条数从多到少排，顺序由 `coverage` 定
+    '3 条判给了 `a.com`、2 条判给了 `b.com`'
+    >>> eaten_clause({"a.com": 3, "b.com": 2, "c.com": 1, "d.com": 1})   # 四家以上收口，别撑爆那一格
+    '3 条判给了 `a.com`、2 条判给了 `b.com`、1 条判给了 `c.com`，共 7 条摊在 4 家上'
+    >>> eaten_clause({}), eaten_clause(None)              # 没被抢 / 旧履历缺这个键：都是空串，不编名字
+    ('', '')
+    >>> eaten_clause({"x": 0, "y": 2})                    # 0 条的那家不进句子
+    '2 条判给了 `y`'
+    >>> eaten_clause({"x": "3", "y": None, "z": [1], "w": True})   # 坏值一律当没有，不崩也不猜
+    ''
+    """
+    items: list[tuple[str, int]] = []
+    for k, v in (eaten or {}).items():
+        # 这一格的值可能是从履历 JSON 读回来的：只认正整数，"3" / null / 列表 / 布尔都不猜
+        if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
+            continue
+        items.append((str(k), v))
+    if not items:
+        return ""
+    s = "、".join(f"{n} 条判给了 `{k}`" for k, n in items[:limit])
+    if len(items) > limit:
+        s += f"，共 {sum(n for _, n in items)} 条摊在 {len(items)} 家上"
+    return s
+
+
 def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
     """把本轮那一节和上一轮那一节摆在一起，问四件事（2.51）。
 
@@ -636,6 +702,13 @@ def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
     []
     >>> d["no_public_prev"], d["no_public_cur"]
     (39, 39)
+    >>> [x["cur_eaten_by"] for x in d["items"]]      # 上面那份「上一轮」是 2.51 形状，不带名字
+    [{}]
+    >>> d5 = diff_rule_rounds(prev, {**cur, "rows": [
+    ...     {**cur["rows"][0], "eaten_by": {"tvgslb.hn.chinamobile.com": 210}},
+    ...     *cur["rows"][1:]]})
+    >>> _item_text(d5["items"][0])                   # 有了名字，屏幕上那句话就点得出是谁抢的
+    '`iptv_intranet` / `.chinamobile.com`：上游候选 18 条 → 0 条（不是它坏了：这轮它字面还命中 210 条，其中 210 条判给了 `tvgslb.hn.chinamobile.com`）'
     >>> cur2 = {**prev, "rows": [row("。chinamobile.com", 0, 0, 0, 0),
     ...                          row("tvgslb.hn.chinamobile.com", 192, 41, 22, 192)]}
     >>> d2 = diff_rule_rounds(prev, cur2)
@@ -699,9 +772,12 @@ def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
                               "prev_any": int(a.get("any_up") or 0),
                               "cur_any": int(b.get("any_up") or 0), "edited": edited,
                               # 本轮这一格归 0 的**那一种**原因也要带上（2.51 补）：
-                              # 「被排在前面的规则整个盖住」和「它自己不争气」在数上长得一样，
-                              # 但屏幕上那句话的落点完全不同 —— 前者是名单顺序变了。
-                              "cur_state": str(b.get("state") or ""), **d})
+                              # 「字面命中、一条都没判给它」和「它自己不争气」在数上长得一样，
+                              # 但屏幕上那句话的落点完全不同 —— 前者是别人抢走了，后者是内容错了。
+                              "cur_state": str(b.get("state") or ""),
+                              # 抢走它的是哪几条，2.52：没有这一格，那句话只能停在「被盖住了」，
+                              # 而「谁盖的」正是决定「要不要动名单顺序」的那个信息。
+                              "cur_eaten_by": dict(b.get("eaten_by") or {}), **d})
         for x in added:
             items.append({"tier": tier, "rule": x.get("rule"), "prev_rule": "", "layer": "list",
                           "kind": "多了一条", "edited": False,
@@ -763,12 +839,32 @@ def _item_text(x: dict) -> str:
     '`iptv_intranet` / `y` → `x`（这一格被改了字面）：上游候选 5 条 → 5 条，数没变'
     >>> _item_text({"tier": "iptv_intranet", "rule": "tvgslb.hn.chinamobile.com", "prev_rule": "",
     ...             "layer": "up", "kind": "归0", "prev": 192, "cur": 0, "prev_any": 192,
+    ...             "cur_any": 192, "edited": False, "cur_state": "shadow",
+    ...             "cur_eaten_by": {".chinamobile.com": 192}})
+    '`iptv_intranet` / `tvgslb.hn.chinamobile.com`：上游候选 192 条 → 0 条（不是它坏了：这轮它字面还命中 192 条，其中 192 条判给了 `.chinamobile.com`）'
+    >>> _item_text({"tier": "iptv_intranet", "rule": "tvgslb.hn.chinamobile.com", "prev_rule": "",
+    ...             "layer": "up", "kind": "归0", "prev": 192, "cur": 0, "prev_any": 192,
     ...             "cur_any": 192, "edited": False, "cur_state": "shadow"})
-    '`iptv_intranet` / `tvgslb.hn.chinamobile.com`：上游候选 192 条 → 0 条（不是它坏了：这轮它字面还命中 192 条，只是归它的都被排在前面的那条盖住了）'
+    '`iptv_intranet` / `tvgslb.hn.chinamobile.com`：上游候选 192 条 → 0 条（不是它坏了：这轮它字面还命中 192 条，可那些地址一条都没判给它，也没记下是哪条规则判走的）'
     >>> _item_text({"tier": "iptv_intranet", "rule": ".a", "prev_rule": "", "layer": "up",
     ...             "kind": "归0", "prev": 18, "cur": 0, "prev_any": 210, "cur_any": 0,
     ...             "edited": False, "cur_state": "none"})
     '`iptv_intranet` / `.a`：上游候选 18 条 → 0 条（字面 210 → 0）'
+
+    「上游字面命中数」不进「进表」「第一线」那两行 —— 每一行只说自己那一层的数（M10 量到的）：
+
+    >>> for layer in ("up", "table", "first"):
+    ...     print(_item_text({"tier": "iptv_intranet", "rule": "x", "prev_rule": "", "layer": layer,
+    ...                       "kind": "归0", "prev": 192, "cur": 0, "prev_any": 192, "cur_any": 192,
+    ...                       "edited": False, "cur_state": "shadow",
+    ...                       "cur_eaten_by": {".hn.chinamobile.com": 192}}))
+    `iptv_intranet` / `x`：上游候选 192 条 → 0 条（不是它坏了：这轮它字面还命中 192 条，其中 192 条判给了 `.hn.chinamobile.com`）
+    `iptv_intranet` / `x`：进表 192 条 → 0 条
+    `iptv_intranet` / `x`：第一线 192 条 → 0 条
+    >>> _item_text({"tier": "iptv_intranet", "rule": "x", "prev_rule": "", "layer": "table",
+    ...             "kind": "归0", "prev": 41, "cur": 0, "prev_any": 192, "cur_any": 0,
+    ...             "edited": False, "cur_state": "none"}).count("字面")     # 那句「字面」也不跨层
+    0
     """
     who = f"`{x['tier']}` / `{x['rule']}`"
     if x.get("edited") and x.get("prev_rule"):
@@ -780,11 +876,21 @@ def _item_text(x: dict) -> str:
     where = LAYERS.get(x["layer"], x["layer"])
     if x["kind"] == "改了字面":
         return f"{who}：{where} {x['prev']} 条 → {x['cur']} 条，数没变"
+    # 「字面」与「不是它坏了：这轮字面还命中 N 条」引的都是**上游**那一层的数，
+    # 所以只跟上层的行走：挂在「进表 41 → 0」「第一线 22 → 0」后面就是拿上游的数解释表里的数
+    # —— 2.50 追记骂过的那一格（把表那一层的 118 条写进上游那句）的同一个形状，方向相反。
+    # M10 那一轮三行重复尾巴把它摆出来的；同一条规则的三层各占一行，上游那一行会说，
+    # 不必每行都背一遍别的层的数。（`list` 那两行除外：它明说了「上一轮**上游候选** N 条」，
+    # 那是名单那一层唯一能给的数，且它自己标了层。）
+    same_layer = x["layer"] == "up"
     tail = (f"（字面 {x['prev_any']} → {x['cur_any']}）"
-            if "prev_any" in x and x["prev_any"] != x["cur_any"] else "")
-    if x["kind"] == "归0" and x.get("cur_state") == "shadow":
+            if same_layer and "prev_any" in x and x["prev_any"] != x["cur_any"] else "")
+    if x["kind"] == "归0" and x.get("cur_state") == "shadow" and same_layer:
+        # 名字有就说名字（2.52），没有就明说「没记下是谁」—— 不能退回那句「排在它前面那条」：
+        # `_classify` 先扫电台档，配置里写在后面的电台规则一样能判走一条内网规则。
+        n = eaten_clause(x.get("cur_eaten_by"))
         tail += (f"（不是它坏了：这轮它字面还命中 {x.get('cur_any', 0)} 条，"
-                 "只是归它的都被排在前面的那条盖住了）")
+                 + (f"其中 {n}" if n else "可那些地址一条都没判给它，也没记下是哪条规则判走的") + "）")
     return f"{who}：{where} {x['prev']} 条 → {x['cur']} 条{tail}"
 
 

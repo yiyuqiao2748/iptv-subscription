@@ -999,7 +999,7 @@ def append_rule_round(path: Path, row: dict) -> None:
     写进去的那一行，读出来就能直接给 `diff_rule_rounds()` 当上一轮 —— 这一条往返是这一节
     唯一的跨文件契约（键名对不上不会崩，只会每轮安静地少一段「跟上一轮比」），所以钉在这里：
 
-    >>> from src.check.scope import diff_rule_rounds
+    >>> from src.check.scope import _item_text, diff_rule_rounds
     >>> with tempfile.TemporaryDirectory() as d:
     ...     p = Path(d) / "r.jsonl"
     ...     base = {"at": "2026-09-24T06:20:00+08:00", "mode": "offline", "egress": "",
@@ -1007,14 +1007,17 @@ def append_rule_round(path: Path, row: dict) -> None:
     ...             "cfg_fingerprint": "aaaa11112222", "n_up": 1869, "n_up_uniq": 1804,
     ...             "no_public_n": 39, "params": [3, 2], "rows": [dict(
     ...                 tier="iptv_intranet", rule=".a.com", any_up=210, own_up=18,
-    ...                 own_table=0, own_first=0, state="out")]}
+    ...                 own_table=0, own_first=0, state="out",
+    ...                 eaten_by={".b.com": 192})]}
     ...     _ = append_rule_round(p, base)
     ...     prev = load_rule_history(p)[-1]
     ...     diff = diff_rule_rounds(prev, {**base, "at": "2026-09-24T06:25:00+08:00",
     ...                                    "rows": [{**base["rows"][0], "own_up": 0,
     ...                                               "state": "shadow"}]})
-    ...     [(x["rule"], x["kind"], x["prev"], x["cur"]) for x in diff["items"]], diff["pool_same"]
-    ([('.a.com', '归0', 18, 0)], True)
+    ...     # 第四项 = 屏幕上那句话：名字得穿过 JSON 才说得出「是谁判走的」（2.52）
+    ...     ([(x["rule"], x["kind"], x["prev"], x["cur"]) for x in diff["items"]],
+    ...      diff["pool_same"], prev["rows"][0]["eaten_by"], _item_text(diff["items"][0]))
+    ([('.a.com', '归0', 18, 0)], True, {'.b.com': 192}, '`iptv_intranet` / `.a.com`：上游候选 18 条 → 0 条（不是它坏了：这轮它字面还命中 210 条，其中 192 条判给了 `.b.com`）')
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
