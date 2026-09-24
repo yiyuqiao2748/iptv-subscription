@@ -1,6 +1,6 @@
 """一条命令跑完这个项目的全部对账，包括「正在跑的那个页面有没有说谎」。
 
-    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认八条
+    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认十条
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --against /tmp/r226 # 顺手问「报告说的是不是这张表」
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --epg               # 再挂上 EPG 那条（读本地缓存，实测 0.08 秒）
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --port 8799 --skip page
@@ -12,7 +12,9 @@
 那几把尺各自都还新，串起来只是把四条命令变成一个黑盒。今天加它有一条新的理由：
 **有一类失效只有「问一眼正在跑的进程」才看得见**（2.29 那个「99 个台」），
 而我拿眼睛对了一次就不该再对第二次。所以这里真正的增量是 `page` 那一步，
-另外八条（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test` 六条默认，`drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
+另外十一条（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`/`num-test`
+/`unmarked`/`um-test` 九条默认，
+`drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
 （2.21 那把尺会把「文档里出现一个不存在的脚本名」判成漂移）—— 这一节里它是当场做出来的东西。
 **2.55 追记**：上面那句「四条默认」与第 3 行的「默认五条」都是加 `names` 之后的数
 （默认 = 四条离线尺 + `page`）。`names` 只看文件名那一层，为的是 `.git/` 里那种同步盘冲突副本 ——
@@ -27,6 +29,17 @@
 「文档里写了 scripts/nope_g257.py，但 scripts/ 里没有这个文件」，退码却是 2 = 「这把尺瞎了」）。
 所以这一节**改了两格的行为**：`off` 没关、以及只有散文点了个不存在的脚本名，从退 2 改成退 1；
 今天这批文档的退码不变（改前改后逐字节相同，量在 13:41）。
+**2.58 追记（这一遍补的）**：那一节加了 `num-test`，第 3 行的「七条」跟着推成「八条」，
+`check_page` 与 `steps` 那两句说明书也各改了一次 —— 唯独上面那份名单没动（它还写着「六条默认」）。
+漏的是文档不是代码，而这一树里没有一把尺读得到它：`doc-cmds` 只扫那三篇文档，`numbers` 只看
+文档里挂了标记的数，`doctests` 会跑说明书里的例子、可它一个字都不读例子外面的那些字。
+所以「写在代码里的话」目前是量不到的那层 —— 这一句是 2.59 顺带量到的现状，不是已经修好的东西。
+上面那份名单这一遍已按第十条补齐。
+**2.59 追记**：再加两条 `unmarked` 与 `um-test`（默认十条 = 九条离线尺 + `page`）。
+`unmarked` 跟前面几条不是一类：别的都在回答「有没有毛病」，它只回答「还有多少个数一把尺都没看过」。
+所以那条 ✓ 里**没有**「没问题」的意思 —— 候选点几条都不改退码，那口单一开始就写在
+`scripts/unmarked_nums.py` 第一段。既然它报的是处数，那把尺自己也得有人问一句还咬不咬得动
+（2.56 那个理由第四次管用），于是 22 格的 `--self-test` 跟着挂上，成一比一的那对。
 """
 from __future__ import annotations
 
@@ -161,10 +174,10 @@ def page_verdict(html: str, disk: dict[str, int], gone: list[str]) -> tuple[str,
 def check_page(port: int) -> tuple[str, str]:
     """问一眼正在跑的那个页面：它声称的台数对不对、它是不是 2.29 那一版。
 
-    这一条是那九条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
-    /`num-test`/`drift`/`epg`）
-    唯一量不到的那层 —— 它们全在量磁盘上躺着的东西（`self-test`、`doc-test` 量的是那两把尺自己，
-    量的仍然是磁盘上那 15 格名字，不是正在跑的进程）。
+    这一条是那十一条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
+    /`num-test`/`unmarked`/`um-test`/`drift`/`epg`）
+    唯一量不到的那层 —— 它们全在量磁盘上躺着的东西（`self-test`、`doc-test`、`num-test` 量的是
+    那三把尺自己，量的仍然是它们种进临时目录的那些格子，不是正在跑的进程）。
     取页面必须绕过系统代理：TUN 开着时走代理去取 `127.0.0.1` 会拿到假答案。
     """
     try:
@@ -235,8 +248,8 @@ def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
 def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[str, str]]]]:
     """这一轮要跑哪些检查：(名字, 给人看的那句, 怎么跑)。
 
-    默认八条 —— 七条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
-    /`num-test`）+ 那条只有
+    默认十条 —— 九条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
+    /`num-test`/`unmarked`/`um-test`）+ 那条只有
     「问一眼正在跑的进程」才做得到的 `page`。`drift` 和 `epg` 要人点名，各有一条实在的理由：
     `drift` 得先有另一份表放在那儿（没有就是 2，不该混进这一屏）；
     `epg` 回答的不是「说的和算的是不是一回事」，而是「现在这份节目单对我们有几个台有用」——
@@ -250,24 +263,41 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     14:26 那遍探针（22 格）还量出它带着一种比 2.57 更狠的错法：点名的两篇里有一篇不在时，
     它把另一篇比出来的成绩**一个字都不印**，只留一句「点名的文档不在」；同一遍还量到
     `--docs` 指到目录或非 UTF-8 的文件会裸崩。那一格现在由 `B7`／`B8`／`B9` 三格钉着。
-    `doc-test`（2.57）是同一个理由递给命令尺的那一半：`doc-cmds` 说「143 条命令、0 条对不上」，
+    `doc-test`（2.57）是同一个理由递给命令尺的那一半：`doc-cmds` 说「143 条命令、0 条对不上」
+    （正文之前那遍是 146 条，16:59:08；本节正文落盘之后是 149 条，17:37:04 在 `/tmp` 那份
+    干净副本里单跑，两遍都是 0 条对不上），
     这句话同样分不清「文档真干净」与「那几层判据整层不咬」，而 13:34 量到的现状里它连
     「自己找到了东西」都能报成「自己瞎了」（那一格现在由 `B9`/`B13` 两格钉住）。
     它跑 0.6 秒（25 格、一共 11 次 `--help` 子进程、6 个目标 —— 同一个目标只问一遍；
     14:07 实测三遍 0.56／0.58／0.60，这一档在 `selfcheck` 里那一遍是 0.58 秒），
     换的是这一屏上那条 ✓ 能不能读。
+    `unmarked`（2.59）是这一屏上**唯一一条不回答「有没有毛病」的**：它报的是「文档里还有多少个
+    数一把尺都没看过」，点几条候选都不改退码（16:19:57 那遍 `um_1.log`：甲 74、乙 109、丙 481、跳过 236，
+    配平 900 = 900；那 74 处与 `numbers` 报的是同一批位置，两把尺对不上就直接退 2，
+    这句话里的「甲」因此不是一个凭空的数）。它默认挂上，是因为「比了 74 处：全部对得上」只覆盖
+    挂了标记的那些处 —— 分母另外那一块（同一句里 24 和 0 挂了、1 和 14 没挂，
+    或正文复述上面那个 39）以前没人报，读的人便以为 74 就是文档里数的全体。
+    它跑 0.05—0.06 秒（16:19 那三遍 0.09／0.05／0.05，`um_time_1`—`_3.log`；17:08:43 又三遍
+    0.06／0.05／0.06，`tt_um_1`—`_3.log`），后两遍输出逐字节相同
+    （与 16:11 那遍只差在点名行里键的先后 —— 那一行刚改了排序）。
+    `um-test` 是它的配对（22 格、0.15—0.16 秒，17:08:43 实测三遍 0.16／0.16／0.15，
+    `tt_st_1`—`_3.log`；「16:29 三遍 0.17／0.15／0.15」那一组只在屏幕上、没落盘，本节不收）：那几行数出自一套
+    分桶判据，判据整层不咬时数会照报、只是报成另一个样 —— 第四把这样配对的尺，与前那三把同一笔账。
     `--skip` 与「跑不了」是两回事：前者是人不让跑（这一条直接不出现），
     后者会自己变成一条 `·` 判定出现在结果里（那个数要能对上）。
 
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=[])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', 'page']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', \
+'unmarked', 'um-test', 'page']
     >>> ns = argparse.Namespace(port=8787, against="/tmp/r226", epg=True, skip=["page"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', 'drift', 'epg']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', \
+'unmarked', 'um-test', 'drift', 'epg']
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=["page", "numbers"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test']
+    ['doctests', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', 'unmarked', \
+'um-test']
     """
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
@@ -284,6 +314,10 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/check_doc_cmds.py", "--self-test"])),
         ("num-test", "数尺自己还咬得动吗（往临时目录里种 26 格文档）",
          lambda: run_script(["scripts/doc_num.py", "--self-test"])),
+        ("unmarked", "文档里写了数却没挂标记的地方（只报数，不拦候选）",
+         lambda: run_script(["scripts/unmarked_nums.py"])),
+        ("um-test", "那把报数的尺自己还咬得动吗（往临时目录里种 22 格文档）",
+         lambda: run_script(["scripts/unmarked_nums.py", "--self-test"])),
         ("page", "正在跑的那个页面声称的台数", lambda: check_page(args.port)),
     ]
     if args.against:
@@ -328,7 +362,7 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
     ['recount']
     >>> [k for k, _ in dispositions(["drift", "num-test"])]
     ['recount', 'num-test', 'num-test/numbers-green']
-    >>> # 配对那三句：同一把尺的 `*-test` 红、正查的那条绿 —— 只有这一种意思
+    >>> # 配对那四句：同一把尺的 `*-test` 红、正查的那条绿 —— 只有这一种意思
     >>> [k for k, _ in dispositions(["self-test"])]
     ['self-test', 'self-test/names-green']
     >>> [k for k, _ in dispositions(["self-test", "names"])]     # 两红：各有一句，只少了配对那句
@@ -337,9 +371,17 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
     ['recount', 'num-test']
     >>> [k for k, _ in dispositions(["doc-test", "doc-cmds"])]
     ['doc-test']
+    >>> [k for k, _ in dispositions(["unmarked"])]           # 它红只有一种意思：有一篇没读到
+    ['unmarked']
+    >>> [k for k, _ in dispositions(["unmarked", "numbers"])]
+    ['recount', 'unmarked']
+    >>> [k for k, _ in dispositions(["um-test"])]            # 报数的那条也配一对（2.56 那个形状）
+    ['um-test', 'um-test/unmarked-green']
+    >>> [k for k, _ in dispositions(["um-test", "unmarked"])]     # 两红：各一句，只少配对那句
+    ['unmarked', 'um-test']
     >>> # 一句都不许是空的：钥匙配上就得真有字要印
     >>> all(t.strip() for _, t in dispositions(
-    ...     ["page", "names", "self-test", "num-test", "doc-test", "drift"]))
+    ...     ["page", "names", "self-test", "num-test", "doc-test", "unmarked", "um-test", "drift"]))
     True
     >>> [k for k, _ in dispositions(["page", "names", "self-test", "num-test", "doc-test"])]
     ['page', 'names', 'self-test', 'num-test', 'num-test/numbers-green', 'doc-test', \
@@ -379,6 +421,24 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
                         "`numbers` 绿、`num-test` 红 —— 同一个意思的另一半：**那句「74 处全部对得上」"
                         "这一轮不能读**，\n           它可能是文档真对得上，也可能是那层判据整层不咬 —— "
                         "26 格只点到 153 个键里的 10 个，那就是这一句的价钱（2.58 边界第 1 条）。"))
+    if "unmarked" in f:
+        # 这一条最贵的误读有两个方向：红的时候以为「文档里有数没挂」（它一辈子不为那件事红），
+        # 绿的时候以为「数都挂全了」（它量的是分母，不是对错）。两句都写在这一条里。
+        out.append(("unmarked",
+                    "`unmarked` 那条红**不是说文档里有数没挂标记** —— 那件事它永远不报红，"
+                    "\n           候选点几条都不改退码（2.59 的口径）。它红只有一种意思：**有一篇没读到**，"
+                    "\n           于是这一屏上甲乙丙那些处数只盖住了读到的那几篇。"
+                    "\n           反过来它绿也不读成「数都挂全了」：它报的是分母，不是判决。"))
+    if "um-test" in f:
+        out.append(("um-test",
+                    "`um-test` 那条红也**不是说文档里有数没挂**：那 22 份文档是它自己种的临时件，"
+                    "\n           跑完就回收，仓库里那两篇它一个字没读。它说的是分桶的判据或者措辞变了 —— "
+                    "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/unmarked_nums.py`（2.59）。"))
+        if "unmarked" not in f:
+            out.append(("um-test/unmarked-green",
+                        "`unmarked` 绿、`um-test` 红 —— 上面那几行数（甲 74、乙 109、丙 481）"
+                        "\n           **这一轮不能读**：它们出自一把自己承认咬不动的尺。"
+                        "\n           而 `numbers` 那句「比了 74 处」不受牵连，那是另一把尺量的。"))
     if "doc-test" in f:
         # 这一句要挡住的是那种最贵的误读：以为 `doc-test` 在说「文档里有一条命令写错了」。
         # 那是 `doc-cmds` 的活；这一条扫的是它自己种的 25 份临时文档，跟仓库里那三篇无关。
@@ -389,7 +449,8 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
         if "doc-cmds" not in f:
             out.append(("doc-test/doc-cmds-green",
                         "`doc-cmds` 绿、`doc-test` 红 —— 同一个意思的另一半：**那句「0 条对不上」这一轮不能读**，"
-                        "\n           它可能是文档真干净，也可能是那几层判据整层不咬（143 条一条都没查中）。"))
+                        "\n           它可能是文档真干净，也可能是那几层判据整层不咬（16:59:08 那遍 `pre_cmds.log`："
+                        "146 条命令、0 条对不上，另有 2 行写了那个解释器却没认成命令、一条都没查）。"))
     return out
 
 
@@ -400,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--epg", action="store_true", help="把 EPG 那条也挂上（只读本地缓存）")
     ap.add_argument("--skip", action="append", default=[],
                     help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / names / "
-                         "self-test / doc-test / num-test / drift / epg")
+                         "self-test / doc-test / num-test / unmarked / um-test / drift / epg")
     args = ap.parse_args(argv)
 
     plan = steps(args)
@@ -442,7 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     if not ran:
         return 2
     # 那些「这话该怎么读」全在 `dispositions()` 里（上面那条用例把它每条组合都点了一遍）。
-    # `main()` 这里只管印 —— 以前是就地 `print`，于是那九句只在「某条尺恰好红了」的那一遍
+    # `main()` 这里只管印 —— 以前是就地 `print`，于是那十句只在「某条尺恰好红了」的那一遍
     # 里存在过，写错一个变量名不会有人知道（15:14 那遍就是这么崩的，见 2.58 踩的第 11 条）。
     for _, line in dispositions(fails):
         print(line)
