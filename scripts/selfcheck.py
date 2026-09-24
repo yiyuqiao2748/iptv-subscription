@@ -236,6 +236,63 @@ def conclusion(stdout: str) -> str:
     return lines[-1]
 
 
+KEEP = 14             # 失败那一格最多摊几行 —— 再多就不是「看一眼」而是刷屏了
+CALLOUT = "✗"         # 这几把尺点名的行都以它开头（`stray_names`、`run_doctests` 都是）
+
+
+def clip(lines: list[str], keep: int = KEEP) -> tuple[list[str], list[str]]:
+    """只摊末尾 `keep` 行，**但被截掉的那些必须自己报出来**。
+
+    立这一格的来由不是「屏幕不好看」，是一个读数对不上的现场：2.60 收笔那一遍
+    `stray_names.py` 单跑印 22 行非空、点名 7 条，同一份输出进这一屏只剩最后 14 行 ——
+    屏幕上只有 4 条，被挤掉的 `.git/index 4` 的名字行没了、它那半句说明还在，
+    结论那行还写着「上面逐条点名了」。**那个 7 是真的，那 4 条也是真的，只有「逐条」是假的。**
+    一个不知道被截过的读日志的人会就此认为尺子在撒谎，或者认为屏幕上那就是全部。
+
+    补的话分三种形状，各钉一条用例：① 只要截了就报截几行；② 被截的行里有几条是点名行
+    （数 `CALLOUT` 开头的，这是「少了多少条」而不是「少了几行」）；③ 摊出来的第一行如果
+    是缩进的，它是**上一条的说明**不是主语 —— 那句「它在 `.git/` 里」没有主语，得说出来。
+
+    >>> kept, notes = clip([f"✗ 第 {i} 条" for i in range(1, 20)] + ["扫了 19 条"], 14)
+    >>> len(kept), kept[0], kept[-1]
+    (14, '✗ 第 7 条', '扫了 19 条')
+    >>> for n in notes: print(n)
+    这一格只摊了末尾 14 行，前面 6 行没显示 —— 单跑那条命令看全部
+    被截掉的 6 行里有 6 条是点名的行 —— 上面这一屏少了 6 条
+
+    ②那一条不是每次都有：被截的全是续行时它不该冒出来（①③照样在 —— 这一例正好把三条的
+    分工程摊开：②数的是**少了几条名字**，不是少了几行）。
+    >>> _, notes = clip(["扫了 20 条"] + ["    都是续行"] * 20, 6)
+    >>> for n in notes: print(n)
+    这一格只摊了末尾 6 行，前面 15 行没显示 —— 单跑那条命令看全部
+    这里第一行是半句：它说的是被截掉的那 15 行里的某一条
+
+    ③就是 2.60 那一屏的形状：点名行与它的说明行成对，截在中间时留下没有主语的说明。
+    >>> kept, notes = clip(["✗ 名字 A", "    它为什么坏"] * 8 + ["扫了 8 个名字"], 6)
+    >>> kept[0]
+    '    它为什么坏'
+    >>> for n in notes: print(n)
+    这一格只摊了末尾 6 行，前面 11 行没显示 —— 单跑那条命令看全部
+    被截掉的 11 行里有 6 条是点名的行 —— 上面这一屏少了 6 条
+    这里第一行是半句：它说的是被截掉的那 11 行里的某一条
+
+    没截的时候什么都不补 —— 这一格不许在没有信息的时候说话。
+    >>> clip(["a", "b"], 14)
+    (['a', 'b'], [])
+    """
+    if len(lines) <= keep:
+        return list(lines), []
+    dropped, kept = lines[:-keep], lines[-keep:]
+    n = len(dropped)
+    notes = [f"这一格只摊了末尾 {keep} 行，前面 {n} 行没显示 —— 单跑那条命令看全部"]
+    callouts = sum(1 for l in dropped if l.lstrip().startswith(CALLOUT))
+    if callouts:
+        notes.append(f"被截掉的 {n} 行里有 {callouts} 条是点名的行 —— 上面这一屏少了 {callouts} 条")
+    if kept[0][:1] in (" ", "\t"):
+        notes.append(f"这里第一行是半句：它说的是被截掉的那 {n} 行里的某一条")
+    return kept, notes
+
+
 def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
     """跑一条现成的命令（同一个解释器），把退码翻译成判定 + 那句结论。
 
@@ -244,13 +301,17 @@ def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
 
     过了 = 只印 stdout 里那句结论；**没过 = 把 stdout + stderr 末尾一起摊出来**，
     因为 `table_drift` 那类工具的「找不到」是往 stderr 说的，失败时不该只看到半句。
+    末尾是 `KEEP` 行，多的截掉 —— 但**截了多少、少了几个名字，由 `clip` 补在后面**：
+    2.60 收笔那一遍量到这一格把 `names` 的 7 条点名截成 4 条，屏幕上孤零零剩半句说明，
+    而结论还写着「上面逐条点名了」（那一遍的 `a5e660af…` 那一屏第 12 行就是那半句）。
     """
     r = subprocess.run([sys.executable, "-X", "utf8"] + argv, cwd=ROOT,
                        capture_output=True, text=True, timeout=timeout)
     if r.returncode == 0:
         return "pass", conclusion(r.stdout or "")
-    both = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
-    detail = "\n".join(f"      {l}" for l in [x for x in both if x.strip()][-14:])
+    both = [x for x in ((r.stdout or "") + (r.stderr or "")).strip().splitlines() if x.strip()]
+    kept, notes = clip(both)
+    detail = "\n".join([f"      {l}" for l in kept] + [f"        · {n}" for n in notes])
     return "fail", f"退 {r.returncode}\n{detail or '      （没有任何输出）'}"
 
 
