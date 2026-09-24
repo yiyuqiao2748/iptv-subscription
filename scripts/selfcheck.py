@@ -1,6 +1,6 @@
 """一条命令跑完这个项目的全部对账，包括「正在跑的那个页面有没有说谎」。
 
-    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认十条
+    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认十二条
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --against /tmp/r226 # 顺手问「报告说的是不是这张表」
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --epg               # 再挂上 EPG 那条（读本地缓存，实测 0.08 秒）
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --port 8799 --skip page
@@ -12,12 +12,12 @@
 那几把尺各自都还新，串起来只是把四条命令变成一个黑盒。今天加它有一条新的理由：
 **有一类失效只有「问一眼正在跑的进程」才看得见**（2.29 那个「99 个台」），
 而我拿眼睛对了一次就不该再对第二次。所以这里真正的增量是 `page` 那一步，
-另外十一条（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`/`num-test`
-/`unmarked`/`um-test` 九条默认，
+另外十三条（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`/`num-test`
+/`unmarked`/`um-test`/`claims`/`claims-test` 十一条默认，
 `drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
 （2.21 那把尺会把「文档里出现一个不存在的脚本名」判成漂移）—— 这一节里它是当场做出来的东西。
-**2.55 追记**：上面那句「四条默认」与第 3 行的「默认五条」都是加 `names` 之后的数
-（默认 = 四条离线尺 + `page`）。`names` 只看文件名那一层，为的是 `.git/` 里那种同步盘冲突副本 ——
+**2.55 追记**：上面那句「四条默认」与第 3 行的「默认五条」都是加 `names` 之后的数，
+当时那句写的是「默认 = 四条离线尺 + `page`」。`names` 只看文件名那一层，为的是 `.git/` 里那种同步盘冲突副本 ——
 加它之前那五把尺一把都不读那里，而 2.54 在同一分钟量到那儿真掉进过三颗。
 **2.56 追记**：那两个数又各加一（「四条默认」→ 五条、「默认五条」→ 六条），多的是 `self-test`：
 它量的不是仓库，是 `names` 那把尺**还咬不咬得动**。加它之前那条 ✓ 有两种读法（仓库真干净 /
@@ -33,13 +33,21 @@
 `check_page` 与 `steps` 那两句说明书也各改了一次 —— 唯独上面那份名单没动（它还写着「六条默认」）。
 漏的是文档不是代码，而这一树里没有一把尺读得到它：`doc-cmds` 只扫那三篇文档，`numbers` 只看
 文档里挂了标记的数，`doctests` 会跑说明书里的例子、可它一个字都不读例子外面的那些字。
-所以「写在代码里的话」目前是量不到的那层 —— 这一句是 2.59 顺带量到的现状，不是已经修好的东西。
+所以「写在代码里的话」那一层当时是量不到的 —— 那一句到 2.60 为止成立：那一节装了第一把读它的尺
+（`scripts/code_claims.py`），这一屏因此多了 `claims` 与 `claims-test` 两条。
 上面那份名单这一遍已按第十条补齐。
-**2.59 追记**：再加两条 `unmarked` 与 `um-test`（默认十条 = 九条离线尺 + `page`）。
+**2.59 追记**：再加两条 `unmarked` 与 `um-test`，当时那句写的是「默认十条 = 九条离线尺 + `page`」。
 `unmarked` 跟前面几条不是一类：别的都在回答「有没有毛病」，它只回答「还有多少个数一把尺都没看过」。
 所以那条 ✓ 里**没有**「没问题」的意思 —— 候选点几条都不改退码，那口单一开始就写在
 `scripts/unmarked_nums.py` 第一段。既然它报的是处数，那把尺自己也得有人问一句还咬不咬得动
 （2.56 那个理由第四次管用），于是 22 格的 `--self-test` 跟着挂上，成一比一的那对。
+**2.60 追记**：再把那两个数各加二 —— 多的是 `claims` 与 `claims-test`，第五把「量那把尺」的尺
+（`scripts/code_claims.py` 读 .py 的 docstring，22 格基线）。今天的口径是默认十二条 = 十一条离线尺
+加 `page`。这一节的顺序是反的，值得记下来：先加两条步骤，才有人来报上面那两句里哪几个字变了 ——
+18:32:30 那一遍 `claims` 自己数出 6 处对不上，全部出自这一个原因（第 3 行的注释、2.59 那句、
+`check_page` 与 `steps` 各自那份说明书）。放在以前那四轮里，这 6 处是人拿着日志逐条改的。
+它自己那 22 格也是这么被咬的：加第 22 格（`G10_引号不在句首`）之后第一遍，红的就是它自己说明书里
+那句「种 21 格」—— 一把量散文的尺第一处抓到的是它自己，这一条算它 work 的证据，不算它意外。
 """
 from __future__ import annotations
 
@@ -174,9 +182,10 @@ def page_verdict(html: str, disk: dict[str, int], gone: list[str]) -> tuple[str,
 def check_page(port: int) -> tuple[str, str]:
     """问一眼正在跑的那个页面：它声称的台数对不对、它是不是 2.29 那一版。
 
-    这一条是那十一条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
-    /`num-test`/`unmarked`/`um-test`/`drift`/`epg`）
-    唯一量不到的那层 —— 它们全在量磁盘上躺着的东西（`self-test`、`doc-test`、`num-test` 量的是
+    这一条量的那一层，是那十一条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`
+    /`doc-test`/`num-test`/`unmarked`/`um-test`/`claims`/`claims-test`）加上两条要点名的（`drift`/`epg`）
+    全都读不到的 ——
+    它们量的是磁盘上躺着的东西（`self-test`、`doc-test`、`num-test` 量的是
     那三把尺自己，量的仍然是它们种进临时目录的那些格子，不是正在跑的进程）。
     取页面必须绕过系统代理：TUN 开着时走代理去取 `127.0.0.1` 会拿到假答案。
     """
@@ -248,8 +257,8 @@ def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
 def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[str, str]]]]:
     """这一轮要跑哪些检查：(名字, 给人看的那句, 怎么跑)。
 
-    默认十条 —— 九条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
-    /`num-test`/`unmarked`/`um-test`）+ 那条只有
+    默认十二条 —— 十一条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
+    /`num-test`/`unmarked`/`um-test`/`claims`/`claims-test`）+ 那条只有
     「问一眼正在跑的进程」才做得到的 `page`。`drift` 和 `epg` 要人点名，各有一条实在的理由：
     `drift` 得先有另一份表放在那儿（没有就是 2，不该混进这一屏）；
     `epg` 回答的不是「说的和算的是不是一回事」，而是「现在这份节目单对我们有几个台有用」——
@@ -289,15 +298,15 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=[])
     >>> [n for n, _, _ in steps(ns)]
     ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', \
-'unmarked', 'um-test', 'page']
+'unmarked', 'um-test', 'claims', 'claims-test', 'page']
     >>> ns = argparse.Namespace(port=8787, against="/tmp/r226", epg=True, skip=["page"])
     >>> [n for n, _, _ in steps(ns)]
     ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', \
-'unmarked', 'um-test', 'drift', 'epg']
+'unmarked', 'um-test', 'claims', 'claims-test', 'drift', 'epg']
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=["page", "numbers"])
     >>> [n for n, _, _ in steps(ns)]
     ['doctests', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', 'unmarked', \
-'um-test']
+'um-test', 'claims', 'claims-test']
     """
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
@@ -318,6 +327,10 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/unmarked_nums.py"])),
         ("um-test", "那把报数的尺自己还咬得动吗（往临时目录里种 22 格文档）",
          lambda: run_script(["scripts/unmarked_nums.py", "--self-test"])),
+        ("claims", "写在代码里的那些话，报的数对不对（只读 .py 的 docstring，不跑它们）",
+         lambda: run_script(["scripts/code_claims.py"])),
+        ("claims-test", "那把读散文的尺自己还咬得动吗（往临时目录里种 22 格假件）",
+         lambda: run_script(["scripts/code_claims.py", "--self-test"])),
         ("page", "正在跑的那个页面声称的台数", lambda: check_page(args.port)),
     ]
     if args.against:
