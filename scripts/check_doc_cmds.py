@@ -69,12 +69,15 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 from baseline_guard import sep_names            # noqa: E402  顿号那道闸的判据（三把尺共用）
 # 2.62：「读进来」那一层不另写一套 —— 三种说法和那张「什么都不是」的字节流都从数尺那边拿
 # （`unmarked_nums` 与 `code_claims` 早就是它的邻居了，同一件事不许有两个算法）。
 from doc_num import BIN_BODY, read_doc          # noqa: E402
+# 2.66 同上：「这一处是不是在引用别人的话」这一判据 `code_claims` 已经修过一次（2.60 那句
+# 「一个 「」 就够把整句真引用一起豁免」），这里不许再粗判一遍。
+from code_claims import quote_spans             # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # 「会自己过期的命令」那一层要复用 `src.cli` 里的 `build_parser()` / `replay_gate()`
@@ -619,6 +622,58 @@ def prose_clocks(text: str) -> list[int]:
     return out
 
 
+def flag_hits(line: str) -> list[tuple[int, int]]:
+    """这一行里那面旗的每一次出现，返回 `(起点, 终点)`；两种写法都算。
+
+    为什么要单独一层：那一屏写的是「另有 147 **处**」，而 09-24 23:14 那遍量到的是
+    **147 行、149 次** —— 有两行各写了两遍。「处」到底指行还是指次，这一句自己没说清，
+    而这两读数差 2 恰好落在「读的人以为它说的是同一件事」那一类毛病里。
+
+    >>> flag_hits("跑一次 `build --replay` 就有")
+    [(5, 19)]
+    >>> flag_hits("先 `build --replay`，再来一次 `build --replay`")
+    [(3, 17), (25, 39)]
+    >>> flag_hits("这行没有旗")
+    []
+    """
+    hits = [(m.start(), m.end()) for m in re.finditer(r"build --replay|`--replay`", line)]
+    return sorted(set(hits))
+
+
+def prose_hits(text: str, *, doc: str = "") -> list[tuple[str, int, int, int, str]]:
+    """把 `prose_clocks` 数到的那些行各拆成一条记录：`(哪一篇, 第几行, 括号外几次, 「」里几次, 那一行)`。
+
+    这一层是 2.66 加的，因为原来那一屏只有「另有 N 处」这一个数，三件事它都不说：
+    **是谁贡献的**（09-24 23:13 那遍：`计划书.md` 136、`docs/电视订阅接入.md` 9、
+    `docs/真机验收单.md` 2 —— 三节履历里逐节人肉查「分母为什么涨了 1」查的就是这一件）、
+    **是行还是次**（上面 `flag_hits`）、以及**有多少是在引用这把尺自己那句话**。
+
+    引用**不豁免**，只点名 —— 这是一个量过之后再定的选择，不是偏好：拿 2.60 立下的
+    `quote_spans` 判（判据是「这一处自己有没有被括起来」，不是「这一行里有没有 「」」），
+    147 行里整行都在括号内的只有 11 行；若按「这行有 「」 就算复述」粗判，会一次豁免掉 40 行。
+    那 29 行的差就是 2.60 那条毛病在另一把尺上的重现，而它恰恰是**不能豁免**的那批：
+    引号不改变「这句话到点就过期」的事实。判据不重写一份，直接借 `code_claims` 那一个。
+
+    >>> prose_hits("跑一次 `build --replay` 就有", doc="a.md")
+    [('a.md', 1, 1, 0, '跑一次 `build --replay` 就有')]
+    >>> prose_hits("那句「先跑 build --replay 再说」只是复述", doc="a.md")
+    [('a.md', 1, 0, 1, '那句「先跑 build --replay 再说」只是复述')]
+    >>> prose_hits("一行里两个键：build --replay 与 `--replay`", doc="a.md")
+    [('a.md', 1, 2, 0, '一行里两个键：build --replay 与 `--replay`')]
+    >>> prose_hits("带前缀的那条走命令层", doc="a.md")
+    []
+    """
+    lines = text.splitlines()
+    rows = []
+    for no in prose_clocks(text):
+        ln = lines[no - 1]
+        spans = quote_spans(ln)
+        hits = flag_hits(ln)
+        inq = sum(1 for s, e in hits if any(a <= s and e <= b for a, b in spans))
+        rows.append((doc, no, len(hits) - inq, inq, ln.strip()[:70]))
+    return rows
+
+
 def clock_verdict(cfg: dict, *, now: str, root: Path = ROOT) -> tuple[str, str]:
     """照抄这条命令今天会怎样：`(类别, 一句话)`。类别 ∈ `过` / `退` / `问不出`。
 
@@ -700,7 +755,8 @@ def clock_verdict(cfg: dict, *, now: str, root: Path = ROOT) -> tuple[str, str]:
     return ("过" if ok else "退"), (why or f"那份记录 {len(replay)} 条判决、上限 {cfg['budget']} 小时，今天能过")
 
 
-def clock_summary(rows: list[tuple[str, int, tuple[str, str]]], *, prose: int = 0) -> tuple[str, list[str]]:
+def clock_summary(rows: list[tuple[str, int, tuple[str, str]]], *,
+                  prose: Sequence[tuple[str, int, int, int, str]] = ()) -> tuple[str, list[str]]:
     """把带钟的命令收成「总结行里那一句 + 逐行明细」。没一条带钟 → `("", [])`（不印废话）。
 
     为什么只报不判错：**时间过了一点不是文档的错**。48 是那道闸的默认上限，到点就是到点；
@@ -710,6 +766,10 @@ def clock_summary(rows: list[tuple[str, int, tuple[str, str]]], *, prose: int = 
 
     总结行只放「几条 + 哪几种理由」（同一条理由不重复印），具体是哪几行进明细，`--verbose` 才印。
 
+    2.66 把 `prose` 从一个数换成 `prose_hits` 那些记录，为的是这一句要说清**是谁贡献的**：
+    「另有 147 处」这一屏连年三节都在人肉反推（2.65 那一节真的把它顶成 148 又改回来），
+    而它当时不说「处」是行还是次、也不说哪一篇动的。
+
     **这句话里必须带着「照抄」两个字**：`scripts/selfcheck.py` 的 `conclusion()` 是从一屏输出的
     末尾往前找那批结论词，找到哪句印哪句。这一句是**另外一行**，不带那个词的话 selfcheck 里
     被印出来的永远只是上面那句「扫了 141 条…0 条对不上」—— 也就是把这一节的发现藏回原地。
@@ -718,10 +778,15 @@ def clock_summary(rows: list[tuple[str, int, tuple[str, str]]], *, prose: int = 
 
     >>> clock_summary([])
     ('', [])
-    >>> clock_summary([], prose=2)[0]
-    '没一条写成可照抄的命令，但另有 2 处散文里写着 `build --replay` —— 那个钟对它们一样在走，只是量不到判决'
-    >>> clock_summary([("docs/a.md", 3, ("过", "能过"))], prose=1)[0]
-    '带着「记录能有多旧」那个钟、能照抄来量的 1 条：全能过；另有 1 处散文里写着 `build --replay`（量不到判决）'
+    >>> clock_summary([], prose=[("a.md", 3, 1, 0, "跑 build --replay 就有")])[0]
+    '没一条写成可照抄的命令，但另有 1 行散文里写着 `build --replay`（1 次） —— 那个钟对它们一样在走，只是量不到判决（a.md 1）'
+    >>> clock_summary([("docs/a.md", 3, ("过", "能过"))],
+    ...               prose=[("docs/a.md", 9, 1, 0, "x"), ("docs/b.md", 2, 2, 0, "y")])[0]
+    '带着「记录能有多旧」那个钟、能照抄来量的 1 条：全能过；另有 2 行散文里写着 `build --replay`（量不到判决：3 次）—— docs/a.md 1、docs/b.md 1'
+    >>> clock_summary([("docs/a.md", 3, ("过", "能过"))],
+    ...               prose=[("docs/a.md", 9, 1, 0, "x"), ("docs/b.md", 2, 2, 0, "y"),
+    ...                       ("docs/b.md", 7, 0, 1, "「那句是复述」")])[0]
+    '带着「记录能有多旧」那个钟、能照抄来量的 1 条：全能过；另有 3 行散文里写着 `build --replay`（量不到判决：4 次，其中 1 行整行在「」里）—— docs/b.md 2、docs/a.md 1'
     >>> clause, detail = clock_summary([
     ...     ("docs/a.md", 3, ("退", "那份记录已经 49 小时了（上限 48）")),
     ...     ("docs/a.md", 9, ("过", "那份记录 350 条判决、上限 72 小时，今天能过"))])
@@ -741,22 +806,36 @@ def clock_summary(rows: list[tuple[str, int, tuple[str, str]]], *, prose: int = 
     ...                                     '本机 DNS 被虚拟网卡接管（fake-IP 段 198.18.0.0/15）：a → 198.18.0.51'))])[0]
     '带着「记录能有多旧」那个钟、能照抄来量的 1 条：1 条会退 1（那一轮（19:22）体检报过警，它判死的线路多半是假阴性（2.16） ×1）'
     >>> all("照抄" in clock_summary(r, prose=p)[0] for r, p in (          # selfcheck 靠这个词找它
-    ...     ([(("a.md", 1, ("退", "…")))], 0), ([(("a.md", 1, ("过", "…")))], 0),
-    ...     ([(("a.md", 1, ("问不出", "…")))], 0), ([], 3)))
+    ...     ([(("a.md", 1, ("退", "…")))], []), ([(("a.md", 1, ("过", "…")))], []),
+    ...     ([(("a.md", 1, ("问不出", "…")))], []), ([], [("a.md", 1, 1, 0, "x")])))
     True
+    >>> _, d = clock_summary([], prose=[("a.md", 4, 0, 1, "那句「跑 build --replay」是复述")])
+    >>> d                                       # 明细把整行在括号里的那一类点名出来
+    ['    散文：a.md:4 ← 那句「跑 build --replay」是复述（整行是引用）']
     """
-    more = (f"；另有 {prose} 处散文里写着 `build --replay`（量不到判决）" if rows and prose else
+    n_line = len(prose)
+    n_occ = sum(out + inq for _, _, out, inq, _ in prose)
+    n_quoted = sum(1 for _, _, out, inq, _ in prose if out == 0 and inq)
+    by_doc: dict[str, int] = {}
+    for d, *_ in prose:
+        by_doc[d] = by_doc.get(d, 0) + 1
+    where = "、".join(f"{d} {by_doc[d]}" for d in sorted(by_doc, key=lambda k: (-by_doc[k], k)))
+    occ = f"{n_occ} 次" + (f"，其中 {n_quoted} 行整行在「」里" if n_quoted else "")
+    more = (f"；另有 {n_line} 行散文里写着 `build --replay`（量不到判决：{occ}）—— {where}"
+            if rows and prose else
             "" if not prose else
-            f"没一条写成可照抄的命令，但另有 {prose} 处散文里写着 `build --replay` "
-            "—— 那个钟对它们一样在走，只是量不到判决")
+            f"没一条写成可照抄的命令，但另有 {n_line} 行散文里写着 `build --replay`（{occ}）"
+            f" —— 那个钟对它们一样在走，只是量不到判决（{where}）")
+    prose_detail = [f"    散文：{d}:{no} ← {snip}" + ("（整行是引用）" if out == 0 and inq else "")
+                    for d, no, out, inq, snip in prose]
     if not rows:
-        return more, []
+        return more, prose_detail
     bad = [(d, n, w) for d, n, (k, w) in rows if k == "退"]
     ask = [(d, n, w) for d, n, (k, w) in rows if k == "问不出"]
     good = [r for r in rows if r[2][0] == "过"]
     head = f"带着「记录能有多旧」那个钟、能照抄来量的 {len(rows)} 条："
     detail = [f"    {label}：{d}:{n} ← {w}" for label, group in
-              (("会退 1", bad), ("问不出", ask)) for d, n, w in group]
+              (("会退 1", bad), ("问不出", ask)) for d, n, w in group] + prose_detail
     if not bad and not ask:
         return head + "全能过" + more, detail
     def gist(w: str) -> str:
@@ -846,6 +925,11 @@ def check_one(target: list[str], body: str, *, verbose: bool = False) -> str:
 B = chr(92)          # 反斜杠本身：不写进转义汤（2.54 起的写法）
 
 DOC = "假文档.md"     # 种出来的那份文档的名字（报告里的路径以它结尾）
+DOC2 = "另一篇.md"    # 2.66：「另有 N 行」那句要说清**是哪一篇动的**，于是要能种第二篇
+# 一份「过得了闸」的探针记录：2.66 那六格要的是**散文那一档**，钟的判决必须固定成「过」，
+# 否则那句会跟着真时间涨（`B11` 用 `--allow-untrusted` 越过三道门，走的是另一条）。
+REC = ('{"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",'
+       ' "measurement_warnings": [], "lines": {"http://a/1": {"ok": true}}}')
 
 
 class Cell(NamedTuple):
@@ -856,6 +940,7 @@ class Cell(NamedTuple):
     body: str = ""                            # 种进临时文件的文档正文（`{T}` = 临时目录本身）
     rec: str = ""                             # 额外种一份探针记录（带钟那一格要）
     bins: tuple[str, ...] = ()                # 额外种进去的**非 UTF-8** 件（只给名字，2.62 那格要）
+    also: tuple[tuple[str, str], ...] = ()    # 额外种进去的**第二篇文档**（名字, 正文），2.66 那两格要
     args: tuple[str, ...] = ()                # 非空 = 这一格自己带全套命令行（不再自动塞那份文档）
     rc: int = 0
     scanned: int | None = None                # 结论里那个「扫了 N 条命令」；None = 这一格不钉数
@@ -986,6 +1071,55 @@ BASELINE: tuple[Cell, ...] = (
          args=("{T}/坏件.bin",), bins=("坏件.bin",),
          rc=2, has=("读不出来：", "点名的 1 篇一篇都没读到"),
          lacks=("Traceback", "UnicodeDecodeError", "文件不在", "那是个目录")),
+    # —— 2.66：「另有 N 行散文里写着」那一档。这一组的靶子不是文档写错了，也不是命令行给错了，
+    # 是**这句自己说的话**：它从 2.45 装上那天起就只有一个数，每一节都在人肉反推
+    # 「这 147 处是谁贡献的」（2.65 那一节真的把它顶成 148 又改回来，靠的是手算）。
+    # 加格子之前先量过它有没有闸：拿 `HEAD` 那一份旧件（1326 行、29 格）逐种摘掉那一层 ——
+    # 累加永远加零、那半句整个不印、`prose_clocks` 改成恒空，三种改法各自都还是
+    # 「扫了基线 29 格：0 格不符期望」退 0（09-24 23:44:57—23:45:00 重跑，`/tmp/mut266_before2.py`）
+    # —— 也就是 2.57 那句话的形状：「0 条对不上」这一轮不能读。
+    # 下面六格的期望全部来自 23:3x—23:4x 实测（先跑一遍看它说什么，再把它说过的钉住），没有一格是猜的；
+    # 它们咬得动吗也量了：16 支改动逐支如预期（23:44:04—:19，`/tmp/mut266.py`）。
+    Cell("G11_没有散文那半句不印", "本节那六格的对照格：散文为零时那句「另有」「量不到判决」都不许出现",
+         "# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {T}/probe.json --allow-untrusted\n```\n",
+         rec=REC, rc=0, scanned=1, refs=0, has=("能照抄来量的 1 条", "全能过"),
+         lacks=("行散文里写着", "量不到判决", "✗")),
+    Cell("B20_散文一处点名到行", "那一档要说清是谁：那一句里得有「哪一篇 几行」，`--verbose` 里还得有那一行的原文",
+         "# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {T}/probe.json --allow-untrusted\n```\n\n"
+         "重出一遍表就是拿 build --replay 再跑一次。\n",
+         rec=REC, args=("{T}/" + DOC, "--verbose"),
+         rc=0, scanned=1, refs=0,
+         has=("另有 1 行散文里写着", "量不到判决：1 次", "<T>/假文档.md 1",
+              "散文：<T>/假文档.md:7"),
+         once=("另有 1 行散文里写着",), lacks=("整行在「」里", "整行是引用")),
+    Cell("B21_一行两处数成两次", "「行」与「次」是两个数：那一行里写两遍，句子里不许混成一个",
+         "# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {T}/probe.json --allow-untrusted\n```\n\n"
+         "无论 build --replay 还是 build --replay --no-epg，走的都是同一道闸。\n",
+         rec=REC, rc=0, scanned=1, refs=0,
+         has=("另有 1 行散文里写着", "量不到判决：2 次"), lacks=("另有 2 行",)),
+    Cell("B22_整行是引用仍然算", "引用不豁免，只点名：那一句是尺自己印的话被抄回来了，也算一处，但要说明",
+         "# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {T}/probe.json --allow-untrusted\n```\n\n"
+         "它印的那句是「跑一次 build --replay 就算量过」。\n",
+         rec=REC, args=("{T}/" + DOC, "--verbose"),
+         rc=0, scanned=1, refs=0,
+         has=("另有 1 行散文里写着", "量不到判决：1 次", "其中 1 行整行在「」里", "（整行是引用）"),
+         lacks=("量不到判决：0",)),
+    Cell("B23_两篇各算各的", "分母动了：那一句必须报得出是哪一篇动的、各动了几行，按多的排前面",
+         "# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {T}/probe.json --allow-untrusted\n```\n\n"
+         "重出一遍表就是拿 build --replay 再跑一次。\n",
+         rec=REC,
+         also=((DOC2, "# t\n\n```bash\n.venv/bin/python scripts/epg_check.py"
+                      " --playlist data/output/aptv.m3u\n```\n\n"
+                "那一步跑 build --replay，等一会儿再看。\n\n"
+                "跑不动就把 build --replay 换成 --verify。\n"),),
+         args=("{T}/" + DOC, "{T}/" + DOC2),
+         rc=0, scanned=2, refs=1,
+         has=("另有 3 行散文里写着", "量不到判决：3 次", "<T>/另一篇.md 2、<T>/假文档.md 1")),
+    Cell("B24_只有散文没有命令", "那一档的另一半：一条命令都没照抄时那句也不能缩回「0 全是空的」",
+         "# t\n\n拿 build --replay 重出一遍就行。\n\n另一处提到 build --replay 的是这一步。\n",
+         rc=2, scanned=0, refs=0,
+         has=("没一条写成可照抄的命令，但另有 2 行散文里写着", "（2 次）",
+              "量不到判决（<T>/假文档.md 2）", "这一轮一条都没扫到", "三种可能")),
 )
 
 
@@ -1062,11 +1196,15 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     那一格于是比的是一件没发生过的事（2.59 的 `braced_cells` 拦的是同一种靶子）。
     改之前那些格没有一格设过 `args`，所以这一改对它们是零影响 —— 中立性两遍量在 §2.62。
     要拿种出来的那份文档当靶子，自己在 `args` 里写 `{T}/假文档.md`。
+    2.66 起多一个 `also`：往**同一个**沙盒里再种第二篇（名字、正文各一份），仍要靠 `args`
+    点名才读得到 —— 「那一句里是谁贡献的」这一档没有第二篇就量不到。
     """
     if cell.rec:
         (base / "probe.json").write_text(cell.rec, encoding="utf-8")
     doc = base / DOC
     doc.write_text(cell.body.replace("{T}", str(base)), encoding="utf-8")
+    for name, body in cell.also:               # 2.66：那一句要分得清是哪一篇贡献的
+        (base / name).write_text(body.replace("{T}", str(base)), encoding="utf-8")
     for name in cell.bins:                    # 「里面不是 UTF-8」那一格：那份件什么都不是
         (base / name).write_bytes(BIN_BODY)
     argv = [a.replace("{T}", str(base)) for a in cell.args] or [str(doc)]
@@ -1100,6 +1238,64 @@ def sep_conflicts(cells: tuple[Cell, ...]) -> list[str]:
     return sep_names(c.who for c in cells)
 
 
+def sloppy_cells(cells: tuple[Cell, ...]) -> list[str]:
+    """格子自己写歪的地方 —— 五种「这一格比的是一件没发生过的事」的形状。
+
+    为什么要这一层（2.66 踩出来的）：本节加第六格时把 `lacks=("量不到判决：0")` 少写了一个逗号，
+    那个字段于是从「一句不许出现」变成**一个字符串**，`check_cell` 里的 `for s in cell.lacks`
+    开始逐个字扫 —— 报的是「多说了那句：量 —— 误伤」。它当天撞上了，是因为「量」这个字在那一屏上
+    到处都有；**换成一个屏上不出现的字，这一格就永远绿着**，而它一个字都没判。
+    上面这一族坏法在 2.66 之前只能靠人眼：本节之前那些格子里没有一格钉过「字段形状」，
+    而 `lean_playlist.py:420` 早就有同名的几规则，这里是命令尺自己的那五条。
+
+    >>> sloppy_cells((Cell("好的一格", "x", has=("a", "b")),))
+    []
+    >>> sloppy_cells((Cell("少逗号", "x", has="abc"),))
+    ['少逗号：`has` 是一个字符串而不是元组 —— 少写一个逗号，判据会逐个字去屏幕上找（2.66 踩的：把 `lacks` 写成 `("…")` 后它报的是「多说了那句：量」）']
+    >>> print(sloppy_cells((Cell("占位符", "x", has=("{T}/a.md",)),))[0])
+    占位符：`has` 里写了 `{T}`，argv 才用这个占位符，屏幕上的路径要写 `<T>`
+    >>> print(sloppy_cells((Cell("自相矛盾", "x", has=("同一句",), lacks=("同一句",)),))[0])
+    自相矛盾：同一句既是 `has` 又是 `lacks`，这一格永远不可能过
+    >>> print(sloppy_cells((Cell("只比退码", "x", rc=1),))[0])
+    只比退码：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」
+    >>> print(sloppy_cells((Cell("种了没读", "x", has=("a",), also=(("第二篇.md", "t"),)),))[0])
+    种了没读：种了 第二篇.md 却没读它（`args` 与正文里都没有这个名字）—— 这一格比的是一件没发生过的事
+    >>> print(sloppy_cells((Cell("记录没读", "x", has=("a",), body="# t\\n", rec="{\\\"a\\\": 1}"),))[0])
+    记录没读：种了 probe.json 却没读它（`args` 与正文里都没有这个名字）—— 那一层的判决是拿不到记录算的
+    >>> sloppy_cells(BASELINE)          # 今天这 35 格都写得开
+    []
+    """
+    out: list[str] = []
+    for c in cells:
+        bare = [f for f in ("has", "once", "lacks") if isinstance(getattr(c, f), str)]
+        if bare:
+            # 后面那四条规则要拼接这三个字段，字符串一进来就会抛 `TypeError` —— 这一格先记下来、
+            # 直接跳过：形状不对时「它到底还钉了什么」这个问题没有答案。
+            for f in bare:
+                out.append(f"{c.who}：`{f}` 是一个字符串而不是元组 —— 少写一个逗号，"
+                           "判据会逐个字去屏幕上找（2.66 踩的：把 `lacks` 写成 `(\"…\")` "
+                           "后它报的是「多说了那句：量」）")
+            continue
+        named = c.has + c.once + c.lacks
+        if any("{T}" in s for s in named):
+            out.append(f"{c.who}：`has` 里写了 `{{T}}`，argv 才用这个占位符，"
+                       "屏幕上的路径要写 `<T>`")
+        if set(c.has) & set(c.lacks):
+            out.append(f"{c.who}：同一句既是 `has` 又是 `lacks`，这一格永远不可能过")
+        if not (c.has or c.lacks or c.once):
+            out.append(f"{c.who}：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」")
+        # 「种了却没读」：`run_cell` 会照着 `also`/`bins`/`rec` 往沙盒里放件，
+        # 但只有 `args` 点名的那几篇才进得了这把尺。放一件没人读的件 = 这一格在比一件没发生过的事
+        # （2.59 的 `braced_cells`、2.62 改 `args` 语义，拦的都是这一族）。
+        seen = " ".join(c.args) + " " + c.body
+        for name in [n for n, _ in c.also] + list(c.bins) + (["probe.json"] if c.rec else []):
+            if name not in seen:
+                extra = "—— 那一层的判决是拿不到记录算的" if name == "probe.json" \
+                    else "—— 这一格比的是一件没发生过的事"
+                out.append(f"{c.who}：种了 {name} 却没读它（`args` 与正文里都没有这个名字）{extra}")
+    return out
+
+
 def self_test(cells: tuple[Cell, ...] | None = None) -> int:
     """`--self-test` 那一档：每一格种一份临时文档、跑一遍这把尺、逐格对期望。
 
@@ -1108,13 +1304,18 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
     `selfcheck.run_script()` 失败时只摊出末尾 14 行，把 ✗ 排在 29 行 ✓ 中间，
     那条 ✗ 到了人眼前就只剩一个「退 1」。
 
-    退码：0 = 每格都符合期望；1 = 有格子不符（逐格点名）；2 = 一格都没跑起来。
+    退码：0 = 每格都符合期望；1 = 有格子不符（逐格点名）；2 = 一格都没跑起来，或基线自己写歪了
+    （`sloppy_cells`，2.66 加的那一层 —— 那种格子跑起来也是白跑，所以它排在跑之前）。
     """
     cells = BASELINE if cells is None else cells
     knames = sep_conflicts(cells)
     if knames:
         print("格子名里不许有顿号或换行，那一行「不符的格」是靠顿号分的，分不开就等于没有："
               + "、".join(knames))
+        return 2
+    sloppy = sloppy_cells(cells)
+    if sloppy:
+        print("基线自己有格子写歪了，改的是基线、不是判据：\n  " + "\n  ".join(sloppy))
         return 2
     ran = bad = 0
     fails: list[tuple[Cell, str, str]] = []
@@ -1191,7 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
     broken: list[tuple[str, int, str, str]] = []
     refs: set[str] = set()
     clocks: list[tuple[str, int, tuple[str, str]]] = []
-    prose = 0
+    prose: list[tuple[str, int, int, int, str]] = []
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     for doc in paths:
         # 「读进来」这一道 2.62 才装上：以前这两行是一句裸 `read_text`，点名的文档不在、
@@ -1208,7 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
         loose += [(str(doc), no, why, hid) for no, why, hid in skip_imbalance(raw)]
         text = strip_skipped(raw)
         refs |= script_refs(text)
-        prose += len(prose_clocks(text))
+        prose += prose_hits(text, doc=str(doc))
         miss += [(str(doc), no, why) for no, why in unrecognized(text)]
         for no, body, flaw in read_commands(text):
             # 最前面这一道：先问「这是不是一条完整的命令」，再问参数名。
