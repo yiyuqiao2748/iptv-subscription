@@ -30,6 +30,7 @@
     .venv/bin/python scripts/epg_check.py data/cache/epg.xml    # 只问「现在这张表出自哪一轮」：不发一个请求
     .venv/bin/python scripts/epg_check.py --playlist data/output/hunan.m3u data/cache/epg.xml  # 换成湖南那张表来量
     .venv/bin/python scripts/epg_check.py --config /tmp/off.yaml  # 换一份配置读（那行「在用/关着」跟着变）
+    .venv/bin/python scripts/epg_check.py --self-test  # 不问 EPG，只问这把尺自己还咬得动吗（种 14 格，一个请求都不发）
 
 出口提醒：这台电脑挂着全局代理时，发出去的请求走的是那条隧道（计划书 2.8 / 2.16），
 所以「境内 EPG 服务能拿到」在这里**只能证明服务活着**，不能证明家里那张 Wi-Fi 拿得到 ——
@@ -39,17 +40,22 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import sys
+import tempfile
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from doc_num import read_doc                               # noqa: E402
-from src.check.epg import align_all, coverages, load_bytes # noqa: E402
+from baseline_guard import guard as guard_names          # noqa: E402  顿号那道闸（几把基线尺共用）
+from doc_num import hide_tmp, read_doc                   # noqa: E402
+from src.check.epg import align_all, coverages, load_bytes, parse_tv # noqa: E402
 from src.cli import load_epg_config                        # noqa: E402
 from src.parse.m3u import parse_m3u                        # noqa: E402
 
@@ -364,7 +370,8 @@ def usable(lines: list[str]) -> bool:
     return "今天有节目" in txt and "合计 0/" not in txt
 
 
-def exit_code(n_targets: int, ok: int, *, drift_skipped: bool = False) -> int:
+def exit_code(n_targets: int, ok: int, *, drift_skipped: bool = False,
+              id_changed: bool = False) -> int:
     """一个候选都没落进「可用」时退 1 —— 别的脚本要拿这个当门。
 
     为什么要改：这条脚本从 2.19 起只印结论、永远退 0，那会儿它是人肉看的一份报告，
@@ -390,8 +397,19 @@ def exit_code(n_targets: int, ok: int, *, drift_skipped: bool = False) -> int:
     1
     >>> exit_code(0, 0, drift_skipped=True)    # 「一条候选都没查」这一支回不来（见上）
     1
+    >>> exit_code(4, 4, id_changed=True)       # 全可用，可量到了台名换 id —— 那也是 1，不是 0
+    1
+    >>> exit_code(4, 4, id_changed=False)      # 量过了、一个都没变：这才是 0
+    0
+    >>> exit_code(4, 0, drift_skipped=True, id_changed=True)   # 三块叠着仍只退 1（没有 3 这一档）
+    1
+
+    2.64 起多第三个入参：`--against` 给的是好表、而那一段**量到了**「有台名的 tvg-id 变了」。
+    那一格以前退 0 —— 它是 `exit_code` 里唯一一个「量到了毛病却不进判决」的出口，
+    `--against` 那句 help 自己写着「跨天重出表时这里应该是 0」，可屏幕上报出「变了 1 个」
+    的时候退码还是 0，`selfcheck` 那一层读起来就是「查过，没问题」。
     """
-    if drift_skipped:
+    if drift_skipped or id_changed:
         return 1
     return 1 if n_targets and not ok else 0
 
@@ -493,6 +511,356 @@ def config_line(rel: str, urls: list[str], state: str) -> str:
     return f"，配置 `{rel}` 没读到地址，只查默认候选"
 
 
+# ============================== 2.64：这把尺的回归基线 ==============================
+#
+# 为什么要单独一档：2.63 把「读不进来」那一族改成人话之后，那些形状**只活在 doctest 里**，
+# 而 `scripts/selfcheck.py` 默认只喂一份本地缓存给这把尺（`epg_offline` 那一步）——
+# 也就是说「--playlist 指到目录要退 2」「--against 读不进来要退 1」这些改对了的事没有任何闸守着。
+# 装这一档的时候当场量出两处判决漏了（见 `exit_code` 的 `id_changed`、`main()` 里配置那一格），
+# 都是 doctest 看不见、只有跑整屏才现形的那类。形状照 2.56—2.59、2.62、2.64 的 table_drift：
+# 种进临时沙盒、跑**真的 `main()`**、逐格对退码与句子。沙盒全在 `tempfile` 里，
+# `data/output/` 与 `data/cache/` 一个字节都不动，而且下面那个 `no_network` 保证一个请求都不发。
+
+TODAY = "20260923"        # 基线里的「今天」钉死在这一天：跟着本机时钟走的话，这档到 2027 年自己会红
+
+HDR = '#EXTM3U x-tvg-url="https://e.erw.cc/e.xml.gz"\n'
+ONE = HDR + '#EXTINF:-1 tvg-id="81" group-title="g",湖南卫视\nhttp://a/1.m3u8\n'
+DRIFTED = HDR + '#EXTINF:-1 tvg-id="999" group-title="g",湖南卫视\nhttp://a/1.m3u8\n'
+TWIN = HDR + ('#EXTINF:-1 tvg-id="81" group-title="g",湖南卫视\nhttp://a/1.m3u8\n'
+              '#EXTINF:-1 tvg-id="999" group-title="g",湖南卫视\nhttp://b/2.m3u8\n')
+NON_UTF8 = b"#EXTM3U\n" + bytes([0xFF, 0xFE, 0x41])   # 头一行是表，第八个字节起不是 UTF-8
+
+
+def epg_xml(*chans: tuple[str, str, str]) -> str:
+    """拼一份最小 XMLTV：每个入参是 (频道 id, display-name, 哪天有条目)，日期给空串就没条目。
+
+    >>> e = parse_tv(epg_xml(("81", "湖南卫视", TODAY)))
+    >>> e.progs, e.ids, dict(e.days), e.generator
+    (1, ['81'], {'20260923': 1}, 'g264')
+    >>> parse_tv(epg_xml(("qqq", "央视某台", "20260807"))).days["20260807"]
+    1
+    >>> parse_tv(epg_xml()).progs, parse_tv(epg_xml()).ids       # 一份空单：不是报错页，是没内容
+    (0, [])
+
+    第三格那种「有 channel 却没有 programme」是刻意分开的两档：`coverages()` 对二者的说法
+    不一样（一个是「一条节目都没有」，一个是「今天只有 N 个台有条目」），基线要能分辨。
+    """
+    body = "".join(f'<channel id="{cid}"><display-name lang="zh">{name}</display-name></channel>'
+                   for cid, name, _day in chans)
+    progs = "".join(f'<programme channel="{cid}" start="{day}120000 +0800">'
+                    f'<title lang="zh">节目</title></programme>'
+                    for cid, _name, day in chans if day)
+    return f'<tv generator-info-name="g264">{body}{progs}</tv>'
+
+
+# 每格都先种这一批：九件东西把「表 / 单 / 配置」三类各摆几种形状，格子自己只补要多的那件
+FIXTURES: tuple[tuple[str, str], ...] = (
+    ("表.m3u", ONE),
+    ("同表.m3u", ONE),
+    ("漂移表.m3u", DRIFTED),
+    ("同名表.m3u", TWIN),
+    ("好单.xml", epg_xml(("81", "湖南卫视", TODAY))),
+    ("陌生单.xml", epg_xml(("zzz", "湖南卫视", TODAY))),
+    ("别人单.xml", epg_xml(("qqq", "央视某台", TODAY))),
+    ("旧单.xml", epg_xml(("81", "湖南卫视", "20260807"))),
+    ("关配置.yaml", f"epg:\n  url: {{T}}/好单.xml\n  enabled: false\n"),
+    ("坏配置.yaml", "epgs:\n  url: http://x/e.xml\n"),
+)
+
+
+@contextlib.contextmanager
+def no_network():
+    """把 `urlopen` 换成一个「一碰就抛」的替身：`--self-test` 这一档一个请求都不许发出去。
+
+    为什么要专门设这一道：这一支脚本**不给参数就会去下载四个候选**（`DEFAULT_SOURCES`），
+    而基线那 14 格跑的是真的 `main()`。少这一道，「跑一遍基线」等于往境外发十几个请求，
+    而这台挂着全局代理的开发机上它们还会多半成功 —— 那档既慢又假（2.8／2.16 讲的正是这个），
+    而且哪天断网它就整片红，红的还不是判据。
+
+    它只保证「想发就炸」：抛 `AssertionError`，被 `report()` 那个 `except Exception` 收成一行人话
+    （寅那一格就是拿这件事当证据的），所以每格不必各自防。
+
+    >>> import urllib.request
+    >>> before = urllib.request.urlopen
+    >>> with no_network():
+    ...     urllib.request.urlopen is before
+    False
+    >>> urllib.request.urlopen is before        # 出得来：替身不许留给后面的步骤
+    True
+    >>> with no_network():
+    ...     try:
+    ...         urllib.request.urlopen("https://e.erw.cc/e.xml.gz")
+    ...     except AssertionError as e:
+    ...         print(e)
+    --self-test 这一档一个请求都不许发
+    """
+    def refuse(*_a: object, **_kw: object) -> bytes:
+        raise AssertionError("--self-test 这一档一个请求都不许发")
+
+    before = urllib.request.urlopen
+    urllib.request.urlopen = refuse                 # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        urllib.request.urlopen = before             # type: ignore[assignment]
+
+
+class Cell(NamedTuple):
+    """一格基线：沙盒里种什么、用什么参数问它、期望屏幕上出现什么、不许出现什么。
+
+    `files` 是**这一格额外要的文件**（共用的那十件由 `FIXTURES` 先种好），键是沙盒里的相对路径，
+    值里的 `{T}` 在落盘前换成这一轮沙盒的真路径（配置里那条本地地址要用它）；`dirs` 造成目录、
+    `bins` 造成非 UTF-8 的件。`argv` 里 `{T}` 跑之前换成真路径，`has`／`lacks` 里写 `<T>`，
+    因为屏幕上那串临时路径跑之前谁也不知道（`hide_tmp` 负责抹回来）。
+    """
+    who: str
+    what: str
+    rc: int
+    files: tuple[tuple[str, str], ...] = ()
+    dirs: tuple[str, ...] = ()
+    bins: tuple[str, ...] = ()
+    argv: tuple[str, ...] = ()
+    has: tuple[str, ...] = ()
+    lacks: tuple[str, ...] = ()
+    once: tuple[str, ...] = ()
+
+
+def targets_local(*names: str) -> tuple[str, ...]:
+    """候选位置该写的样子：把沙盒里的件名换成 `{T}/件名`，一格可能要两三条。
+
+    为什么单独一层：`--self-test` 所有格都必须用本地件当候选，一写漏就变成真去下载
+    —— 而 `no_network` 会把那件事**变成屏幕上的一行字**而不是报错，所以更要靠这一层少写错。
+
+    >>> print(" ".join(targets_local("好单.xml")))
+    {T}/好单.xml
+    >>> print(" ".join(targets_local("好单.xml", "旧单.xml")))
+    {T}/好单.xml {T}/旧单.xml
+    """
+    return tuple(f"{{T}}/{n}" for n in names)
+
+
+def argv_of(*rest: object, playlist: str = "表.m3u") -> tuple[str, ...]:
+    """拼一格用的 argv：`--playlist` 与钉死的 `--today` 打头，剩下的逐格自己写。
+
+    `rest` 里既可以塞一个 `targets_local(...)` 出来的元组，也可以塞裸的串（`--against` 那种），
+    混着写也行 —— 拼完一律摊平，格子里就不用管第几个位置是参数、哪几个是候选。
+    `playlist` 做成**关键字**参数正是因为这一点：候选永远写在末尾，第一件东西不该是表名。
+    第一遍我把它写在首位，八格整整齐齐把 `('--target',)` 当成了表名去读，退一色 2。
+
+    >>> print(" ".join(argv_of(targets_local("好单.xml"))))
+    --playlist {T}/表.m3u --today 20260923 {T}/好单.xml
+    >>> print(" ".join(argv_of("--against", "{T}/漂移表.m3u", targets_local("好单.xml"),
+    ...                        playlist="同名表.m3u")))
+    --playlist {T}/同名表.m3u --today 20260923 --against {T}/漂移表.m3u {T}/好单.xml
+    """
+    flat: list[str] = []
+    for item in rest:
+        flat.extend([str(x) for x in item] if isinstance(item, tuple) else [str(item)])
+    return ("--playlist", f"{{T}}/{playlist}", "--today", TODAY, *flat)
+
+
+def argv_cfg(which: str) -> tuple[str, ...]:
+    """不给候选、只给 `--config` 的那两格：那种走「配置里那两条 + 默认候选」这一支。
+
+    >>> print(" ".join(argv_cfg("坏配置.yaml")))
+    --playlist {T}/表.m3u --today 20260923 --config {T}/坏配置.yaml
+    """
+    return argv_of() + ("--config", f"{{T}}/{which}")
+
+
+BASELINE: tuple[Cell, ...] = (
+    # ———— 甲／乙／丙：三个常态读数。0 = 全对，1 = 量到了毛病，且三种 1 各有各的说法 ————
+    Cell("甲_本地单子全按id配上", "常态：不发请求、台台按 id 对上，退 0 且「来历」那一句要说得出口",
+         0, argv=argv_of(targets_local("好单.xml")),
+         has=("按 tvg-id 配上 1 个", "合计 1/1",
+              "这张表的 id 就是这一份节目单那一套（1 个全按 id 配上）",
+              "结论：1 个候选里，1 个", "这一轮一个请求都没发"),
+         lacks=("改 id 就能配上", "一个请求都不许发", "Traceback", "取不到")),
+    Cell("乙_旧快照没有今天", "200 也拿得到、可里面没今天：那是「量到了、不能用」，退 1",
+         1, argv=argv_of(targets_local("旧单.xml")),
+         has=("没有今天的内容（覆盖 1 天：20260807，距今 47 天）", "结论：1 个候选里，0 个"),
+         # 「今天有节目」这四个字不算判据：结论行「既今天有节目、又配得上」里原样带着它，
+         # 所以这一格要 lack 的是带括号那一档（`coverages()` 的 docstring 里同一条坑）。
+         lacks=("今天有节目（", "✗ 取不到", "Traceback", "第一个可用的那份")),
+    Cell("丙_取不到的候选", "文件不在的那一条要塌成一行字，而且结论里不许冒充「第一个可用的那份」",
+         1, argv=argv_of(targets_local("并不存在.xml")),
+         has=("✗ 取不到：FileNotFoundError", "结论：1 个候选里，0 个"),
+         lacks=("Traceback", "第一个可用的那份")),
+    # ———— 丁／戊／己：2.63 那一族「分母整个读不进来」。三种读法各钉一格，退的都是 2 ————
+    Cell("丁_表指到目录", "`--playlist` 指到目录：以前崩 `IsADirectoryError` 退 1（=「候选全不能用」）",
+         2, dirs=("目录.m3u",), argv=argv_of(targets_local("好单.xml"), playlist="目录.m3u"),
+         has=("订阅表读不进来，不量了：<T>/目录.m3u —— 那是个目录，不是文档",),
+         lacks=("Traceback", "IsADirectoryError", "结论：", "候选：")),
+    Cell("戊_表不是UTF-8", "同一族第二种：改名没用，所以那句也不许写成「那是个目录」",
+         2, bins=("坏件.m3u",), argv=argv_of(targets_local("好单.xml"), playlist="坏件.m3u"),
+         has=("读不出来：",), lacks=("那是个目录", "文件不在", "Traceback", "UnicodeDecodeError")),
+    Cell("己_表根本不在", "第三种：这一档 2.63 之前就会说人话，留着它是为了钉「三种只有一份说法」",
+         2, argv=argv_of(targets_local("好单.xml"), playlist="没这个.m3u"),
+         has=("文件不在",), lacks=("那是个目录", "读不出来", "Traceback")),
+    # ———— 庚／辛：同一个合计数、两种来历（2.31 那一课），加上一格「一个都没配上」 ————
+    Cell("庚_全靠台名救回", "与甲同一个「合计 1/1」，来历却完全相反 —— 只看合计数就会读反的那一格",
+         0, argv=argv_of(targets_local("陌生单.xml")),
+         has=("按 tvg-id 配上 0 个", "再靠台名救回 1 个", "合计 1/1",
+              "没有一个 id 来自这一份节目单（1 个全靠台名救回）", "改 id 就能配上的：湖南卫视"),
+         lacks=("2.19 那一层已经落进这张表", "Traceback")),
+    Cell("辛_一个台都没配上", "单子有今天的节目、可一个台都对不上：`usable()` 那种「合计 0」不算可用",
+         1, argv=argv_of(targets_local("别人单.xml")),
+         has=("今天有节目（1 个台有条目）", "合计 0/1",
+              "一个台都没配上，看不出这张表的来历", "配不上的 1 个：湖南卫视",
+              "结论：1 个候选里，0 个"),
+         lacks=("改 id 就能配上", "Traceback", "第一个可用的那份")),
+    # ———— 壬／癸／子：`--against` 那一层。癸是 2.64 当场量出来的第一处漏判 ————
+    Cell("壬_against读不进来且候选也坏", "两笔账各说各的：这一格在 2.64 之前只报候选那句，「有一项没量」被吞掉",
+         1, dirs=("目录.m3u",),
+         argv=argv_of("--against", "{T}/目录.m3u", targets_local("旧单.xml")),
+         has=("！--against 那张表读不进来：<T>/目录.m3u —— 那是个目录，不是文档",
+              "这一屏有一项没量", "结论：1 个候选里，0 个"),
+         once=("这一屏有一项没量",), lacks=("这一屏量到了", "Traceback")),
+    Cell("癸_against量到台名换id", "**2.64 补的那处漏判**：屏幕上报「变了 1 个」，退码以前是 0",
+         1, argv=argv_of("--against", "{T}/漂移表.m3u", targets_local("好单.xml")),
+         has=("**1 个的 tvg-id 变了**", "这一屏量到了 1 个台名的 tvg-id 变了", "结论：1 个候选里，1 个"),
+         lacks=("tvg-id 一个都没变", "这一屏有一项没量", "Traceback")),
+    Cell("子_against一个都没变", "对照格：跨天重出表要的就是这一格的样子",
+         0, argv=argv_of("--against", "{T}/同表.m3u", targets_local("好单.xml")),
+         has=("**tvg-id 一个都没变**", "结论：1 个候选里，1 个"),
+         lacks=("这一屏量到了", "这一屏有一项没量", "Traceback")),
+    # ———— 丑／寅：`--config` 那一层。丑是 2.64 当场量出来的第二处：什么都没量到却退 1 ————
+    Cell("丑_配置读不动", "地址全从配置里读，读不动就一个候选都没有 —— 那是 2，不是 1",
+         2, argv=argv_cfg("坏配置.yaml"),
+         has=("配置读不动，不量了：", "一个候选都没查"),
+         lacks=("Traceback", "结论：", "候选：", "YAML 读不出来")),
+    Cell("寅_关着的那条照样量", "配置写着 `enabled: false`：句子要说「没参与」，而默认那四条在这档里必须炸",
+         0, argv=argv_cfg("关配置.yaml"),
+         has=("但 `enabled: false`", "下面照量它、只当候选",
+              "取不到：AssertionError: --self-test 这一档一个请求都不许发", "结论：5 个候选里，1 个"),
+         lacks=("配置里在用", "Traceback", "这一轮一个请求都没发")),
+    # ———— 卯：表本身有 2.14 那种「同名两 id」，分母要说清是按 (id, 台名) 数的 ————
+    Cell("卯_同名两种id", "同一个台名两种 id：那种台在命中率里是隐形的，得点名且算两个台",
+         0, argv=argv_of(targets_local("好单.xml"), playlist="同名表.m3u"),
+         has=("⚠️ 1 个台名在这张表里有两种以上的 tvg-id", "这种台算两个", "我们这张表 2 个频道",
+              "合计 2/2"),
+         lacks=("每个台名只有一种 tvg-id", "Traceback")),
+)
+
+
+def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
+    """跑一格：`(判定, 给人看的那句, 抹过沙盒路径的原文)`，判定是 `ok` / `bad` / `崩`。
+
+    走的是真的 `main()` 而不是中间函数：退码、stderr 上那行点名、结论那一句，全是这一格要看的
+    东西（2.56 起的同一取舍）。stdout 与 stderr 收进**同一个**缓冲区再比 —— 这一把尺最要紧的
+    三句话里有两句在 stderr 上（「订阅表读不进来」「配置读不动」）。
+    """
+    for rel, body in FIXTURES + cell.files:
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body.replace("{T}", str(base)), encoding="utf-8")
+    for rel in cell.dirs:
+        (base / rel).mkdir(parents=True, exist_ok=True)
+    for rel in cell.bins:
+        (base / rel).write_bytes(NON_UTF8)
+    argv = [a.replace("{T}", str(base)) for a in (cell.argv or argv_of())]
+    buf = io.StringIO()
+    try:
+        with no_network(), contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = main(argv)
+    except Exception as e:                        # 尺自己炸了不许读成「这格没过」以外的任何东西
+        return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
+    text = hide_tmp(buf.getvalue(), base)
+    good, why = check_cell(cell, rc, text)
+    return ("ok", "", text) if good else ("bad", why, text)
+
+
+def check_cell(cell: Cell, rc: int, text: str) -> tuple[bool, str]:
+    """这一格对上了没有：退码、该出现的句子、不该出现的句子、只许出现一次的句子。
+
+    `lacks` 与 `has` 一样重要：这一族的毛病正是「同一件事有几种说法，而它们会互相冒充」——
+    「读不出来：」那一格若写成「文件不在」，退码照样对、句子照样有，只有 `lacks` 拦得住。
+    """
+    if rc != cell.rc:
+        return False, f"退码：期望 {cell.rc}，实际 {rc}"
+    for s in cell.has:
+        if s not in text:
+            return False, f"屏幕上没有那句：{s}"
+    for s in cell.lacks:
+        if s in text:
+            return False, f"多说了那句：{s} —— 误伤"
+    for s in cell.once:
+        if text.count(s) != 1:
+            return False, f"那句出现了 {text.count(s)} 次，期望恰好 1 次：{s}"
+    return True, ""
+
+
+def sloppy_cells(cells: tuple[Cell, ...]) -> list[str]:
+    """格子自己写歪的地方（占位符串错位、同一句又 `has` 又 `lacks`、一句都没钉）。
+
+    为什么要有：`{T}` 是给 argv 用的，写进 `has` 就是作者把两个占位符弄混了 —— 那一格会
+    **永远红**，红得像判据坏了。`has` 与 `lacks` 撞同一句则永远不可能满足。这两种都在跑之前
+    拦掉，别让人去怀疑那把尺（2.58 的 `ragged_cells` 同一层）。
+
+    >>> sloppy_cells((Cell("好", "x", 0, has=("合计 1/1",), lacks=("取不到",)),))
+    []
+    >>> for why in sloppy_cells((Cell("坏", "x", 0, has=("{T}/a",)),)): print(why)
+    坏：`has` 里写了 `{T}`，argv 才用这个占位符，屏幕上的路径要写 `<T>`
+    >>> for why in sloppy_cells((Cell("撞", "x", 0, has=("一句",), lacks=("一句",)),)): print(why)
+    撞：同一句既是 `has` 又是 `lacks`，这一格永远不可能过
+    >>> for why in sloppy_cells((Cell("空", "x", 0),)): print(why)
+    空：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」
+    """
+    out: list[str] = []
+    for c in cells:
+        if any("{T}" in s for s in c.has + c.lacks + c.once):
+            out.append(f"{c.who}：`has` 里写了 `{{T}}`，argv 才用这个占位符，"
+                       "屏幕上的路径要写 `<T>`")
+        if set(c.has) & set(c.lacks):
+            out.append(f"{c.who}：同一句既是 `has` 又是 `lacks`，这一格永远不可能过")
+        if not (c.has or c.lacks or c.once):
+            out.append(f"{c.who}：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」")
+    return out
+
+
+def self_test(cells: tuple[Cell, ...] | None = None) -> int:
+    """`--self-test`：每格一个**新**沙盒，逐格对期望；结论行带「扫了」那个词给 `selfcheck` 挑。
+
+    每格单独一个临时目录是 2.63 踩的第 5 条换来的：同一秒内字节数相同的两份改动写进同一个文件名，
+    `import` 与文件系统都会拿到上一格的东西（那遍整批作废）。退码：0 = 每格都符合期望；
+    1 = 有格子不符（逐格点名）；2 = 一格都没跑起来，或基线自己写歪了。
+    """
+    cells = BASELINE if cells is None else cells
+    bad_names = guard_names([c.who for c in cells])
+    if bad_names:
+        print(bad_names)
+        return 2
+    sloppy = sloppy_cells(cells)
+    if sloppy:
+        print("基线自己有格子写歪了，改的是基线、不是判据：\n  " + "\n  ".join(sloppy))
+        return 2
+    ran = bad = 0
+    fails: list[tuple[Cell, str, str]] = []
+    for cell in cells:
+        with tempfile.TemporaryDirectory(prefix="epg-check-selftest-") as td:
+            verdict, why, text = run_cell(cell, Path(td))
+        ran += 1
+        if verdict != "ok":
+            bad += 1
+            fails.append((cell, why, text))
+            continue
+        print(f"  ✓ {cell.who:<22} {cell.what}")
+    if fails:
+        print(f"\n—— 以下 {len(fails)} 格不符期望（每格把自己那一遍的原文摊出来）——")
+        for cell, why, text in fails:
+            print(f"  ✗ {cell.who:<22} {cell.what}\n      {why}")
+            for line in text.strip().splitlines():
+                print(f"      | {line}")
+    print(f"\n扫了基线 {len(cells)} 格：{bad} 格不符期望"
+          + (" —— 那把尺还咬得动" if ran and not bad else " —— 上面逐格点名了"))
+    if bad:
+        print("不符的格：" + "、".join(c.who for c, _, _ in fails))
+    if not ran:
+        print("一格都没跑起来：临时目录建不起来。这不算过")
+        return 2
+    return 1 if bad else 0
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="EPG 可用性与命中率体检（只读，不写任何产物）")
     ap.add_argument("targets", nargs="*", default=None,
@@ -506,8 +874,13 @@ def main(argv: list[str]) -> int:
                          "并照它的状态印一句（默认 config/epg.yaml）")
     ap.add_argument("--against", default="",
                     help="再拿另一张订阅表对一遍「同一个台名的 tvg-id 变了几个」"
-                         "（跨天重出表时这里应该是 0）")
+                         "（跨天重出表时这里应该是 0；量到了变动就退 1，2.64 起）")
+    ap.add_argument("--self-test", action="store_true",
+                    help="不问 EPG，只问这把尺自己还咬得动吗：往临时沙盒里种基线那几格表，"
+                         "一格一格看退码和屏幕上的句子对不对得上（一个请求都不发，也不需要 --playlist 真的存在）")
     args = ap.parse_args(argv)
+    if args.self_test:
+        return self_test()
 
     cfg = Path(args.config)
     try:
@@ -516,7 +889,12 @@ def main(argv: list[str]) -> int:
         # 2.36 那条规矩：配置读不进去要说人话。这里和 build 共用同一个读法，
         # 所以「键名写歪」「地址排成两行」这些年在 build 那边怎么拦，在这边就怎么拦。
         print(f"配置读不动，不量了：{e}", file=sys.stderr)
-        return 1
+        # 2.64：退码以前是 1，可这一支什么都没量到 —— 候选地址就存在这份配置里，
+        # 配置读不动 = 分母是空的，跟「量到了、四个候选都不能用」不是一件事。
+        # 装基线那格（丑）之前没人撞见过，因为平时都喂命令行地址（`selfcheck` 的 `epg` 那步就是这么跑的）。
+        print("一个候选都没查：地址是从这份配置里读的 —— 按 2.62 立的口径退 2（什么都没量到），"
+              "1 留给「量到了、但有一处毛病」。", file=sys.stderr)
+        return 2
     path = Path(args.playlist)
     channels, head_url, why = rows_and_header(path)
     if why:
@@ -526,6 +904,8 @@ def main(argv: list[str]) -> int:
         print(f"订阅表读不进来，不量了：{path} —— {why}", file=sys.stderr)
         return 2
     drift_skipped = False
+    today = args.today or datetime.now().strftime("%Y%m%d")
+    changed: list = []          # `--against` 量到的「台名换了 id」；没给 --against 就是空
     if args.against:
         other = Path(args.against)
         other_rows, _other_url, other_why = rows_and_header(other)
@@ -535,10 +915,11 @@ def main(argv: list[str]) -> int:
                   file=sys.stderr)
             drift_skipped = True
         else:
+            d = id_drift(channels, other_rows)
+            changed = d["changed"]
             print(f"id 漂移：{path} 相对 {other}")
-            print("\n".join(drift_lines(id_drift(channels, other_rows))))
+            print("\n".join(drift_lines(d)))
             print()
-    today = args.today or datetime.now().strftime("%Y%m%d")
     print(f"对表：{path.name}（{len(channels)} 个频道）  今天：{today}")
     print(f"这张表头部写的节目单地址：{head_url or '（没写）'}"
           "　—— 电视自己去取的就是这一行，它和下面那行「来历」是两条独立的代码路径")
@@ -574,10 +955,16 @@ def main(argv: list[str]) -> int:
             prov = prov or provenance_of(lines)   # 只认第一个**可用**的候选，取不到的不说
     print(f"结论：{len(targets)} 个候选里，{ok} 个既今天有节目、又配得上我们表里的台。"
           + (f" 这张表相对第一个可用的那份：{prov}。" if prov else ""))
-    rc = exit_code(len(targets), ok, drift_skipped=drift_skipped)
-    if drift_skipped and rc and exit_code(len(targets), ok) != rc:
-        # 这一句只为「那一段没量」而退，不是因为候选不能用 —— 说清楚，别让人以为 EPG 也坏了
+    rc = exit_code(len(targets), ok, drift_skipped=drift_skipped, id_changed=bool(changed))
+    # 两档「退 1 却不是候选的错」各自说一句，互不看对方在不在。
+    # 以前那一句带着一道「只有我一个原因」的门（`exit_code(len(targets), ok) != rc`），
+    # 于是候选也全坏的时候「有一项没量」就整个不说 —— 那是把两笔账并成一笔，
+    # 和 2.62 那把尺上的「分母被动过却要装作只有一件事」同形。2.64 起门拆掉。
+    if drift_skipped:
         print("这一屏有一项没量：id 漂移（上面那条「读不进来」）—— 所以退 1，不是 0。")
+    if changed:
+        print(f"这一屏量到了 {len(changed)} 个台名的 tvg-id 变了 —— 电视上的收藏、隐藏都挂在 id 上，"
+              "所以退 1，不是 0（哪怕上面那些候选全都可用）。")
     return rc
 
 

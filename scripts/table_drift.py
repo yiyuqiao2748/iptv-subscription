@@ -31,16 +31,21 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import sys
+import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "output"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from doc_num import read_doc          # noqa: E402
-from probe_pack import channel_groups # noqa: E402
+from baseline_guard import guard as guard_names   # noqa: E402  顿号那道闸（几把基线尺共用）
+from doc_num import hide_tmp, read_doc            # noqa: E402
+from probe_pack import channel_groups             # noqa: E402
 
 # `read_doc` 不是这里另写的一份：那三种读法（不在 / 是目录 / 不是 UTF-8）在 2.36、2.58、2.62
 # 里一处一处补进 `doc_num`，共用一份才不会再出现「同一件事在两个脚本里说法不同」。
@@ -259,6 +264,13 @@ def empty_pair(d: dict) -> bool:
     return not d["lines_a"] and not d["lines_b"]
 
 
+HDR = '#EXTM3U x-tvg-url="https://e.erw.cc/e.xml.gz"\n'
+ONE = HDR + '#EXTINF:-1 tvg-id="81" group-title="g",湖南卫视\nhttp://a/1.m3u8\n'
+TWO = HDR + '#EXTINF:-1 tvg-id="81" group-title="g",湖南卫视\nhttp://z/9.m3u8\n'
+EMPTY_TABLE = "#EXTM3U\n"
+NON_UTF8 = b"#EXTM3U\n" + bytes([0xFF, 0xFE, 0x41])   # 头一行是表，第八个字节起不是 UTF-8
+
+
 def outcome(checked: int, drift: int, unread: int) -> int:
     """这一轮该退几：2 = 一张都没比成，1 = 换表了**或**有点名却读不进来的，0 = 都读到且一张没换。
 
@@ -283,15 +295,246 @@ def outcome(checked: int, drift: int, unread: int) -> int:
     return 1 if (drift or unread) else 0
 
 
+# ============================== 2.64：这把尺的回归基线 ==============================
+#
+# 为什么要单独一档：2.63 把三档退码（2 = 什么都没量到／1 = 量到了但有一块没量到／0 = 全对且全读到）
+# 立起来之后，那些形状**只活在 12 条 doctest 里** —— 而这一支脚本在 `scripts/selfcheck.py` 里
+# 默认根本不跑（`drift` 那一步要人给 `--against`）。也就是说「改对了」这件事当时没有任何闸守着：
+# 谁把 `unread` 从退码里摘掉，屏幕上、退码上、自检里都不会有人响。
+# 这一档补的就是那一块，形状照 2.56—2.59、2.62：种进临时沙盒、跑**真的 `main()`**、逐格对退码与句子。
+# 沙盒全在 `tempfile` 里，`data/output/` 一个字节都不动，也不发一个请求。
+
+
+class Cell(NamedTuple):
+    """一格基线：沙盒里种什么、用什么参数问它、期望屏幕上出现什么、不许出现什么。
+
+    `files` 的键是**沙盒里的相对路径**（`基准/aptv.m3u`），值是表的内容；`dirs` 那些名字造成目录
+    （`--files` 点到它就是「在、却读不进来」那一档），`bins` 造成非 UTF-8 的件。
+    `argv` 里 `{T}` 在跑之前换成这一轮沙盒的真路径；`has`／`lacks` 里写 `<T>`，
+    因为屏幕上那串临时路径跑之前谁也不知道（`hide_tmp` 负责抹回来）。
+    """
+    who: str
+    what: str
+    rc: int
+    files: tuple[tuple[str, str], ...] = ()
+    dirs: tuple[str, ...] = ()
+    bins: tuple[str, ...] = ()
+    argv: tuple[str, ...] = ()
+    has: tuple[str, ...] = ()
+    lacks: tuple[str, ...] = ()
+    once: tuple[str, ...] = ()
+
+
+A, B = "基准", "重出"        # 沙盒里那两个目录名：`--dir` 那一边、`--against` 那一边
+
+
+def argv_of(*files: str) -> tuple[str, ...]:
+    """拼一格用的 argv：两个目录固定在沙盒里，只有 `--files` 那一串逐格不同。
+
+    >>> print(" ".join(argv_of("aptv.m3u")))
+    --dir {T}/基准 --against {T}/重出 --files aptv.m3u
+    >>> print(" ".join(argv_of("aptv.m3u", "坏件.m3u")))
+    --dir {T}/基准 --against {T}/重出 --files aptv.m3u,坏件.m3u
+    """
+    return ("--dir", f"{{T}}/{A}", "--against", f"{{T}}/{B}", "--files", ",".join(files))
+
+
+BASELINE: tuple[Cell, ...] = (
+    # ———— 甲／乙：判据本身。这两格 2.63 量过「改前改后逐字节相同」，现在钉住它 ————
+    Cell("甲_一张线路都没换", "常态：比成了、一张没换，退 0 且那句「完全一致」要说得出覆盖了谁",
+         0, files=((f"{A}/aptv.m3u", ONE), (f"{B}/aptv.m3u", ONE)), argv=argv_of("aptv.m3u"),
+         has=("aptv.m3u：同一张表 —— 1 条线路一字不差",
+              "线路级完全一致：报告里那些数说的就是这一张表"),
+         lacks=("Traceback", "读不进来", "没比", "换表了")),
+    Cell("乙_第一线换了", "最重手那种漂移：电视上默认播的那条流变了，1 = 换表了",
+         1, files=((f"{A}/aptv.m3u", ONE), (f"{B}/aptv.m3u", TWO)), argv=argv_of("aptv.m3u"),
+         has=("**换表了** —— 1 个台的第一线换了", "1 张表和基准不是一张表"),
+         lacks=("线路级完全一致", "读不进来", "Traceback")),
+    # ———— 丙／丁／戊：2.63 那一族「在、却读不进来」。三格各自钉一种读法 ————
+    Cell("丙_点名的那张是目录", "`--files` 点到目录：以前整段 traceback 退 1（=「换表了」），现在 1 = 有一块没量到",
+         1, files=((f"{A}/aptv.m3u", ONE), (f"{B}/aptv.m3u", ONE)),
+         dirs=(f"{A}/是目录.m3u", f"{B}/是目录.m3u"), argv=argv_of("aptv.m3u", "是目录.m3u"),
+         has=("！是目录.m3u：读不进来 —— <T>/基准/是目录.m3u —— 那是个目录，不是文档",
+              "另有 1 张读不进来（是目录.m3u）", "上面那句不覆盖它们"),
+         lacks=("Traceback", "IsADirectoryError", "线路级完全一致")),
+    Cell("丁_点名的那张不是UTF8", "同一族第二种：改名没用，所以那句也不许写成「那是个目录」",
+         1, files=((f"{A}/aptv.m3u", ONE), (f"{B}/aptv.m3u", ONE)),
+         bins=(f"{A}/坏件.m3u", f"{B}/坏件.m3u"), argv=argv_of("aptv.m3u", "坏件.m3u"),
+         has=("！坏件.m3u：读不进来 —— <T>/基准/坏件.m3u —— 读不出来：",
+              "另有 1 张读不进来（坏件.m3u）"),
+         lacks=("Traceback", "UnicodeDecodeError", "那是个目录", "文件不在")),
+    Cell("戊_两张都读不进来", "2 = 这把尺这次什么都没量到 —— 它以前退 1，等于凭空指控产物换表了",
+         2, dirs=(f"{A}/是目录.m3u", f"{B}/是目录.m3u"),
+         bins=(f"{A}/坏件.m3u", f"{B}/坏件.m3u"), argv=argv_of("是目录.m3u", "坏件.m3u"),
+         has=("一张表都没比成", "另有 2 张读不进来"),
+         lacks=("同一张表", "线路级", "Traceback")),
+    # ———— 己／庚／辛：三种「不进退码」与「退 2」的分界，2.63 的量现在有人守着 ————
+    Cell("己_只有一边有这个名", "老规矩：这种是压根没被点名，屏幕上说得出「另 N 张没比」，不进退码",
+         0, files=((f"{A}/aptv.m3u", ONE), (f"{B}/aptv.m3u", ONE)),
+         argv=argv_of("aptv.m3u", "没这个名.m3u"),
+         has=("没这个名.m3u：跳过（<T>/基准/没这个名.m3u 不在）",
+              "比了的 1 张线路级一致、另 1 张没比", "没比的：没这个名.m3u"),
+         lacks=("读不进来", "Traceback"), once=("：跳过（",)),
+    Cell("庚_两边都是空表", "两边都 0 条线路：比了等于没比，那一对着陆在 2 而不是 0",
+         2, files=((f"{A}/空.m3u", EMPTY_TABLE), (f"{B}/空.m3u", EMPTY_TABLE)),
+         argv=argv_of("空.m3u"),
+         has=("两边都是 0 条线路 —— 比了等于没比，这一对不算数", "一张表都没比成",
+              "或者有但两边都是空的"),
+         lacks=("同一张表", "线路级完全一致", "Traceback")),
+    Cell("辛_against不是目录", "参数那一档：目录给错了也是「什么都没量到」，退 2 并说清下一步跑什么",
+         2, files=((f"{A}/aptv.m3u", ONE),),
+         argv=("--dir", "{T}/基准", "--against", "{T}/没有这个目录", "--files", "aptv.m3u"),
+         has=("找不到 <T>/没有这个目录",), lacks=("Traceback", "同一张表")),
+    # ———— 壬：那三种读法的**同屏**版：一句话只有一份（`doc_num.read_doc`），三种毛病一起点 ————
+    Cell("壬_三种读法同屏", "跳过／是目录／不是 UTF-8 同时点名：三种说法各一句，且退码只由「读不进来」那一类抬",
+         1, files=((f"{A}/aptv.m3u", ONE), (f"{B}/aptv.m3u", ONE)),
+         dirs=(f"{A}/是目录.m3u", f"{B}/是目录.m3u"), bins=(f"{A}/坏件.m3u", f"{B}/坏件.m3u"),
+         argv=argv_of("aptv.m3u", "是目录.m3u", "坏件.m3u", "不在.m3u"),
+         has=("：跳过（", "那是个目录，不是文档", "读不出来：",
+              "另有 2 张读不进来", "上面那句不覆盖它们"),
+         lacks=("Traceback", "线路级完全一致")),
+)
+
+
+def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
+    """跑一格：`(判定, 给人看的那句, 抹过沙盒路径的原文)`，判定是 `ok` / `bad` / `崩`。
+
+    走的是真的 `main()` 而不是中间函数：退码、那句「上面那句不覆盖它们」、stderr 上那行点名，
+    全是这一格要看的东西（2.56 起的同一取舍）。stdout 与 stderr 收进**同一个**缓冲区再比，
+    因为这把尺最要紧的三句话里有两句在 stderr 上。
+    """
+    for rel in cell.dirs:
+        (base / rel).mkdir(parents=True, exist_ok=True)
+    for rel, body in cell.files:
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body.replace("{T}", str(base)), encoding="utf-8")
+    for rel in cell.bins:
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(NON_UTF8)
+    argv = [a.replace("{T}", str(base)) for a in (cell.argv or argv_of("aptv.m3u"))]
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = main(argv)
+    except Exception as e:                        # 尺自己炸了不许读成「这格没过」以外的任何东西
+        return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
+    text = hide_tmp(buf.getvalue(), base)
+    good, why = check_cell(cell, rc, text)
+    return ("ok", "", text) if good else ("bad", why, text)
+
+
+def check_cell(cell: Cell, rc: int, text: str) -> tuple[bool, str]:
+    """这一格对上了没有：退码、该出现的句子、不该出现的句子、只许出现一次的句子。
+
+    `lacks` 与 `has` 一样重要：这一族的毛病正是「同一件事有三种说法，而它们会互相冒充」
+    —— 「读不出来：」那一格若写成「文件不在」，退码照样对、句子照样有，只有 `lacks` 拦得住。
+    """
+    if rc != cell.rc:
+        return False, f"退码：期望 {cell.rc}，实际 {rc}"
+    for s in cell.has:
+        if s not in text:
+            return False, f"屏幕上没有那句：{s}"
+    for s in cell.lacks:
+        if s in text:
+            return False, f"多说了那句：{s} —— 误伤"
+    for s in cell.once:
+        if text.count(s) != 1:
+            return False, f"那句出现了 {text.count(s)} 次，期望恰好 1 次：{s}"
+    return True, ""
+
+
+def sloppy_cells(cells: tuple[Cell, ...]) -> list[str]:
+    """格子自己写歪的地方（占位符串错位、同一句又 `has` 又 `lacks`、一句都没钉）。
+
+    为什么要有：`{T}` 是给 argv 用的，写进 `has` 就是作者把两个占位符弄混了 —— 那一格会
+    **永远红**，红得像判据坏了。`has` 与 `lacks` 撞同一句则是永远不可能满足。这两种都在跑之前
+    拦掉，别让人去怀疑那把尺（2.58 的 `ragged_cells` 同一层）。
+
+    >>> sloppy_cells((Cell("好", "x", 0, has=("同一张表",), lacks=("读不进来",)),))
+    []
+    >>> for why in sloppy_cells((Cell("坏", "x", 0, has=("{T}/a",)),)): print(why)
+    坏：`has` 里写了 `{T}`，argv 才用这个占位符，屏幕上的路径要写 `<T>`
+    >>> for why in sloppy_cells((Cell("撞", "x", 0, has=("一句",), lacks=("一句",)),)): print(why)
+    撞：同一句既是 `has` 又是 `lacks`，这一格永远不可能过
+    >>> for why in sloppy_cells((Cell("空", "x", 0),)): print(why)
+    空：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」
+    """
+    out: list[str] = []
+    for c in cells:
+        if any("{T}" in s for s in c.has + c.lacks + c.once):
+            out.append(f"{c.who}：`has` 里写了 `{{T}}`，argv 才用这个占位符，"
+                       "屏幕上的路径要写 `<T>`")
+        both = set(c.has) & set(c.lacks)
+        if both:
+            out.append(f"{c.who}：同一句既是 `has` 又是 `lacks`，这一格永远不可能过")
+        if not (c.has or c.lacks or c.once):
+            out.append(f"{c.who}：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」")
+    return out
+
+
+def self_test(cells: tuple[Cell, ...] | None = None) -> int:
+    """`--self-test`：每格一个**新**沙盒，逐格对期望；结论行带「扫了」那个词给 `selfcheck` 挑。
+
+    每格单独一个临时目录是 2.63 踩的第 5 条换来的：同一秒内、字节数相同的两份改动写进
+    同一个文件名，`import` 与文件系统都会拿到上一格的东西（那遍整批作废）。
+    退码：0 = 每格都符合期望；1 = 有格子不符（逐格点名）；2 = 一格都没跑起来，或基线自己写歪了。
+    """
+    cells = BASELINE if cells is None else cells
+    bad_names = guard_names([c.who for c in cells])
+    if bad_names:
+        print(bad_names)
+        return 2
+    sloppy = sloppy_cells(cells)
+    if sloppy:
+        print("基线自己有格子写歪了，改的是基线、不是判据：\n  " + "\n  ".join(sloppy))
+        return 2
+    ran = bad = 0
+    fails: list[tuple[Cell, str, str]] = []
+    for cell in cells:
+        with tempfile.TemporaryDirectory(prefix="table-drift-selftest-") as td:
+            verdict, why, text = run_cell(cell, Path(td))
+        ran += 1
+        if verdict != "ok":
+            bad += 1
+            fails.append((cell, why, text))
+            continue
+        print(f"  ✓ {cell.who:<22} {cell.what}")
+    if fails:
+        print(f"\n—— 以下 {len(fails)} 格不符期望（每格把自己那一遍的原文摊出来）——")
+        for cell, why, text in fails:
+            print(f"  ✗ {cell.who:<22} {cell.what}\n      {why}")
+            for line in text.strip().splitlines():
+                print(f"      | {line}")
+    print(f"\n扫了基线 {len(cells)} 格：{bad} 格不符期望"
+          + (" —— 那把尺还咬得动" if ran and not bad else " —— 上面逐格点名了"))
+    if bad:
+        print("不符的格：" + "、".join(c.who for c, _, _ in fails))
+    if not ran:
+        print("一格都没跑起来：临时目录建不起来。这不算过")
+        return 2
+    return 1 if bad else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="比对两张已生成的表：报告说的是不是电视上那张")
-    ap.add_argument("--against", required=True, metavar="目录",
-                    help="离线重出的那份表所在的目录（`build --replay --out /tmp/…` 的产物）")
+    ap.add_argument("--against", default="", metavar="目录",
+                    help="离线重出的那份表所在的目录（`build --replay --out /tmp/…` 的产物；"
+                         "`--self-test` 那一档不需要它）")
     ap.add_argument("--dir", default=str(OUT_DIR),
                     help="基准目录，默认 data/output（订阅进电视的那批产物）")
     ap.add_argument("--files", default="aptv.m3u,hunan.m3u",
                     help="比哪几张表，逗号分隔；两边都有这个文件名才比")
+    ap.add_argument("--self-test", action="store_true", dest="self_test",
+                    help="往临时沙盒里种已知的表，逐格对退码与屏幕上那几句（计划书 2.64）")
     args = ap.parse_args(argv)
+
+    if args.self_test:
+        return self_test()
+    if not args.against:
+        ap.error("--against 是必需的：这把尺问的是「两边是不是同一张表」，得有两边"
+                 "（自己跟自己比永远报绿）")
 
     b_dir, a_dir = Path(args.against), Path(args.dir)
     if not b_dir.is_dir():

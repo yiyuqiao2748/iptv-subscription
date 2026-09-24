@@ -95,6 +95,13 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "doc_num": ("doc_num", "numbers", "num-test"),
     "unmarked_nums": ("unmarked_nums", "unmarked", "um-test"),
     "code_claims": ("code_claims", "claims", "claims-test"),
+    # 2.64 那两把：`epg-test` 点的是 `epg_check`，`drift-test` 点的是 `table_drift`。
+    # 漏了它们会怎么样：那两把的说明书里写着 14 格／9 格，而这两个数不在任何一位
+    # 已知主人的格数集合里 —— 21:51:26 拿一份 /tmp 副本、只在副本里把下面这两行删掉重跑，
+    # 红回来 4 处（`epg_check.py` 的模块与 `no_network`、`selfcheck.py` 追记里那两处），
+    # 报的都是`没点名，只要求属于 15/22/26/29`；别名装回去同一份副本退 0（21:52:39）。
+    "table_drift": ("table_drift", "drift", "drift-test"),
+    "epg_check": ("epg_check", "epg", "epg-test"),
 }
 
 
@@ -227,7 +234,7 @@ class Claim(NamedTuple):
 
 
 def truth_of() -> tuple[dict[str, int], list[str]]:
-    """现取真值：五把带基线的尺各自 `len(BASELINE)`、selfcheck 的步数。
+    """现取真值：七把带基线的尺各自 `len(BASELINE)`、selfcheck 的步数。
 
     返回 `(值, 取不到的名字)`。取不到不当 0 —— 一个都不许糊，糊了就等于绿。
 
