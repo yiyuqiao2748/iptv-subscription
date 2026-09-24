@@ -71,6 +71,16 @@ def main(argv: list[str]) -> int:
         if p not in sys.path:
             sys.path.insert(0, p)
 
+    # 这支脚本只收一个位置参数（模块名的子串），没有 `--help`。递给它一个旗标，
+    # 它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和 scripts/ 还在不在」——
+    # 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己踩过一次，见 2.56。
+    if argv and argv[0].startswith("-"):
+        print(f"✗ 我不收旗标（给的是 {argv[0]!r}）。唯一的参数是模块名里的一个子串：\n"
+              f"    .venv/bin/python scripts/run_doctests.py            # 全部\n"
+              f"    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的",
+              file=sys.stderr)
+        return 2
+
     names = modules(argv[0] if argv else "")
     if not names:
         print("一个模块都没找到，检查 src/ 和 scripts/ 还在不在。", file=sys.stderr)
