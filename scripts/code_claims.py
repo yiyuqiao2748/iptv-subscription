@@ -102,6 +102,10 @@ ALIASES: dict[str, tuple[str, ...]] = {
     # 报的都是`没点名，只要求属于 15/22/26/29`；别名装回去同一份副本退 0（21:52:39）。
     "table_drift": ("table_drift", "drift", "drift-test"),
     "epg_check": ("epg_check", "epg", "epg-test"),
+    # 2.65 那一把不一样：`lean_playlist` 不是尺，是 `build` 主路上会写文件的生产件。
+    # 别名这一层不区分这两件事 —— `selfcheck` 的散文里写「那 12 格」时点的名字就是 `lean-test`，
+    # 少了这一行它就退化成「没点名，只要求属于 15/22/26/29」（2.64 那一遍量到的正是这个形状）。
+    "lean_playlist": ("lean_playlist", "lean-test"),
 }
 
 
