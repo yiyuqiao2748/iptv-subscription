@@ -10,12 +10,21 @@
 2026-09-22 加 `--replay` 之后这条尤其现实 —— 计划书 §14 和接入文档里各有一份命令清单，
 往后每加一个开关都要跟着改两处，人总会漏。
 
-它查三层：
+它查四层：
+  * 完整层（2.54）—— 这一行**是不是一条能照抄的完整命令**：代码块里行尾的 `\\` 按 shell 的
+    规矩跟下一行接起来，接不上（后面是空行 / 文末 / 版式 / 另一条命令 / 一句中文）或者引号
+    少一边，就单独点名并判错，**不拿半截去问 `--help`**；
   * 命令层 —— 长参数（`--xxx`）在不在 `--help` 里、那个脚本 / 子命令还存在吗；
   * 引用层 —— 正文里出现的 `scripts/xxx.py` 名字（哪怕在句子里、不在命令块里）到底有没有这个文件；
   * 钟那一层（2.45）—— 这一条命令**今天**照抄会不会撞在「那份记录太旧」那道闸上。
     只读 `probe.json` 的时间戳 + 履历，不发请求、不写任何东西；判决用的是
     `src.cli.replay_gate()` 本身（和屏幕上那句同一个函数）。
+
+完整层排在最前面是有原因的：没有它，后面两层量的是**半条**命令。2.53 收尾时量到一条
+断成两行的写法（`--try-reach` 那条）：第一层看不见第二行的参数名，钟那一层更妙 ——
+`--replay` 是 `nargs="?"`，那个孤零零的 `\\` 被 argparse 当成了记录路径，于是屏幕上印出
+「那把闸要读的记录 /仓库/\\ 不在，猜不了」，听起来像「记录丢了」，其实是命令断了。
+**总结句当时照样是「142 条、0 条对不上；该查的都查了」。**
 
 例外的写法：一段文字想拿**错的**命令当例子（2.21 讲那个「打错子命令也退 0」的坑时就得写出
 `src.cli bulid`），用 `<!-- check-doc-cmds: off -->` / `on` 把那段圈起来 —— 渲染出来看不见，
@@ -28,8 +37,11 @@
 位置参数、参数的取值对不对，它不管 —— 那类漂移要靠用例，不靠这把尺。
 唯一碰取值的是钟那一层：它只问「这行里的 `--replay` 今天读得到一份能用的记录吗」，
 而且答案是从 argparse 和 `replay_gate()` 那里要的，不是自己算小时数。
+完整层（2.54）也是**按行**看的，不是 shell 词法器：`a && b` 那种一行两条命令、嵌套引号
+（`"it's"`）、引号里再放中文顿号，它都只当一条命令处理 —— 它会漏，但它不误伤。
 
-退码：**0** = 扫到的每一条都没问题；**1** = 有对不上的（命令、脚本名、或 off/on 没配上）；
+退码：**0** = 扫到的每一条都没问题；**1** = 有对不上的（命令、脚本名、off/on 没配上、
+或者**不像一条完整的命令**的那几行）；
 **2** = **一条都没扫到**
 （2.32 补的那一格：文档被清空、文件名给错、版式改了让正则落空，三种都是这把尺自己瞎了，
 不能让「扫了 0 条、0 条对不上」冒充「查过了、没问题」）。
@@ -77,6 +89,188 @@ SKIP_ON = "<!-- check-doc-cmds: on -->"
 
 DEFAULT_DOCS = ["计划书.md", "docs/电视订阅接入.md", "docs/真机验收单.md"]
 
+# 2.54 那一层要用的三样：行尾的续行反斜杠、代码块的围栏、以及「这一截里有中文吗」。
+CONT = re.compile(r"\\\s*$")
+FENCE = "```"
+CJK = re.compile(r"[　-〿㐀-鿿＀-￯]")
+
+
+def fence_flags(lines: list[str]) -> list[bool]:
+    """每一行**在不在** ``` 围栏里（围栏那两行自己算 False）。
+
+    为什么要在意这个：只有代码块里的行尾反斜杠才是 shell 的续行。正文里一句话以 `\\` 收尾
+    多半是排版（markdown 拿它当硬换行），把它接下行的中文并进命令，量出来的是一条世界上
+    不存在的命令 —— 那比不查更糟。**行内**那些用反引号包的命令一律算「不在围栏里」。
+
+    >>> fence_flags(["a", "```", "x", "```", "b"])
+    [False, False, True, False, False]
+    >>> fence_flags(["```", "x", "``` ", "y", "```"])       # 收口带空格也认
+    [False, True, False, False, False]
+    """
+    out: list[bool] = []
+    on = False
+    for line in lines:
+        if line.lstrip().startswith(FENCE):
+            on = not on
+            out.append(False)
+            continue
+        out.append(on)
+    return out
+
+
+def quote_flaw(body: str) -> str:
+    """引号有没有少一边；没有就说空串。
+
+    为什么单独判：参数名对不对是「能不能跑起来」的事，引号没闭合是**这条命令不会执行** ——
+    照抄的人按回车，终端只会给他一个 `>`。那一行以前一路通过，还留在那儿当「该查的都查了」。
+
+    走法不是「数奇偶」：`--note "it's 对"` 里的单引号只有一个，数奇偶会把它报成没闭合
+    （那是**误伤**，而误伤的代价是以后没人信这把尺）。所以按 shell 的规矩走一遍：
+    `\\X` 整对跳过、进了哪种引号就只认那一种的收尾。反引号（命令替换）不管 —— 量过，
+    仓库那三份文档的命令里没有反引号套反引号的写法。
+
+    >>> quote_flaw("scripts/x.py --note 你好")
+    ''
+    >>> quote_flaw('scripts/x.py --note "没关')
+    '双引号少了一边（照抄进终端，这条命令不会执行，它只会给你一个 `>`）'
+    >>> quote_flaw("scripts/x.py --note '没关")
+    '单引号少了一边（照抄进终端，这条命令不会执行，它只会给你一个 `>`）'
+    >>> B = chr(92)                                    # 反斜杠本身：不写进转义汤
+    >>> quote_flaw('scripts/x.py --note "a' + B + '"b"')      # 被挡住的那个不算收尾
+    ''
+    >>> quote_flaw('scripts/x.py --note "a' + B + '"')        # 剩下这个才是真没关
+    '双引号少了一边（照抄进终端，这条命令不会执行，它只会给你一个 `>`）'
+    >>> quote_flaw('scripts/x.py --note "it\\'s 对"')          # 双引号里的单引号：不误伤
+    ''
+    >>> quote_flaw('scripts/x.py --a "一" --b \\'二\\'')        # 两种各自成对：平
+    ''
+    """
+    NAME = {'"': "双", "'": "单"}
+    open_q = ""
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\":                      # 转义：连它后面那个字符一起跳过
+            i += 2
+            continue
+        if open_q:
+            if ch == open_q:
+                open_q = ""
+        elif ch in NAME:
+            open_q = ch
+        i += 1
+    return f"{NAME[open_q]}引号少了一边（照抄进终端，这条命令不会执行，它只会给你一个 `>`）" \
+        if open_q else ""
+
+
+def join_cont(lines: list[str], i: int, body: str, *, fenced: bool) -> tuple[str, str]:
+    """把写在几行上的一条命令接成一整截：返回 `(接好的命令, 毛病)`，毛病空串＝接得完整。
+
+    `i` 是**原文行下标**（0 起），`body` 是那一行已经剥好的那截。规则照 shell：
+    行尾一个 `\\` 表示下一行还是这条命令。接不上就是文档的错，得点名，不能让那条命令
+    安静地留在统计里 —— 2.53 收尾时量到「尺没拦一条断成两行的命令」，这一层就是为它加的。
+
+    五种接不上，各说各的：不在代码块里 / 后面是空行 / 后面是文件末尾 / 后面是版式
+    （围栏收口、那对 off/on 标记）/ 后面紧跟另一条命令。最后一种额外说：
+    续行那一句里有中文 —— 那不是参数，是把说明文字写进了命令里。
+
+    >>> B = chr(92)                                    # 反斜杠本身：不写进转义汤
+    >>> tail = "a --replay " + B
+    >>> join_cont([tail, "  --out /tmp/x"], 0, tail, fenced=True)
+    ('a --replay --out /tmp/x', '')
+    >>> join_cont([tail, "  --out /tmp/x", "  --no-epg"], 0, tail, fenced=True)
+    ('a --replay --out /tmp/x', '')
+    >>> join_cont([tail, "  --out /tmp/x " + B, "  --no-epg"], 0, tail, fenced=True)
+    ('a --replay --out /tmp/x --no-epg', '')
+    >>> join_cont([tail, "  --no-epg " + B], 0, tail, fenced=True)
+    ('a --replay --no-epg', '行尾的反斜杠后面是文件末尾，没有下一行可接')
+    >>> join_cont([tail, ""], 0, tail, fenced=True)
+    ('a --replay', '行尾的反斜杠后面是一个空行')
+    >>> join_cont([tail, "```"], 0, tail, fenced=True)
+    ('a --replay', '行尾的反斜杠后面是「```」，那是版式不是命令')
+    >>> join_cont([tail, ".venv/bin/python scripts/y.py"], 0, tail, fenced=True)
+    ('a --replay', '行尾的反斜杠后面紧跟的是另一条命令（少了一个换行？）')
+    >>> join_cont([tail, "这一轮一个请求都不发"], 0, tail, fenced=True)
+    ('a --replay', '续行那一句里有中文：那不是参数，是把说明文字写进了命令里')
+    >>> join_cont(["跑 " + tail, "后面这句是正文"], 0, tail, fenced=False)
+    ('a --replay', '它在代码块外面，行尾的反斜杠不算续行（那是排版，不是命令）')
+    >>> join_cont(["a --out /tmp/x"], 0, "a --out /tmp/x", fenced=True)   # 没有反斜杠：原样
+    ('a --out /tmp/x', '')
+    """
+    if not CONT.search(lines[i]):
+        return body, ""
+    parts = [CONT.sub("", body).rstrip()]
+    if not fenced:
+        return " ".join(parts), "它在代码块外面，行尾的反斜杠不算续行（那是排版，不是命令）"
+    j = i + 1
+    while True:
+        if j >= len(lines):
+            return " ".join(parts), "行尾的反斜杠后面是文件末尾，没有下一行可接"
+        nxt = re.split(r"\s#", lines[j], maxsplit=1)[0].strip()
+        if not nxt:
+            return " ".join(parts), "行尾的反斜杠后面是一个空行"
+        if nxt.startswith(FENCE):
+            return " ".join(parts), f"行尾的反斜杠后面是「{FENCE}」，那是版式不是命令"
+        if SKIP_OFF in nxt or SKIP_ON in nxt:
+            return " ".join(parts), "行尾的反斜杠后面是那对 check-doc-cmds 标记"
+        if re.search(PY, nxt):
+            return " ".join(parts), "行尾的反斜杠后面紧跟的是另一条命令（少了一个换行？）"
+        piece = CONT.sub("", nxt).rstrip()
+        if CJK.search(piece):
+            return " ".join(parts), "续行那一句里有中文：那不是参数，是把说明文字写进了命令里"
+        parts.append(piece)
+        if not CONT.search(nxt):
+            return " ".join(parts), ""
+        j += 1
+
+
+def read_commands(text: str) -> list[tuple[int, str, str]]:
+    """文档里的命令 [(起始行, 接成一整截的命令, 毛病)]；毛病空串＝这像一条完整的命令。
+
+    「查之前先问这条是不是一个完整的命令」是 2.54 加的一层。它管的正是那一种**两边都不报错**
+    的失效：一条命令断在行尾，尺拿半截去问 `--help`，参数名照旧对得上，而真正的漂移写在
+    第二行上、这一层以前看不见；更糟的是那半截还会把 `\\` 当成某个参数的取值
+    （`--replay \\` 里 argparse 老实收下了那个反斜杠，钟那一层于是报
+    「要读的记录 /仓库/\\ 不在」——听起来像「记录丢了」，其实是命令断了）。
+
+    >>> B = chr(92)                                    # 反斜杠本身：不写进转义汤
+    >>> doc = ("```\\n.venv/bin/python -m src.cli build --replay " + B + "\\n"
+    ...        "  --out /tmp/x\\n```\\n")
+    >>> read_commands(doc)
+    [(2, '-m src.cli build --replay --out /tmp/x', '')]
+    >>> read_commands("```\\n.venv/bin/python -m src.cli build --replay " + B + "\\n\\n```")
+    [(2, '-m src.cli build --replay', '行尾的反斜杠后面是一个空行')]
+    >>> read_commands(".venv/bin/python scripts/x.py --note '没关")[0][2]
+    '单引号少了一边（照抄进终端，这条命令不会执行，它只会给你一个 `>`）'
+    >>> read_commands("跑 `.venv/bin/python scripts/x.py --list` 就行")
+    [(1, 'scripts/x.py --list', '')]
+    """
+    lines = text.splitlines()
+    fence = fence_flags(lines)
+    out = []
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            continue
+        # 只切「空格 + #」那种行尾注释：URL 里的 `a#b` 不该被咬掉
+        code = re.split(r"\s#", line, maxsplit=1)[0]
+        hit = re.search(rf"{PY}\s+(?P<body>.*)", code)
+        if not hit:
+            continue
+        body = hit.group("body").strip()
+        # 先剥解释器参数，再判断这是不是我们那两类命令（见 OPT 那段说明）
+        while (lead := OPT.match(body)):
+            body = body[lead.end():].strip()
+        if not (body.startswith("-m ") or body.startswith("scripts/") or "./" in body[:9]):
+            continue
+        # 反引号 / 中文标点包着的行内命令：截到脚本名或子命令那段为止
+        if "`" in body:
+            body = body.split("`")[0].strip()
+        m = CMD.search(body)
+        body = (m.group("body") if m else body).strip()
+        body, flaw = join_cont(lines, i, body, fenced=fence[i])
+        out.append((i + 1, body.strip(), flaw or quote_flaw(body)))
+    return out
+
 
 def commands_in(text: str) -> list[tuple[int, str]]:
     """文档正文里的命令行 [(行号, python 之后那截)]。
@@ -85,6 +279,10 @@ def commands_in(text: str) -> list[tuple[int, str]]:
     （「# 同上，但把结论写回履历（--to-history）」这种写法会把 not-flag 当成 not-there）。
     整行是注释的（注释掉的那条命令）同样不算数。
     反过来，中文行文里用反引号包起来的命令也要收 —— 它是给人照抄的。
+
+    2.54 起它是 `read_commands()` 的一层薄壳（把「毛病」那一截剥掉），**断掉的命令也在里面**：
+    它被 `unrecognized()` 用来判断「这行写了 python 却没认成」，而一条断掉的命令是**认成了**、
+    只是不完整 —— 那件事由 `✗ …这条不像一条完整的命令` 那一行去说，比塞进「没认出来」更准。
 
     >>> cmds = commands_in("跑这个：\\n.venv/bin/python scripts/x.py --out /tmp/a   # 注释\\n")
     >>> cmds
@@ -103,29 +301,11 @@ def commands_in(text: str) -> list[tuple[int, str]]:
     [(1, '-m src.cli build --verify')]
     >>> commands_in(".venv/bin/python -u scripts/x.py")        # 单个字母的开关也剥
     [(1, 'scripts/x.py')]
+    >>> commands_in("```\\n.venv/bin/python scripts/x.py \\\\\\n  --out /tmp/a\\n```")
+    [(2, 'scripts/x.py --out /tmp/a')]
     """
-    out = []
-    for no, line in enumerate(text.splitlines(), 1):
-        code = line.lstrip()
-        if code.startswith("#"):
-            continue
-        # 只切「空格 + #」那种行尾注释：URL 里的 `a#b` 不该被咬掉
-        code = re.split(r"\s#", line, maxsplit=1)[0]
-        hit = re.search(rf"{PY}\s+(?P<body>.*)", code)
-        if not hit:
-            continue
-        body = hit.group("body").strip()
-        # 先剥解释器参数，再判断这是不是我们那两类命令（见 OPT 那段说明）
-        while (lead := OPT.match(body)):
-            body = body[lead.end():].strip()
-        if not (body.startswith("-m ") or body.startswith("scripts/") or "./" in body[:9]):
-            continue
-        # 反引号 / 中文标点包着的行内命令：截到脚本名或子命令那段为止
-        if "`" in body:
-            body = body.split("`")[0].strip()
-        m = CMD.search(body)
-        out.append((no, (m.group("body") if m else body).strip()))
-    return out
+    return [(no, body) for no, body, _ in read_commands(text)]
+
 
 
 def unrecognized(text: str) -> list[tuple[int, str]]:
@@ -637,6 +817,7 @@ def main(argv: list[str] | None = None) -> int:
     n = bad = skipped = 0
     miss: list[tuple[str, int, str]] = []
     loose: list[tuple[str, int, str, int]] = []
+    broken: list[tuple[str, int, str, str]] = []
     refs: set[str] = set()
     clocks: list[tuple[str, int, tuple[str, str]]] = []
     prose = 0
@@ -650,7 +831,13 @@ def main(argv: list[str] | None = None) -> int:
         refs |= script_refs(text)
         prose += len(prose_clocks(text))
         miss += [(str(doc), no, why) for no, why in unrecognized(text)]
-        for no, body in commands_in(text):
+        for no, body, flaw in read_commands(text):
+            # 最前面这一道：先问「这是不是一条完整的命令」，再问参数名。
+            # 断掉的命令不许拿半截去问 `--help` —— 那样它会以「0 条对不上」的身份进统计，
+            # 而真正写在第二行上的漂移一条都没查（2.53 收尾量到，本节修）。
+            if flaw:
+                broken.append((str(doc), no, body, flaw))
+                continue
             tg = targets(body)
             if tg is None:
                 continue
@@ -685,6 +872,13 @@ def main(argv: list[str] | None = None) -> int:
     if loose:
         print("   补上收尾的 on；如果那只是正文里提了一句这个标记，把它写成不带 HTML 注释的样子"
               "（计划书 2.21 那节自己提到它时就是这么写的）")
+    # 「不像一条完整的命令」也单独印、单独判错：它改的同样是分母（那几条压根没进 `n`），
+    # 而且它是**文档**的错，不是出口的事 —— 修法只有两种：接成一行，或者用那对标记圈起来。
+    for doc, no, body, flaw in broken:
+        print(f"✗ {doc}:{no} 这条不像一条完整的命令：{flaw}\n    $ {body}")
+    if broken:
+        print("   要么接成一行（一把尺查的就是「照抄这一行会怎样」），要么把断掉的那半截写成别的样式；"
+              "拿它当例句就用 check-doc-cmds 那对标记圈起来")
     if args.verbose:
         for name in undocumented(scripts, refs):
             print(f"    scripts/{name} 存着，但 {'、'.join(str(p) for p in paths)} 里没提过")
@@ -696,6 +890,7 @@ def main(argv: list[str] | None = None) -> int:
     # 顺序要紧：`loose` 排在 `miss` 前面 —— 一个没关的 off 会把后面的行全挖空，
     # 于是「写了 python 却没认成」那个数也跟着少，两个一起说只会把人引到小的那个上。
     tail = ("；有 off/on 没配上，上面那个数是从少了命令的分母算的" if loose
+            else f"；还有 {len(broken)} 条不像一条完整的命令（上面逐条点名了），那几条没查" if broken
             else f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose" if miss
             else "；该查的都查了" if n else "；这一轮一条都没扫到，上面那些 0 全是空的")
     # 「哪些名字对得上」之外，还要说「哪些今天照抄跑不动」—— 后者是会不会自己过期决定的，
@@ -716,11 +911,13 @@ def main(argv: list[str] | None = None) -> int:
     # 「一条命令都没扫到」不能算过：那要么文档被清空了、要么给的文件名不对、
     # 要么版式改了让正则全落空 —— 三种都是这把尺自己瞎了，不是文档没问题。
     # 另外几把尺早就有这一格（selfcheck 的 2、doc_num 的 2），2.32 把它补到这条上。
-    if not n:
+    # 2.54 给它加一条例外：整篇只有「断掉的命令」时**不是瞎**，是文档错 ——
+    # 那种情况上面已经逐条点名了，退 2 会把「尺找到了东西」说成「尺没找到东西」。
+    if not n and not broken:
         print("（三种可能：文档被清空了、`docs` 参数给错了、版式改了让 `commands_in` 全落空 —— "
               "加 --verbose 看一眼是哪种）")
         return 2
-    return 1 if (bad or dead or loose) else 0
+    return 1 if (bad or dead or loose or broken) else 0
 
 
 if __name__ == "__main__":
