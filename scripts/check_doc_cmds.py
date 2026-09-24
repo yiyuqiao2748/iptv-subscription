@@ -3,6 +3,7 @@
 
     .venv/bin/python scripts/check_doc_cmds.py            # 扫默认那两份文档
     .venv/bin/python scripts/check_doc_cmds.py --verbose  # 连每条命令的判定一起打印
+    .venv/bin/python scripts/check_doc_cmds.py --self-test  # 往临时文件里种已知好坏的文档，问它自己
 
 为什么值得有这样一个东西：这个项目的失效模式里有一条是「文档说 A、代码做 B」
 （计划书 2.19 收口补的三件小事就是为了堵它）。而**能照抄执行的命令行**是文档里最容易漂的一层：
@@ -42,19 +43,26 @@
 
 退码：**0** = 扫到的每一条都没问题；**1** = 有对不上的（命令、脚本名、off/on 没配上、
 或者**不像一条完整的命令**的那几行）；
-**2** = **一条都没扫到**
+**2** = **一条都没扫到、并且三层里没有任何一层点得出名字**
 （2.32 补的那一格：文档被清空、文件名给错、版式改了让正则落空，三种都是这把尺自己瞎了，
-不能让「扫了 0 条、0 条对不上」冒充「查过了、没问题」）。
+不能让「扫了 0 条、0 条对不上」冒充「查过了、没问题」。
+2.54 给「断掉的命令」开了第一条例外，2.57 把剩下两条补上：`off` 没关、散文里点了
+一个不存在的脚本名 —— 那两种 0 都是**文档的错**，屏幕上明明印着 ✗，退 2 会把
+「尺找到了东西」说成「尺没找到东西」，13:34 逐格量到的现状就是这个。）
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 # 「会自己过期的命令」那一层要复用 `src.cli` 里的 `build_parser()` / `replay_gate()`
@@ -806,12 +814,324 @@ def check_one(target: list[str], body: str, *, verbose: bool = False) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# 回归基线：往临时文件里种已知好坏的文档，问这把尺自己说了什么
+# ---------------------------------------------------------------------------
+#
+# 为什么要有这一档（2.57，做法是从 2.56 原样递过来的）：它今天报「扫了 143 条命令、
+# 13 个脚本名：0 条命令、0 个脚本名对不上」，那句和 2.56 里「扫了 792 个名字、0 个拦得住」
+# 是同一族的话 —— 至少有三种读法：仓库真干净、这篇文档压根没被扫（退 2 拦着，看得见）、
+# 或者**判据整层不咬**（`LONG_FLAG` 少写一个横杠、`dead_refs` 的减号反了、`is_blind` 恒真）。
+# 第三种在屏幕上和前一种长得一模一样。分辨的办法只有一个：喂它已知坏掉的文档，
+# 看它点不点名。这一档就是这个「喂」，并且它跑在仓库里、随 `selfcheck` 一起跑。
+#
+# 期望是从 `/tmp/g257/probe_3.log`（09-24 13:34 那遍现状）**冻结**来的：先量它今天说什么、
+# 再把它说过的话钉成期望。三格的期望被本节那次退码修改动过（`B9`、`B13`、`B15`），
+# 各自的 `what` 里写明「改前实测退几」，不混在「它一直如此」里。
+
+B = chr(92)          # 反斜杠本身：不写进转义汤（2.54 起的写法）
+
+DOC = "假文档.md"     # 种出来的那份文档的名字（报告里的路径以它结尾）
+
+
+class Cell(NamedTuple):
+    """一格期望：种什么文档、该退几、必须说哪几句、不许说哪几句。"""
+
+    who: str                                  # 格子名（沿用现状探针的编号）
+    what: str                                 # 这一格在钉什么
+    body: str = ""                            # 种进临时文件的文档正文（`{T}` = 临时目录本身）
+    rec: str = ""                             # 额外种一份探针记录（带钟那一格要）
+    args: tuple[str, ...] = ()                # 额外的命令行参数
+    rc: int = 0
+    scanned: int | None = None                # 结论里那个「扫了 N 条命令」；None = 这一格不钉数
+    refs: int | None = None                   # 「、M 个脚本名」那个分母
+    has: tuple[str, ...] = ()                 # 必须出现（至少一次）
+    once: tuple[str, ...] = ()                # 必须**恰好**出现一次
+    lacks: tuple[str, ...] = ()               # 必须不出现
+
+
+BASELINE: tuple[Cell, ...] = (
+    # —— G 组：这些**不许**报错。它们钉的是分母，以及「三种不算错」到底算不算不算错 ——
+    Cell("G1_代码块里一条合法命令", "对照格：它必须干净，后面所有「误伤」判断都拿它当基准",
+         "# t\n\n```bash\n.venv/bin/python scripts/epg_check.py --playlist data/output/aptv.m3u\n```\n",
+         rc=0, scanned=1, refs=1, has=("该查的都查了",), lacks=("✗", "不认识的参数")),
+    Cell("G2_散文里反引号包着的命令", "行内命令也进分母（2.21 加的那一半），漏一条就少查一条",
+         "# t\n\n跑 `.venv/bin/python scripts/doc_num.py` 就行\n",
+         rc=0, scanned=1, lacks=("一条都没扫到",)),
+    Cell("G3_旗标名对但取值不存在", "取值不管那一半：它不许插嘴说「目录不存在」",
+         "# t\n\n```bash\n.venv/bin/python scripts/table_drift.py --against /tmp/nope-g257-dir\n```\n",
+         rc=0, scanned=1, lacks=("不认识的参数",)),
+    Cell("G4_整行注释掉的命令", "注释里的坏旗标不进统计 —— 那要进就是误伤",
+         "# t\n\n```bash\n# .venv/bin/python -m src.cli bulid --no-such-flag\n```\n",
+         rc=2, scanned=0, has=("这一轮一条都没扫到", "三种可能"),
+         lacks=("没有「bulid」这个子命令", "不认识的参数")),
+    Cell("G5_行尾注释里提到别的旗标", "「# 同上（--to-history）」那种写法不许被当成参数",
+         "# t\n\n```bash\n.venv/bin/python scripts/epg_check.py --playlist data/output/aptv.m3u"
+         "   # 同上（--to-history）\n```\n",
+         rc=0, scanned=1, lacks=("--to-history",)),
+    Cell("G6_URL 里就有 #", "切行尾注释只能切「空格 + #」：`a#b` 不是注释",
+         "# t\n\n```bash\n.venv/bin/python scripts/epg_check.py --playlist https://x/a#b\n```\n",
+         rc=0, scanned=1, lacks=("不认识的参数", "不像一条完整的命令")),
+    Cell("G7_off/on 配平的例句", "2.40 那对逃生标记正常用时的样子：圈掉的不查，配上了不判错",
+         "# t\n\n<!-- check-doc-cmds: off -->\n\n```bash\n.venv/bin/python scripts/nope_g257.py\n```\n\n"
+         "<!-- check-doc-cmds: on -->\n\n```bash\n.venv/bin/python "
+         "scripts/epg_check.py --playlist data/output/aptv.m3u\n```\n",
+         rc=0, scanned=1, has=("另有 1 段标了 off 的例子没查",), lacks=("off/on 没配上",)),
+    Cell("G8_短参不查", "只查长参数那一半：`-o` 报出来就是误伤",
+         "# t\n\n```bash\n.venv/bin/python scripts/lean_playlist.py -o /tmp/x\n```\n",
+         rc=0, scanned=1, lacks=("不认识的参数",)),
+    Cell("G9_整篇被一对 off/on 圈光", "退 2 的**第四种**成因（2.57 之前那句提示只列三种）",
+         "# t\n\n<!-- check-doc-cmds: off -->\n\n```bash\n.venv/bin/python "
+         "scripts/epg_check.py --playlist data/output/aptv.m3u\n```\n\n"
+         "<!-- check-doc-cmds: on -->\n",
+         rc=2, scanned=0, has=("四种可能", "该扫的命令全被那对 off/on 圈掉了"),
+         once=("四种可能",), lacks=("三种可能",)),
+    Cell("G10_写了 python 却没认成命令", "那一层只印、不进退码也不进「瞎」：散文里正常提到解释器很常见",
+         "# t\n\n```bash\n.venv/bin/python scripts/epg_check.py --playlist data/output/aptv.m3u\n```\n\n"
+         "解释器在 .venv/bin/python 那儿。\n",
+         rc=0, scanned=1, has=("还有 1 行写了 python 却没认成命令",), lacks=("✗",)),
+    # —— B 组：已知坏掉的文档必须点名。这一组是这把尺的靶子，全绿不等于它咬得动 ——
+    Cell("B1_长旗标不存在", "命令层最主的那条判据",
+         "# t\n\n```bash\n.venv/bin/python scripts/stray_names.py --no-such-flag\n```\n",
+         rc=1, scanned=1, has=("不认识的参数 ['--no-such-flag']",), once=("不认识的参数",)),
+    Cell("B2_脚本不存在", "两层各报一次、数不许并成一个",
+         "# t\n\n```bash\n.venv/bin/python scripts/nope_g257.py --out /tmp/x\n```\n",
+         rc=1, scanned=1, refs=1, has=("找不到 scripts/nope_g257.py", "1 条命令、1 个脚本名对不上"),
+         once=("文档里写了 scripts/nope_g257.py",)),
+    Cell("B3_子命令拼错", "`src.cli` 自己分发 argv，这一层直接读 `def cmd_*`",
+         "# t\n\n```bash\n.venv/bin/python -m src.cli bulid --replay\n```\n",
+         rc=1, has=("没有「bulid」这个子命令",)),
+    Cell("B4_模块整个不存在", "`-m` 那一支的另一半：改名要撞在这格上",
+         "# t\n\n```bash\n.venv/bin/python -m src.nope_g257 build\n```\n",
+         rc=1, has=("这个模块仓库里没有",)),
+    Cell("B5_续行断在空行", "2.54 那一层：断掉的命令不许拿半截去问 --help，也不进分母",
+         f"# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {B}\n\n```\n",
+         rc=1, scanned=0, has=("行尾的反斜杠后面是一个空行", "还有 1 条不像一条完整的命令"),
+         lacks=("三种可能", "四种可能")),
+    Cell("B6_续行那句是中文", "五种接不上的第四种：说明文字写进了命令里",
+         f"# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {B}\n这一轮一个请求都不发\n```\n",
+         rc=1, scanned=0, has=("续行那一句里有中文",)),
+    Cell("B7_续行紧跟另一条命令", "第五种：少了一个换行；而第二条**照样要被扫**（别把两个错并成一个）",
+         f"# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {B}\n"
+         ".venv/bin/python scripts/doc_num.py\n```\n",
+         rc=1, scanned=1, has=("紧跟的是另一条命令",)),
+    Cell("B8_引号少一边", "它照抄进终端不会执行，只会给一个 `>`",
+         '# t\n\n```bash\n.venv/bin/python scripts/epg_check.py --playlist "没关\n```\n',
+         rc=1, scanned=0, has=("双引号少了一边",)),
+    Cell("B9_off 没关", "分母那一半：一个没关的 off 把后面全挖空。**期望被 2.57 动过：改前实测退 2**",
+         "# t\n\n<!-- check-doc-cmds: off -->\n\n```bash\n.venv/bin/python scripts/nope_g257.py\n```\n",
+         rc=1, scanned=0, has=("off/on 没配上", "这一段里 1 条命令一条都没查",
+                               "上面那个数是从少了命令的分母算的"),
+         lacks=("三种可能", "四种可能")),
+    Cell("B10_目标脚本没有 argparse", "三种「不算错」里的第一种：`run_doctests` 不认 --help，照抄却能跑",
+         "# t\n\n```bash\n.venv/bin/python scripts/run_doctests.py --no-such-flag\n```\n",
+         rc=0, scanned=1, lacks=("不认识的参数",)),
+    Cell("B11_带钟且越过三道门", "钟那一层要进末句，而末句必须带 `照抄` 那个词（2.45）；判决不进退码",
+         "# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {T}/probe.json --allow-untrusted\n```\n",
+         rec=('{"at": "2026-09-21T21:18:13+08:00", "egress": "1.2.3.4 CN",'
+              ' "measurement_warnings": [], "lines": {"http://a/1": {"ok": true}}}'),
+         rc=0, scanned=1, refs=0, has=("能照抄来量的 1 条", "全能过"), lacks=("✗",)),
+    Cell("B12_一篇只有散文", "2.32 那一格：什么都没扫到要退 2，而且那几种可能得写出来",
+         "# t\n\n这一段里一条命令都没有，只讲道理。\n",
+         rc=2, scanned=0, refs=0, has=("这一轮一条都没扫到", "三种可能")),
+    Cell("B13_散文里一个不存在的脚本名", "引用层单独在场。**期望被 2.57 动过：改前实测退 2 + 那句「三种可能」**",
+         "# t\n\n这支脚本叫 `scripts/nope_g257.py`，改配置时记得跑它。\n",
+         rc=1, scanned=0, refs=1, has=("文档里写了 scripts/nope_g257.py", "1 个脚本名对不上",
+                                       "但引用层点名了 1 个对不上的脚本名"),
+         lacks=("上面那些 0 全是空的", "三种可能", "四种可能")),
+    Cell("B14_两条断掉的命令", "群提示只印一次，条数要说清是几条（分母要说得出口）",
+         f"# t\n\n```bash\n.venv/bin/python -m src.cli build --replay {B}\n\n"
+         '.venv/bin/python scripts/epg_check.py --playlist "没关\n```\n',
+         rc=1, scanned=0, has=("还有 2 条不像一条完整的命令",),
+         once=("要么接成一行",)),
+    Cell("B15_断命令＋没关的 off", "两种「分母被动过」叠在一起：off 先把那半截一起挖走，所以只点得出一个名",
+         f"# t\n\n<!-- check-doc-cmds: off -->\n\n```bash\n.venv/bin/python -m src.cli build --replay {B}\n"
+         "```\n",
+         rc=1, scanned=0, has=("off/on 没配上", "这一段里 1 条命令一条都没查"),
+         lacks=("三种可能", "四种可能", "这条不像一条完整的命令")),
+)
+
+
+def hide_tmp(text: str, base: Path) -> str:
+    """把临时目录名抹成 `<T>` 再印 —— 不然两遍输出必然不同（2.55 踩的第 7 条）。
+
+    归一由**代码**做并且钉了用例，所以它不再是「比之前先跑一把 `sed`」那种手艺（2.56 同）。
+
+    >>> from pathlib import Path
+    >>> hide_tmp("✗ /var/folders/xx/T/g257_abcd/假文档.md:4 找不到\\n扫了 1 条命令",
+    ...          Path("/var/folders/xx/T/g257_abcd"))
+    '✗ <T>/假文档.md:4 找不到\\n扫了 1 条命令'
+    >>> hide_tmp("没有路径", Path("/tmp/x"))
+    '没有路径'
+    """
+    return text.replace(str(base), "<T>")
+
+
+def check_cell(cell: Cell, rc: int, text: str) -> tuple[bool, str]:
+    """这一格符合期望吗：`(符合, 不符的那句)`。四种不符分开报，因为**修法不一样**。
+
+    顺序是定过的：退码第一（尺崩了或者判据错了，后面那些句子怎么都是白说），
+    然后「少了那句」、「多说了那句」（一个是指据/处置提示没落地，一个是误伤），
+    再「恰好一次」，最后才数分母 —— 分母那两个数（命令条数、脚本名条数）错了，
+    通常意味着上面某层整层不咬，那是最贵的一种坏，所以放在最后单独钉。
+
+    >>> c = Cell("T", "试", rc=1, scanned=1, refs=1,
+    ...          has=("不认识的参数",), once=("文档里写了",), lacks=("该查的都查了",))
+    >>> good = "✗ <T>/假文档.md:4 用到了不认识的参数 ['--x']\\n    文档里写了 a.py\\n扫了 1 条命令、1 个脚本名\\n"
+    >>> check_cell(c, 1, good)
+    (True, '')
+    >>> check_cell(c, 0, good)
+    (False, '退码：期望 1，实际 0')
+    >>> check_cell(c, 1, good.replace("不认识的参数", "别的话"))
+    (False, '少了那句：不认识的参数')
+    >>> check_cell(c, 1, good + "该查的都查了\\n")
+    (False, '多说了那句：该查的都查了 —— 误伤')
+    >>> check_cell(c, 1, good + "文档里写了 b.py\\n")
+    (False, '那句出现了 2 次，期望恰好 1 次：文档里写了')
+    >>> check_cell(c, 1, good.replace("扫了 1 条命令", "扫了 9 条命令"))
+    (False, '扫到的命令数：期望 1，实际那句不是')
+    >>> check_cell(c, 1, good.replace("1 个脚本名", "9 个脚本名"))
+    (False, '脚本名分母：期望 1，实际那句不是')
+    """
+    if rc != cell.rc:
+        return False, f"退码：期望 {cell.rc}，实际 {rc}"
+    for s in cell.has:
+        if s not in text:
+            return False, f"少了那句：{s}"
+    for s in cell.lacks:
+        if s in text:
+            return False, f"多说了那句：{s} —— 误伤"
+    for s in cell.once:
+        if text.count(s) != 1:
+            return False, f"那句出现了 {text.count(s)} 次，期望恰好 1 次：{s}"
+    if cell.scanned is not None and f"扫了 {cell.scanned} 条命令" not in text:
+        return False, f"扫到的命令数：期望 {cell.scanned}，实际那句不是"
+    if cell.refs is not None and f"、{cell.refs} 个脚本名" not in text:
+        return False, f"脚本名分母：期望 {cell.refs}，实际那句不是"
+    return True, ""
+
+
+def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
+    """跑一格：`(判定, 给人看的那句, 抹过临时路径的原文)`，判定是 `ok` / `bad`。
+
+    走的是真的 `main()`（不是又一遍 `commands_in`）：退码、结论行、那句尾的 `tail`、
+    那几句处置提示，全都是这一格要看的东西 —— 只调中间函数就把 `main()` 那三层绕开了。
+    这一点和 2.56 一样有个副作用：`main()` 里那个 `now` 是每格重取的，
+    所以钟那一格的判决跟着真时间走（`B11` 用 `--allow-untrusted` 绕开，见它的 `rec`）。
+    """
+    if cell.rec:
+        (base / "probe.json").write_text(cell.rec, encoding="utf-8")
+    doc = base / DOC
+    doc.write_text(cell.body.replace("{T}", str(base)), encoding="utf-8")
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = main([str(doc), *cell.args])
+    except Exception as e:                        # 尺自己炸了算「跑过但不过」，不许吞
+        return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
+    text = hide_tmp(buf.getvalue(), base)
+    good, why = check_cell(cell, rc, text)
+    return ("ok", "", text) if good else ("bad", why, text)
+
+
+def sep_conflicts(cells: tuple[Cell, ...]) -> list[str]:
+    """格子名里带了「、」的那些 —— 它们会让最后一行「不符的格」分不开。
+
+    为什么要有这一格：那一行是 `、".join(...)` 出来的，分隔符就是顿号。13:47 那遍拆解实验
+    被自己咬了一口：`B11_带钟、且越过三道门` 里那颗顿号一出现，读输出的脚本（和我）就把
+    一格数成了两格，那一轮的「判错」三处里有一处是这件事。名字是我起的，闸也得我来装：
+    现在带顿号的名字当场退 2，不再等到读的时候才发现分不开。
+
+    >>> sep_conflicts((Cell("A_好", "x"), Cell("B、坏", "y"), Cell("C\\n坏", "z")))
+    ['B、坏', 'C\\n坏']
+    >>> sep_conflicts(BASELINE)          # 今天这 25 个名字都读得开
+    []
+    """
+    return [c.who for c in cells if "、" in c.who or "\n" in c.who]
+
+
+def self_test(cells: tuple[Cell, ...] | None = None) -> int:
+    """`--self-test` 那一档：每一格种一份临时文档、跑一遍这把尺、逐格对期望。
+
+    结论行带着「扫了」那个词（`scripts/selfcheck.py` 的 `conclusion()` 靠它挑句子）。
+    **顺序是定过的**：过的一格一行先流水，不符期望的那些**留在最后** ——
+    `selfcheck.run_script()` 失败时只摊出末尾 14 行，把 ✗ 排在 25 行 ✓ 中间，
+    那条 ✗ 到了人眼前就只剩一个「退 1」。
+
+    退码：0 = 每格都符合期望；1 = 有格子不符（逐格点名）；2 = 一格都没跑起来。
+    """
+    cells = BASELINE if cells is None else cells
+    knames = sep_conflicts(cells)
+    if knames:
+        print("格子名里不许有顿号或换行，那一行「不符的格」是靠顿号分的，分不开就等于没有："
+              + "、".join(knames))
+        return 2
+    ran = bad = 0
+    fails: list[tuple[Cell, str, str]] = []
+    for cell in cells:
+        with tempfile.TemporaryDirectory(prefix="doc-cmds-selftest-") as td:
+            verdict, why, text = run_cell(cell, Path(td))
+        ran += 1
+        if verdict == "bad":
+            bad += 1
+            fails.append((cell, why, text))
+            continue
+        print(f"  ✓ {cell.who:<26} {cell.what}")
+    if fails:
+        print(f"\n—— 以下 {len(fails)} 格不符期望（每格把自己那一遍的原文摊出来）——")
+        for cell, why, text in fails:
+            print(f"  ✗ {cell.who:<26} {cell.what}\n      {why}")
+            for line in text.strip().splitlines():
+                print(f"      | {line}")
+    print(f"\n扫了基线 {len(cells)} 格：{bad} 格不符期望"
+          + (" —— 那把尺还咬得动" if ran and not bad else " —— 上面逐格点名了"))
+    if bad:
+        print("不符的格：" + "、".join(c.who for c, _, _ in fails))
+    if not ran:
+        print("一格都没跑起来：`BASELINE` 是空的，或者临时目录建不起来。这不算过")
+        return 2
+    return 1 if bad else 0
+
+
+def is_blind(n: int, broken: list, loose: list, dead: list) -> bool:
+    """这把尺**自己**瞎了吗 —— 「一条命令都没扫到」并且「三层里没有任何一层点得出名字」。
+
+    为什么这一格要单独成一个函数：2.32 加退 2 时只想到了「文档被清空」那一族 0；
+    2.54 给「断掉的命令」开了第一条例外（那种 0 是文档的错），而 `loose`（`off` 没关）与
+    `dead`（散文里点出一个不存在的脚本名）是**同样形状**的两种例外，当时没补。
+    13:34 逐格量到的现状：一篇只有「这支脚本叫 `scripts/nope_g257.py`」的文档，屏幕上印着
+    「文档里写了 scripts/nope_g257.py，但 scripts/ 里没有这个文件」，退码却是 2，
+    尾句还是「上面那些 0 全是空的」—— 而那句话旁边就站着一个 1。
+
+    `miss`（写了 `.venv/bin/python` 却没认成命令）**不**算例外，正相反：那一句就是
+    「版式改了让正则落空」的征兆本身，是这一档要抓的东西。它也不进退码（认不出来的
+    可能是散文里正常提到解释器），两层各管各的。
+
+    >>> is_blind(0, [], [], [])
+    True
+    >>> is_blind(0, ["一条断掉的命令"], [], [])        # 2.54 那条例外
+    False
+    >>> is_blind(0, [], ["off 没关"], [])              # 分母被挖空，但它自己报了
+    False
+    >>> is_blind(0, [], [], ["nope.py"])               # 引用层点名的（2.57 补的两条之一）
+    False
+    >>> is_blind(12, [], [], [])                       # 扫到了命令，谈不上瞎
+    False
+    """
+    return not n and not broken and not loose and not dead
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="check_doc_cmds", description=__doc__.splitlines()[0])
     ap.add_argument("docs", nargs="*", default=None,
                     help=f"要扫的文档（默认 {'、'.join(DEFAULT_DOCS)}）")
     ap.add_argument("--verbose", action="store_true", help="每条命令的判定都打出来")
+    ap.add_argument("--self-test", action="store_true", dest="self_test",
+                    help=f"往临时文件里种已知好坏的 {len(BASELINE)} 格文档，逐格核对这把尺说了什么")
     args = ap.parse_args(argv)
+    if args.self_test:
+        # 这一档不读任何真文档，所以它排在 `paths` 之前；`docs` 参数一起给了也不生效（明说了）。
+        return self_test()
 
     paths = [Path(d) for d in (args.docs or DEFAULT_DOCS)]
     n = bad = skipped = 0
@@ -889,10 +1209,15 @@ def main(argv: list[str] | None = None) -> int:
     hidden = undocumented(scripts, refs) if not args.docs else []
     # 顺序要紧：`loose` 排在 `miss` 前面 —— 一个没关的 off 会把后面的行全挖空，
     # 于是「写了 python 却没认成」那个数也跟着少，两个一起说只会把人引到小的那个上。
+    # 最后那两分支是 2.57 分出来的：`dead` 非空时那句「上面那些 0 全是空的」是假话 ——
+    # 13:34 量到的原话是「0 条命令、1 个脚本名对不上；这一轮一条都没扫到，上面那些 0 全是空的」，
+    # 一句话里左边那个 1 当场推翻右边那句「全是空的」。
     tail = ("；有 off/on 没配上，上面那个数是从少了命令的分母算的" if loose
             else f"；还有 {len(broken)} 条不像一条完整的命令（上面逐条点名了），那几条没查" if broken
             else f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose" if miss
-            else "；该查的都查了" if n else "；这一轮一条都没扫到，上面那些 0 全是空的")
+            else "；该查的都查了" if n
+            else "；这一轮一条都没扫到，上面那些 0 全是空的" if not dead
+            else f"；命令层一条都没扫到（那两个 0 是空的），但引用层点名了 {len(dead)} 个对不上的脚本名")
     # 「哪些名字对得上」之外，还要说「哪些今天照抄跑不动」—— 后者是会不会自己过期决定的，
     # 所以它排在最后。但**光是最后一行不够**：`selfcheck.conclusion()` 是从末尾往前找
     # `CONCLUSION` 那批词的，这一句里必须带着其中一个词（「照抄」），否则 selfcheck 里
@@ -911,11 +1236,14 @@ def main(argv: list[str] | None = None) -> int:
     # 「一条命令都没扫到」不能算过：那要么文档被清空了、要么给的文件名不对、
     # 要么版式改了让正则全落空 —— 三种都是这把尺自己瞎了，不是文档没问题。
     # 另外几把尺早就有这一格（selfcheck 的 2、doc_num 的 2），2.32 把它补到这条上。
-    # 2.54 给它加一条例外：整篇只有「断掉的命令」时**不是瞎**，是文档错 ——
-    # 那种情况上面已经逐条点名了，退 2 会把「尺找到了东西」说成「尺没找到东西」。
-    if not n and not broken:
-        print("（三种可能：文档被清空了、`docs` 参数给错了、版式改了让 `commands_in` 全落空 —— "
-              "加 --verbose 看一眼是哪种）")
+    # 2.54 给它开第一条例外、2.57 把剩下两条补齐（见 `is_blind`）：**上面已经逐条点名了
+    # 东西，就不许再说「尺没找到东西」**。那句提示也跟着分两种：`off/on` 圈掉整篇时
+    # 那是第四种成因，不写出来人就只会去翻前三种。
+    if is_blind(n, broken, loose, dead):
+        print("（" + ("四" if skipped else "三") + "种可能：文档被清空了、`docs` 参数给错了、"
+              "版式改了让 `commands_in` 全落空"
+              + ("、该扫的命令全被那对 off/on 圈掉了" if skipped else "")
+              + " —— 加 --verbose 看一眼是哪种）")
         return 2
     return 1 if (bad or dead or loose or broken) else 0
 

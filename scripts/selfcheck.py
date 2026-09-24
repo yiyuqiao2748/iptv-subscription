@@ -1,6 +1,6 @@
 """一条命令跑完这个项目的全部对账，包括「正在跑的那个页面有没有说谎」。
 
-    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认六条
+    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认七条
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --against /tmp/r226 # 顺手问「报告说的是不是这张表」
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --epg               # 再挂上 EPG 那条（读本地缓存，实测 0.08 秒）
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --port 8799 --skip page
@@ -12,7 +12,7 @@
 那几把尺各自都还新，串起来只是把四条命令变成一个黑盒。今天加它有一条新的理由：
 **有一类失效只有「问一眼正在跑的进程」才看得见**（2.29 那个「99 个台」），
 而我拿眼睛对了一次就不该再对第二次。所以这里真正的增量是 `page` 那一步，
-另外七条（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test` 五条默认，`drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
+另外八条（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test` 六条默认，`drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
 （2.21 那把尺会把「文档里出现一个不存在的脚本名」判成漂移）—— 这一节里它是当场做出来的东西。
 **2.55 追记**：上面那句「四条默认」与第 3 行的「默认五条」都是加 `names` 之后的数
 （默认 = 四条离线尺 + `page`）。`names` 只看文件名那一层，为的是 `.git/` 里那种同步盘冲突副本 ——
@@ -21,6 +21,12 @@
 它量的不是仓库，是 `names` 那把尺**还咬不咬得动**。加它之前那条 ✓ 有两种读法（仓库真干净 /
 那把尺瞎了），而这一屏分不清 —— 分不清的解决方式不是把话改短，是补一条能分清它的检查。
 （上一段追记里引的那两句「四条默认」「默认五条」从此只存在于那段文字里，正文已经不留了。）
+**2.57 追记**：再把那两个数各加一（「五条默认」→ 六条、「默认六条」→ 七条），多的是 `doc-test` ——
+`self-test` 那个形状原样递给命令尺：`doc-cmds` 那条 ✓ 说的是「143 条命令、0 条对不上」，
+这一句同样有几种读法，而它自己一种也分不开（13:34 逐格量到的现状里，有一格它明明印出了
+「文档里写了 scripts/nope_g257.py，但 scripts/ 里没有这个文件」，退码却是 2 = 「这把尺瞎了」）。
+所以这一节**改了两格的行为**：`off` 没关、以及只有散文点了个不存在的脚本名，从退 2 改成退 1；
+今天这批文档的退码不变（改前改后逐字节相同，量在 13:41）。
 """
 from __future__ import annotations
 
@@ -155,8 +161,8 @@ def page_verdict(html: str, disk: dict[str, int], gone: list[str]) -> tuple[str,
 def check_page(port: int) -> tuple[str, str]:
     """问一眼正在跑的那个页面：它声称的台数对不对、它是不是 2.29 那一版。
 
-    这一条是那七条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`drift`/`epg`）
-    唯一量不到的那层 —— 它们全在量磁盘上躺着的东西（`self-test` 量的是那把尺自己，
+    这一条是那八条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`/`drift`/`epg`）
+    唯一量不到的那层 —— 它们全在量磁盘上躺着的东西（`self-test`、`doc-test` 量的是那两把尺自己，
     量的仍然是磁盘上那 15 格名字，不是正在跑的进程）。
     取页面必须绕过系统代理：TUN 开着时走代理去取 `127.0.0.1` 会拿到假答案。
     """
@@ -228,7 +234,7 @@ def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
 def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[str, str]]]]:
     """这一轮要跑哪些检查：(名字, 给人看的那句, 怎么跑)。
 
-    默认六条 —— 五条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`）+ 那条只有
+    默认七条 —— 六条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`）+ 那条只有
     「问一眼正在跑的进程」才做得到的 `page`。`drift` 和 `epg` 要人点名，各有一条实在的理由：
     `drift` 得先有另一份表放在那儿（没有就是 2，不该混进这一屏）；
     `epg` 回答的不是「说的和算的是不是一回事」，而是「现在这份节目单对我们有几个台有用」——
@@ -238,18 +244,24 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     `self-test`（2.56）跟着它一起默认挂上，理由不是「顺手」而是**那条 ✓ 自己说不清自己**：
     仓库今天 0 颗，`names` 的退 0 既可能是干净也可能是那把尺瞎了，只有往临时树里种过名字
     才知道它咬得动 —— 所以它跟 `names` 是一对，缺一个另一个就不能读。
+    `doc-test`（2.57）是同一个理由递给命令尺的那一半：`doc-cmds` 说「143 条命令、0 条对不上」，
+    这句话同样分不清「文档真干净」与「那几层判据整层不咬」，而 13:34 量到的现状里它连
+    「自己找到了东西」都能报成「自己瞎了」（那一格现在由 `B9`/`B13` 两格钉住）。
+    它跑 0.6 秒（25 格、一共 11 次 `--help` 子进程、6 个目标 —— 同一个目标只问一遍；
+    14:07 实测三遍 0.56／0.58／0.60，这一档在 `selfcheck` 里那一遍是 0.58 秒），
+    换的是这一屏上那条 ✓ 能不能读。
     `--skip` 与「跑不了」是两回事：前者是人不让跑（这一条直接不出现），
     后者会自己变成一条 `·` 判定出现在结果里（那个数要能对上）。
 
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=[])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'page']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'page']
     >>> ns = argparse.Namespace(port=8787, against="/tmp/r226", epg=True, skip=["page"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'drift', 'epg']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'drift', 'epg']
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=["page", "numbers"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'doc-cmds', 'names', 'self-test']
+    ['doctests', 'doc-cmds', 'names', 'self-test', 'doc-test']
     """
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
@@ -262,6 +274,8 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/stray_names.py"])),
         ("self-test", "那把尺自己还咬得动吗（往临时树里种 15 格名字）",
          lambda: run_script(["scripts/stray_names.py", "--self-test"])),
+        ("doc-test", "命令尺自己还咬得动吗（往临时文件里种 25 格文档）",
+         lambda: run_script(["scripts/check_doc_cmds.py", "--self-test"])),
         ("page", "正在跑的那个页面声称的台数", lambda: check_page(args.port)),
     ]
     if args.against:
@@ -293,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--epg", action="store_true", help="把 EPG 那条也挂上（只读本地缓存）")
     ap.add_argument("--skip", action="append", default=[],
                     help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / names / "
-                         "self-test / drift / epg")
+                         "self-test / doc-test / drift / epg")
     args = ap.parse_args(argv)
 
     plan = steps(args)
@@ -347,6 +361,15 @@ def main(argv: list[str] | None = None) -> int:
             print("`names` 绿、`self-test` 红 —— 这个组合只有一种意思：**那把尺自己咬不动了**，"
                   "\n           上面那条 `names` 的 ✓ 这一轮不能读（真仓库 0 颗到底是干净还是瞎，"
                   "全靠这一条分开）。")
+    if "doc-test" in fails:
+        # 这一句要挡住的是那种最贵的误读：以为 `doc-test` 在说「文档里有一条命令写错了」。
+        # 那是 `doc-cmds` 的活；这一条扫的是它自己种的 25 份临时文档，跟仓库里那三篇无关。
+        print("`doc-test` 那条红也**不是说文档里有命令写错了**：那 25 份文档是它自己种的临时件，"
+              "\n           跑完就回收，仓库里那三篇它一个字没读。它说的是命令尺的判据或者措辞变了 —— "
+              "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/check_doc_cmds.py`（2.57）。")
+        if "doc-cmds" not in fails:
+            print("`doc-cmds` 绿、`doc-test` 红 —— 同一个意思的另一半：**那句「0 条对不上」这一轮不能读**，"
+                  "\n           它可能是文档真干净，也可能是那几层判据整层不咬（143 条一条都没查中）。")
     return 1 if failed else 0
 
 
