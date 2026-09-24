@@ -338,8 +338,9 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     干净副本里单跑，两遍都是 0 条对不上），
     这句话同样分不清「文档真干净」与「那几层判据整层不咬」，而 13:34 量到的现状里它连
     「自己找到了东西」都能报成「自己瞎了」（那一格现在由 `B9`/`B13` 两格钉住）。
-    它跑 0.6 秒（25 格、一共 11 次 `--help` 子进程、6 个目标 —— 同一个目标只问一遍；
-    14:07 实测三遍 0.56／0.58／0.60，这一档在 `selfcheck` 里那一遍是 0.58 秒），
+    它跑 0.6 秒（29 格、一共 12 次 `--help` 子进程、6 个目标 —— 同一个目标只问一遍；
+    19:32 实测三遍 0.57／0.56／0.57，这一档在 `selfcheck` 里那一遍是 0.62 秒（19:32:50，
+    整个进程连解释器启动一起算：其余十一条全 `--skip`），
     换的是这一屏上那条 ✓ 能不能读。
     `unmarked`（2.59）是这一屏上**唯一一条不回答「有没有毛病」的**：它报的是「文档里还有多少个
     数一把尺都没看过」，点几条候选都不改退码（16:19:57 那遍 `um_1.log`：甲 74、乙 109、丙 481、跳过 236，
@@ -380,7 +381,7 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/stray_names.py"])),
         ("self-test", "那把尺自己还咬得动吗（往临时树里种 15 格名字）",
          lambda: run_script(["scripts/stray_names.py", "--self-test"])),
-        ("doc-test", "命令尺自己还咬得动吗（往临时文件里种 25 格文档）",
+        ("doc-test", "命令尺自己还咬得动吗（往临时文件里种 29 格文档）",
          lambda: run_script(["scripts/check_doc_cmds.py", "--self-test"])),
         ("num-test", "数尺自己还咬得动吗（往临时目录里种 26 格文档）",
          lambda: run_script(["scripts/doc_num.py", "--self-test"])),

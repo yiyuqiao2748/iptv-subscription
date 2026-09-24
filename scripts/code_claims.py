@@ -230,6 +230,18 @@ def truth_of() -> tuple[dict[str, int], list[str]]:
     """现取真值：五把带基线的尺各自 `len(BASELINE)`、selfcheck 的步数。
 
     返回 `(值, 取不到的名字)`。取不到不当 0 —— 一个都不许糊，糊了就等于绿。
+
+    `谁的都不是` 那一颗是给 `B2` 用的假值：它必须**不属于任何一把尺的格数**。
+    写死一个加数不行 —— 19:31 那遍 `claims-test` 就是这么红的：`B2` 种的是 `{n格-unmarked_nums+7}`
+    即 29，而同一分钟 `check_doc_cmds` 的基线从 25 加到 29，那个「谁的都不是」的数
+    当场成了「有人的是」，负例变成正例，格子比的是一件没发生过的事。所以它现算：从 1000 往上
+    找第一个不在集合里的（基线长到四位数之前，这一颗都撞不上）。
+
+    >>> v, _ = truth_of()
+    >>> v["谁的都不是"] >= 1000
+    True
+    >>> v["谁的都不是"] not in {x for k, x in v.items() if k.startswith("n格-")}
+    True
     """
     vals: dict[str, int] = {}
     holes: list[str] = []
@@ -239,6 +251,8 @@ def truth_of() -> tuple[dict[str, int], list[str]]:
             vals[f"n格-{mod}"] = len(m.BASELINE)        # type: ignore[attr-defined]
         except Exception as exc:                         # noqa: BLE001 —— 取不到要能点名
             holes.append(f"{mod}（BASELINE 读不到：{type(exc).__name__}）")
+    sizes = {v for k, v in vals.items() if k.startswith("n格-")}
+    vals["谁的都不是"] = next(n for n in range(1000, 10_000) if n not in sizes)
     try:
         sc = __import__("selfcheck")
         default = [x[0] for x in sc.steps(argparse.Namespace(
@@ -500,8 +514,8 @@ BASELINE: tuple[Cell, ...] = (
          argv=("--py", f"{SANDBOX}/{PY}"),
          has=("✗ 假件.py:模块 说 格 {n格-unmarked_nums}、真值是 doc_num={n格-doc_num}",
               "1 处对不上")),
-    Cell("B2_数不在真值集", "一个谁的格数都不是的数：红，且要说出真值集合",
-         1, files=((PY, '"""种了 {n格-unmarked_nums+7} 格"""'),),
+    Cell("B2_数不在真值集", "一个谁的格数都不是的数：红，且要说出真值集合（那颗数现算，见 `truth_of`）",
+         1, files=((PY, '"""种了 {谁的都不是} 格"""'),),
          argv=("--py", f"{SANDBOX}/{PY}"), has=("1 处对不上", "只要求属于")),
     Cell("B3_默认条数少一", "明天加一步、今天那句还是旧数 —— 2.55~2.57 那四轮就是这个形状",
          1, files=((PY, '"""默认 {步-默认-1} 条。"""'),),

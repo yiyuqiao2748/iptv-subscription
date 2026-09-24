@@ -48,7 +48,14 @@
 不能让「扫了 0 条、0 条对不上」冒充「查过了、没问题」。
 2.54 给「断掉的命令」开了第一条例外，2.57 把剩下两条补上：`off` 没关、散文里点了
 一个不存在的脚本名 —— 那两种 0 都是**文档的错**，屏幕上明明印着 ✗，退 2 会把
-「尺找到了东西」说成「尺没找到东西」，13:34 逐格量到的现状就是这个。）
+「尺找到了东西」说成「尺没找到东西」，13:34 逐格量到的现状就是这个。
+**2.62 补的是读的那一层**：点名的文档不在、指的是目录、里面不是 UTF-8 —— 以前这三件事
+是一整段 traceback（19:12:58 第一次复现、19:38:55 逐种复现：`并不存在的文档.md`／`docs`／
+一个 `.pyc` 分别摊出 14／14／12 行，三种都崩在 `main()` 那句裸 `read_text` 上），
+既不是判定也没有退码可言 —— 而那个退码是 **1**，正好是「量到了、有毛病」那一档。
+现在三种各有自己那句话（借
+`doc_num.read_doc`，与数尺／报数尺同一族，第三种说法都不另写），并且**部分读到 = 退 1**
+（那一篇文档整个不在分母里）、**一篇都没读到 = 退 2**。
 """
 from __future__ import annotations
 
@@ -65,6 +72,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 from baseline_guard import sep_names            # noqa: E402  顿号那道闸的判据（三把尺共用）
+# 2.62：「读进来」那一层不另写一套 —— 三种说法和那张「什么都不是」的字节流都从数尺那边拿
+# （`unmarked_nums` 与 `code_claims` 早就是它的邻居了，同一件事不许有两个算法）。
+from doc_num import BIN_BODY, read_doc          # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # 「会自己过期的命令」那一层要复用 `src.cli` 里的 `build_parser()` / `replay_gate()`
@@ -845,7 +855,8 @@ class Cell(NamedTuple):
     what: str                                 # 这一格在钉什么
     body: str = ""                            # 种进临时文件的文档正文（`{T}` = 临时目录本身）
     rec: str = ""                             # 额外种一份探针记录（带钟那一格要）
-    args: tuple[str, ...] = ()                # 额外的命令行参数
+    bins: tuple[str, ...] = ()                # 额外种进去的**非 UTF-8** 件（只给名字，2.62 那格要）
+    args: tuple[str, ...] = ()                # 非空 = 这一格自己带全套命令行（不再自动塞那份文档）
     rc: int = 0
     scanned: int | None = None                # 结论里那个「扫了 N 条命令」；None = 这一格不钉数
     refs: int | None = None                   # 「、M 个脚本名」那个分母
@@ -953,6 +964,28 @@ BASELINE: tuple[Cell, ...] = (
          "```\n",
          rc=1, scanned=0, has=("off/on 没配上", "这一段里 1 条命令一条都没查"),
          lacks=("三种可能", "四种可能", "这条不像一条完整的命令")),
+    # —— 2.62：「读进来」那一层。三格各自钉一种读不到的原因，再加一格「读到了一篇、少了一篇」——
+    # 这一组的靶子不是文档写错了，是**命令行给的东西**：它比上面任何一层都容易撞，因为那是手打的。
+    # 改之前这三种都是整段 traceback（19:38:55 逐种复现：14／14／12 行，退码都是 1 ——
+    # 跟「量到了、有毛病」同一档，而它什么都没量到），既没有判决也没有退码可言。
+    Cell("B16_两篇里一篇不在", "读到了一篇就得把另一篇的账说出来：那一篇整个不在分母里，退 1",
+         "# t\n\n```bash\n.venv/bin/python scripts/epg_check.py --playlist data/output/aptv.m3u\n```\n",
+         args=("{T}/" + DOC, "{T}/并不存在.md"),
+         rc=1, scanned=1, refs=1, has=("！没读到：<T>/并不存在.md —— 文件不在",
+                               "另有 1 篇没读到（上面那些数只覆盖读到的 1 篇）"),
+         lacks=("一篇都没读到", "该查的都查了", "三种可能", "四种可能", "Traceback")),
+    Cell("B17_两篇都不在", "一篇都没读到 = 这把尺什么都没量到：退 2，跟「读到但没命令」同一档",
+         args=("{T}/甲不在.md", "{T}/乙不在.md"),
+         rc=2, has=("！没读到：<T>/甲不在.md —— 文件不在", "点名的 2 篇一篇都没读到"),
+         lacks=("Traceback", "该查的都查了", "扫了 0 条命令", "三种可能")),
+    Cell("B18_点名的是目录", "2.36 那一族的第二种读法：`IsADirectoryError` 不许再裸崩",
+         args=("{T}",),
+         rc=2, has=("那是个目录，不是文档", "点名的 1 篇一篇都没读到"),
+         lacks=("Traceback", "IsADirectoryError", "文件不在")),
+    Cell("B19_里面不是UTF-8", "同一族第三种：编码不是 UTF-8 —— 改名没用，所以那句话也不许写成「文件不在」",
+         args=("{T}/坏件.bin",), bins=("坏件.bin",),
+         rc=2, has=("读不出来：", "点名的 1 篇一篇都没读到"),
+         lacks=("Traceback", "UnicodeDecodeError", "文件不在", "那是个目录")),
 )
 
 
@@ -1022,15 +1055,25 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     那几句处置提示，全都是这一格要看的东西 —— 只调中间函数就把 `main()` 那三层绕开了。
     这一点和 2.56 一样有个副作用：`main()` 里那个 `now` 是每格重取的，
     所以钟那一格的判决跟着真时间走（`B11` 用 `--allow-untrusted` 绕开，见它的 `rec`）。
+
+    2.62 起 `args` 的语义换了一次：从「往自动那份文档后面追加」改成「这一格自己带全套」
+    （跟 `doc_num.run_cell` 里 `list(cell.argv) or […]` 同一形状）。理由是「点名的文档不在」
+    那一格要的就是**一篇都读不开**的 argv：自动塞进去的那一份会把退码从 2 拉回 1，
+    那一格于是比的是一件没发生过的事（2.59 的 `braced_cells` 拦的是同一种靶子）。
+    改之前那些格没有一格设过 `args`，所以这一改对它们是零影响 —— 中立性两遍量在 §2.62。
+    要拿种出来的那份文档当靶子，自己在 `args` 里写 `{T}/假文档.md`。
     """
     if cell.rec:
         (base / "probe.json").write_text(cell.rec, encoding="utf-8")
     doc = base / DOC
     doc.write_text(cell.body.replace("{T}", str(base)), encoding="utf-8")
+    for name in cell.bins:                    # 「里面不是 UTF-8」那一格：那份件什么都不是
+        (base / name).write_bytes(BIN_BODY)
+    argv = [a.replace("{T}", str(base)) for a in cell.args] or [str(doc)]
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            rc = main([str(doc), *cell.args])
+            rc = main(argv)
     except Exception as e:                        # 尺自己炸了算「跑过但不过」，不许吞
         return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
     text = hide_tmp(buf.getvalue(), base)
@@ -1051,7 +1094,7 @@ def sep_conflicts(cells: tuple[Cell, ...]) -> list[str]:
 
     >>> sep_conflicts((Cell("A_好", "x"), Cell("B、坏", "y"), Cell("C\\n坏", "z")))
     ['B、坏', 'C\\n坏']
-    >>> sep_conflicts(BASELINE)          # 今天这 25 个名字都读得开
+    >>> sep_conflicts(BASELINE)          # 今天这 29 个名字都读得开
     []
     """
     return sep_names(c.who for c in cells)
@@ -1062,7 +1105,7 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
 
     结论行带着「扫了」那个词（`scripts/selfcheck.py` 的 `conclusion()` 靠它挑句子）。
     **顺序是定过的**：过的一格一行先流水，不符期望的那些**留在最后** ——
-    `selfcheck.run_script()` 失败时只摊出末尾 14 行，把 ✗ 排在 25 行 ✓ 中间，
+    `selfcheck.run_script()` 失败时只摊出末尾 14 行，把 ✗ 排在 29 行 ✓ 中间，
     那条 ✗ 到了人眼前就只剩一个「退 1」。
 
     退码：0 = 每格都符合期望；1 = 有格子不符（逐格点名）；2 = 一格都没跑起来。
@@ -1141,7 +1184,8 @@ def main(argv: list[str] | None = None) -> int:
         return self_test()
 
     paths = [Path(d) for d in (args.docs or DEFAULT_DOCS)]
-    n = bad = skipped = 0
+    n = bad = skipped = got = 0
+    unread: list[tuple[str, str]] = []
     miss: list[tuple[str, int, str]] = []
     loose: list[tuple[str, int, str, int]] = []
     broken: list[tuple[str, int, str, str]] = []
@@ -1150,8 +1194,16 @@ def main(argv: list[str] | None = None) -> int:
     prose = 0
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     for doc in paths:
-        raw = (ROOT / doc).read_text(encoding="utf-8") if not doc.is_absolute() \
-            else doc.read_text(encoding="utf-8")
+        # 「读进来」这一道 2.62 才装上：以前这两行是一句裸 `read_text`，点名的文档不在、
+        # 指的是目录、里面不是 UTF-8，三种都抛整段 traceback（19:12:58 复现）。判据不重写一份，
+        # 借数尺的 `read_doc`；这里只加本尺自己的那半句：读不到的那一篇**整个不在分母里**，
+        # 所以它跟 `loose`／`broken` 是同一类东西（都改分母），而不是「某条命令对不上」。
+        raw, why = read_doc(ROOT / doc if not doc.is_absolute() else doc)
+        if raw is None:
+            unread.append((str(doc), why))
+            print(f"！没读到：{doc} —— {why}", file=sys.stderr)
+            continue
+        got += 1
         skipped += raw.count(SKIP_OFF)
         loose += [(str(doc), no, why, hid) for no, why, hid in skip_imbalance(raw)]
         text = strip_skipped(raw)
@@ -1214,12 +1266,25 @@ def main(argv: list[str] | None = None) -> int:
     # 「哪支脚本没进文档」只有把**全套**文档一起扫才有意义：单扫一份的话
     # 另外几份里提到过的一律会被误报成没人知道，那条提醒就成噪音了。
     hidden = undocumented(scripts, refs) if not args.docs else []
+    # 一篇都没读到：这一档跟「读到了但里面没命令」不是一件事，得单独立一句、当场退 2。
+    # 位置要紧 —— 它排在上面那三层**之后**、总结句之前：2.57 那条教训是「已经点名的东西
+    # 不许被『尺没找到东西』盖掉」，这里能点名的都点完了，被跳过的只剩最后那两句
+    # （总结句与「哪支脚本没进文档」）—— 而那两句在没有分母的情况下本来就是说谎。
+    # `dead`/`loose`/`broken` 都在循环里填，所以「一篇都没读到」时它们必然全空，
+    # 早退不会藏掉任何一条名字；`B16` 那几格把这个依赖钉住了。
+    if unread and not got:
+        print(f"点名的 {len(paths)} 篇一篇都没读到 —— 一条命令都没扫到，这一屏不是「文档没问题」。",
+              file=sys.stderr)
+        return 2
     # 顺序要紧：`loose` 排在 `miss` 前面 —— 一个没关的 off 会把后面的行全挖空，
     # 于是「写了 python 却没认成」那个数也跟着少，两个一起说只会把人引到小的那个上。
     # 最后那两分支是 2.57 分出来的：`dead` 非空时那句「上面那些 0 全是空的」是假话 ——
     # 13:34 量到的原话是「0 条命令、1 个脚本名对不上；这一轮一条都没扫到，上面那些 0 全是空的」，
     # 一句话里左边那个 1 当场推翻右边那句「全是空的」。
-    tail = ("；有 off/on 没配上，上面那个数是从少了命令的分母算的" if loose
+    # `unread` 排在最前面是 2.62 加的：它是这四种里最大的一个洞（整篇不在，而不是那几行没查），
+    # 而且它排在 `loose` 之前不会撞 2.57 那条 —— 少一篇文档不会让「off 没配上」跟着少。
+    tail = (f"；另有 {len(unread)} 篇没读到（上面那些数只覆盖读到的 {got} 篇）" if unread
+            else "；有 off/on 没配上，上面那个数是从少了命令的分母算的" if loose
             else f"；还有 {len(broken)} 条不像一条完整的命令（上面逐条点名了），那几条没查" if broken
             else f"；还有 {len(miss)} 行写了 python 却没认成命令，一条都没查 —— 见 --verbose" if miss
             else "；该查的都查了" if n
@@ -1252,7 +1317,9 @@ def main(argv: list[str] | None = None) -> int:
               + ("、该扫的命令全被那对 off/on 圈掉了" if skipped else "")
               + " —— 加 --verbose 看一眼是哪种）")
         return 2
-    return 1 if (bad or dead or loose or broken) else 0
+    # 走到这里 `unread` 只可能是「读到了一些、少了几篇」那一种（全没读到在上面就退 2 了），
+    # 判 1 的理由跟 `loose`／`broken` 完全同形：上面每一个数都少算了一篇文档。
+    return 1 if (bad or dead or loose or broken or unread) else 0
 
 
 if __name__ == "__main__":
