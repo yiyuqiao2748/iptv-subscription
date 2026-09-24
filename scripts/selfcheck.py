@@ -1,6 +1,6 @@
 """一条命令跑完这个项目的全部对账，包括「正在跑的那个页面有没有说谎」。
 
-    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认四条
+    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认五条
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --against /tmp/r226 # 顺手问「报告说的是不是这张表」
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --epg               # 再挂上 EPG 那条（读本地缓存，实测 0.08 秒）
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --port 8799 --skip page
@@ -12,8 +12,11 @@
 那几把尺各自都还新，串起来只是把四条命令变成一个黑盒。今天加它有一条新的理由：
 **有一类失效只有「问一眼正在跑的进程」才看得见**（2.29 那个「99 个台」），
 而我拿眼睛对了一次就不该再对第二次。所以这里真正的增量是 `page` 那一步，
-另外五条（`doctests`/`numbers`/`doc-cmds` 三条默认，`drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
+另外六条（`doctests`/`numbers`/`doc-cmds`/`names` 四条默认，`drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
 （2.21 那把尺会把「文档里出现一个不存在的脚本名」判成漂移）—— 这一节里它是当场做出来的东西。
+**2.55 追记**：上面那句「四条默认」与第 3 行的「默认五条」都是加 `names` 之后的数
+（默认 = 四条离线尺 + `page`）。`names` 只看文件名那一层，为的是 `.git/` 里那种同步盘冲突副本 ——
+加它之前那五把尺一把都不读那里，而 2.54 在同一分钟量到那儿真掉进过三颗。
 """
 from __future__ import annotations
 
@@ -220,23 +223,25 @@ def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
 def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[str, str]]]]:
     """这一轮要跑哪些检查：(名字, 给人看的那句, 怎么跑)。
 
-    默认四条 —— 三条离线尺（`doctests`/`numbers`/`doc-cmds`）+ 那条只有
+    默认五条 —— 四条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`）+ 那条只有
     「问一眼正在跑的进程」才做得到的 `page`。`drift` 和 `epg` 要人点名，各有一条实在的理由：
     `drift` 得先有另一份表放在那儿（没有就是 2，不该混进这一屏）；
     `epg` 回答的不是「说的和算的是不是一回事」，而是「现在这份节目单对我们有几个台有用」——
     那是体检项，不是对账项（它只要 0.08 秒，慢不是它不默认挂上的原因）。
+    `names`（2.55）是**默认挂上**的：它量的是同步盘刚塞进来那一分钟里才会有的东西，
+    点名才跑等于每次都要先记得它存在，而那种「记得」正是这一节要省掉的。
     `--skip` 与「跑不了」是两回事：前者是人不让跑（这一条直接不出现），
     后者会自己变成一条 `·` 判定出现在结果里（那个数要能对上）。
 
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=[])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'page']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'page']
     >>> ns = argparse.Namespace(port=8787, against="/tmp/r226", epg=True, skip=["page"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'drift', 'epg']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'drift', 'epg']
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=["page", "numbers"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'doc-cmds']
+    ['doctests', 'doc-cmds', 'names']
     """
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
@@ -245,6 +250,8 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/doc_num.py"])),
         ("doc-cmds", "文档里的命令还能不能照抄",
          lambda: run_script(["scripts/check_doc_cmds.py"])),
+        ("names", "文件名本身像不像一次事故（含 `.git/`）",
+         lambda: run_script(["scripts/stray_names.py"])),
         ("page", "正在跑的那个页面声称的台数", lambda: check_page(args.port)),
     ]
     if args.against:
@@ -275,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--against", default="", help="顺手跑 table_drift：那份表所在的目录")
     ap.add_argument("--epg", action="store_true", help="把 EPG 那条也挂上（只读本地缓存）")
     ap.add_argument("--skip", action="append", default=[],
-                    help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / drift / epg")
+                    help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / names / drift / epg")
     args = ap.parse_args(argv)
 
     plan = steps(args)
@@ -318,6 +325,9 @@ def main(argv: list[str] | None = None) -> int:
     if "page" in fails:
         print("`page` 那条跟上面那些不是一类：它说的是**正在跑的那个进程**，"
               "磁盘上的东西全对也不会让它自己变好 —— 要么重启服务，要么 `--skip page`。")
+    if "names" in fails:
+        print("`names` 那条说的也不是内容，是**名字**：它点出来的那些是同步盘刚掉进来的东西。"
+              "\n           别在这条命令里顺手 `rm` —— 先 `diff` 一下，确认没用了再搬出仓库（2.55）。")
     return 1 if failed else 0
 
 

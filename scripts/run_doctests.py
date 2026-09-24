@@ -80,7 +80,8 @@ def main(argv: list[str]) -> int:
     if odd:
         for n in odd:
             print(f"✗ 这个不是能导入的模块名：{n!r}"
-                  f" —— 同步盘的冲突副本？先把它弄出 src/，不然用例数是从两份代码里凑的")
+                  f" —— 同步盘的冲突副本？先把它弄出这两个目录（`src/` 与 `scripts/`，"
+                  f"两边都扫），不然用例数是从两份代码里凑的")
         return 1
 
     attempted = failed = 0
