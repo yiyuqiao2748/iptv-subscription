@@ -2439,4 +2439,10 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    # `src.cli` 的入口是自己手写的子命令分派（没有 argparse），所以它认这一旗走
+    # `run_doctests.doctest_gate` 那道门 —— 与另外 11 件「挂进 parser」的写法不同，
+    # 理由写在那一件的说明书里。`scripts/` 得先进搜索路径：这一件是按包跑的（`-m src.cli`）。
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from run_doctests import doctest_gate                       # noqa: E402
+    rc = doctest_gate(sys.argv[1:])
+    raise SystemExit(rc if rc is not None else main(sys.argv[1:]))

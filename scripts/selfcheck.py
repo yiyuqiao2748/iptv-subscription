@@ -88,6 +88,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Sequence
 
+from run_doctests import add_doctest_flag, run_own   # `--doctest` 那一旗的口径只有一份（§2.69）
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "data" / "output"
 EPG_CACHE = ROOT / "data" / "cache" / "epg.xml"
@@ -630,7 +632,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / names / "
                          "self-test / doc-test / num-test / unmarked / um-test / claims / claims-test / "
                          "drift-test / epg-test / lean-test / drift / epg")
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
+    if args.doctest:
+        return run_own(sys.modules[__name__])   # 2.69：先答说明书，一把尺都不跑
 
     plan = steps(args)
     if not plan:

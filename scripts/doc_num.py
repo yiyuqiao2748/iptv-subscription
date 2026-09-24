@@ -52,6 +52,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from baseline_guard import guard as guard_names  # noqa: E402  三把基线尺共用那道顿号闸
+from run_doctests import add_doctest_flag, run_own   # noqa: E402  `--doctest` 那一旗的口径只有一份
 from probe_pack import (base_of, channel_groups, focus_by_host,  # noqa: E402
                         host_of, load_results, load_stats)
 from src.check.scope import PUBLIC, load_reachability            # noqa: E402
@@ -474,7 +475,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="只印现在算出来的每个键是多少，不对文档")
     ap.add_argument("--self-test", action="store_true", dest="self_test",
                     help=f"往临时目录里种 {len(BASELINE)} 格已知好坏的文档，问这把尺自己还咬不咬得动")
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
+    if args.doctest:
+        return run_own(sys.modules[__name__])   # 2.69：先答说明书，一篇文档都不读
     if args.self_test:
         return self_test()           # 先跑掉：这一档一个字都不该读仓库里那三篇文档
 

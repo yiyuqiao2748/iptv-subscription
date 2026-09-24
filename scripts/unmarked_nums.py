@@ -65,8 +65,8 @@ from baseline_guard import guard as guard_names  # noqa: E402
 # 「跑自己那一份用例」怎么说话，口径只有一份（2.68）：这一支以前是
 # `raise SystemExit(doctest.testmod(verbose=False).failed)`，量到 50 条和一条都没量到
 # 在这一屏上完全同形 —— 都是 0 字节、都退 0。
-from run_doctests import run_own  # noqa: E402
-# 收尾那一句「合计 N 个用例」的口径只有一份（2.68）：写在这里的是调用，不是又一版判据。
+# （2.69 顺手删掉的一处重复：同一个 `from run_doctests import run_own` 在这里写了两遍，
+# 各带一段注释 —— 两份注释说的是同一件事，第二份是 2.68 收尾时贴上去没对上位置。）
 from run_doctests import run_own  # noqa: E402
 
 FENCE = re.compile(r"^\s*```")
@@ -483,11 +483,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="把只报数的那两档（戊/己）也逐条摊开")
     ap.add_argument("--self-test", action="store_true", dest="self_test",
                     help=f"往临时目录里种 {len(BASELINE)} 格已知形状的文档，问这把尺分桶分得对不对")
-    # `--doctest` 不在 `main()` 里走，它在模块末尾先被拦下（那 30 格是调 `main(argv)`，
-    # 让这一支进 `main` 就等于让基线去跑基线）。写进 argparse 只为了一句：文档尺会拿
-    # `--help` 核对每一条长参数，不写进来的话，计划书里那条照抄的命令会被判「对不上」。
+    # `--doctest` 挂进 parser 有两重身份：一是 `--help` 里看得见它（文档尺会拿每一条长参数
+    # 核对这里，不写进来的话计划书里那条照抄的命令会被判「对不上」），二是 `main()` 里读它
+    # —— 2.69 之前只有前一重：挂号在 parser、应答在模块收尾，于是 `main(["--doctest"])`
+    # 这一种调法（基线格子调尺子就是这一种）会越过收尾、直接去读那两篇真文档。
     ap.add_argument("--doctest", action="store_true",
-                    help="只跑它自己的 doctest（在 `main()` 之前拦下，所以这一屏不会读任何文档）")
+                    help="只跑它自己的 doctest（读 `args.doctest`，所以这一屏不会读任何文档）")
     return ap.parse_args(argv)
 
 
@@ -526,6 +527,8 @@ def read_all(paths: Sequence[Path]) -> tuple[list[tuple[str, str]], list[tuple[s
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.doctest:
+        return run_own(sys.modules[__name__])   # 2.69：答在 `main()` 里，不在收尾那一道
     if args.self_test:
         return self_test()            # 先跑掉：这一档一个字都不该读仓库里那两篇文档
     paths = doc_paths(args.docs)
@@ -818,6 +821,7 @@ def self_test() -> int:
 
 
 if __name__ == "__main__":
-    if "--doctest" in sys.argv:
-        raise SystemExit(run_own(sys.modules[__name__]))
+    # 2.69 起这一支不再自己拦旗：挂号与应答都在 `main()` 里（`parse_args` + `args.doctest`），
+    # 与 `code_claims` 同一个形状。留在收尾拦一道的话，`main(["--doctest"])` 就绕过了它 ——
+    # 那一遍会去读两篇真文档，屏幕上却一句也不说这一屏量的不是文档。
     raise SystemExit(main(sys.argv[1:]))

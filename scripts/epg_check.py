@@ -54,6 +54,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from baseline_guard import guard as guard_names          # noqa: E402  顿号那道闸（几把基线尺共用）
+from run_doctests import add_doctest_flag, run_own       # noqa: E402  `--doctest` 那一旗的口径只有一份
 from doc_num import hide_tmp, read_doc                   # noqa: E402
 from src.check.epg import align_all, coverages, load_bytes, parse_tv # noqa: E402
 from src.cli import load_epg_config                        # noqa: E402
@@ -878,7 +879,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--self-test", action="store_true",
                     help="不问 EPG，只问这把尺自己还咬得动吗：往临时沙盒里种基线那几格表，"
                          "一格一格看退码和屏幕上的句子对不对得上（一个请求都不发，也不需要 --playlist 真的存在）")
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
+    if args.doctest:
+        return run_own(sys.modules[__name__])   # 2.69：先答说明书，一个请求都不发
     if args.self_test:
         return self_test()
 

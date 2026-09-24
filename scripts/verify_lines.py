@@ -34,6 +34,7 @@ from src.check import history as hist  # noqa: E402
 from src.check.env import egress_hint, measurement_warnings  # noqa: E402
 from src.check.prober import is_fake_live, l3_roll, probe_many  # noqa: E402
 from src.parse.m3u import parse_m3u  # noqa: E402
+from run_doctests import add_doctest_flag, doctest_gate   # noqa: E402  §2.69：旗的口径只有一份
 
 _VERDICT = {"rolling": "✅ 真直播", "stuck": "❌ 列表不动（残留/循环）",
             "vod": "❌ 录播（ENDLIST）", "master": "— 索引，未判定",
@@ -103,6 +104,12 @@ def write_roll_history(pairs: list[tuple[str, dict]], *, path: Path) -> int:
 
 
 def main(argv: list[str]) -> int:
+    rc = doctest_gate(argv)
+    if rc is not None:
+        # 2.69：这一件的 `m3u` 是**必填位置参数**，所以门必须排在 `parse_args` 之前 ——
+        # 先 `add_doctest_flag` 再 `if args.doctest`（另外十件的写法）在这里到不了：
+        # 02:14:43 实测 rc 2、299 字节，argparse 报的是「the following arguments are required: m3u」。
+        return rc
     ap = argparse.ArgumentParser()
     ap.add_argument("m3u")
     ap.add_argument("--timeout", type=int, default=12)
@@ -116,6 +123,7 @@ def main(argv: list[str]) -> int:
                     help="把 --roll 的结论回填进实测履历（需和 build 时用同一个出口，"
                          "代理 TUN 开着会拒绝写入）")
     ap.add_argument("--history", default=str(ROOT / "data" / "output" / "probe-history.jsonl"))
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
 
     entries = parse_m3u(Path(args.m3u).read_text(encoding="utf-8"), source="out").entries

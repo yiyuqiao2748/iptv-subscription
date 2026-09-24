@@ -26,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "output"
+from run_doctests import add_doctest_flag, run_own   # noqa: E402  `--doctest` 那一旗的口径只有一份
 LOG_DIR = ROOT / "data" / "logs"
 ALLOWED = {"aptv.m3u", "hunan.m3u", "hunan-lean.m3u", "test.m3u",
            "probe-pack.m3u", "report.md"}
@@ -316,7 +317,11 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description="在局域网内提供 m3u 订阅")
     ap.add_argument("--port", type=int, default=8787)
+    add_doctest_flag(ap)
     args = ap.parse_args()
+    if args.doctest:
+        # 2.69：这一支排在绑端口之前 —— 递 `--doctest` 不该起一个监听、也不该写一行请求日志。
+        return run_own(sys.modules[__name__])
 
     if not OUT_DIR.exists():
         print(f"还没有生成产物，先跑：{sys.executable} -m src.cli build", file=sys.stderr)

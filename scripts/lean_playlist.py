@@ -39,6 +39,8 @@ import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
+from run_doctests import add_doctest_flag, run_own   # `--doctest` 那一旗的口径只有一份（§2.69）
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "output"
 
@@ -485,8 +487,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--limit", type=int, default=0, help="只保留前 N 个频道，0=全部")
     ap.add_argument("--self-test", action="store_true",
                     help="不问表，只问这一支自己还咬得动吗：往临时沙盒里种基线那 12 格，逐格对")
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
 
+    if args.doctest:
+        return run_own(sys.modules[__name__])   # 2.69：先答说明书，一张表都不读
     if args.self_test:
         return self_test()
 

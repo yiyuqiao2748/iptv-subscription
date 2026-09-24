@@ -78,6 +78,8 @@ from doc_num import BIN_BODY, read_doc          # noqa: E402
 # 2.66 同上：「这一处是不是在引用别人的话」这一判据 `code_claims` 已经修过一次（2.60 那句
 # 「一个 「」 就够把整句真引用一起豁免」），这里不许再粗判一遍。
 from code_claims import quote_spans             # noqa: E402
+# 2.69 同上：`--doctest` 这一旗在哪一层被认、那一屏说什么话，都不许每件写一遍。
+from run_doctests import add_doctest_flag, has_parser, run_own   # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # 「会自己过期的命令」那一层要复用 `src.cli` 里的 `build_parser()` / `replay_gate()`
@@ -864,7 +866,7 @@ def check_one(target: list[str], body: str, *, verbose: bool = False) -> str:
 
     三种「不算错」的情况要写明，否则这把尺会自己制造恐慌：
 
-      * 目标脚本根本没写 argparse（`run_doctests.py` 就是）—— 它不认 `--help`，
+      * 目标脚本根本没建 argparse 的关（`run_doctests.py` 就是）—— 它不认 `--help`，
         但文档里那行照抄是能跑的，所以不能报「参数不存在」；
       * `--help` 都跑不出来（脚本被删了 / 子命令写错）—— 这个**是真错**；
       * 只查长参数，短参数与取值不管。
@@ -884,14 +886,14 @@ def check_one(target: list[str], body: str, *, verbose: bool = False) -> str:
         if names and sub and sub not in names and sub.replace("-", "_") not in names:
             return (f"{target[1]} 没有「{sub}」这个子命令（只认 {'、'.join(sorted(names))}）"
                     "—— 它自己现在会退 2（2.21），这一层仍按 `def cmd_*` 判，两道闸各管各的")
-        if not names and "argparse" not in text:
+        if not names and not has_parser(text):
             if verbose:
                 print(f"    （{target[1]} 既没有 cmd_* 也没有 argparse：无从判断）")
             return ""
     script = ROOT / target[0] if target[0] != "-m" else None
     if script is not None and not script.exists():
         return f"找不到 {target[0]}（脚本被删了还是文档写错了？）"
-    if script is not None and "argparse" not in script.read_text(encoding="utf-8"):
+    if script is not None and not has_parser(script.read_text(encoding="utf-8")):
         if verbose:
             print(f"    （{target[0]} 没有 argparse，不认 --help：只核对文件在不在）")
         return ""
@@ -1379,7 +1381,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verbose", action="store_true", help="每条命令的判定都打出来")
     ap.add_argument("--self-test", action="store_true", dest="self_test",
                     help=f"往临时文件里种已知好坏的 {len(BASELINE)} 格文档，逐格核对这把尺说了什么")
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
+    if args.doctest:
+        # 排在 `--self-test` 之前：这一支连临时沙盒都不建，只读说明书。
+        return run_own(sys.modules[__name__])
     if args.self_test:
         # 这一档不读任何真文档，所以它排在 `paths` 之前；`docs` 参数一起给了也不生效（明说了）。
         return self_test()

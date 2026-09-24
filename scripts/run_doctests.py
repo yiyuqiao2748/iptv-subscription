@@ -11,12 +11,18 @@
 
     .venv/bin/python scripts/run_doctests.py          # 全部
     .venv/bin/python scripts/run_doctests.py prober   # 只跑名字里含 prober 的文件
+    .venv/bin/python scripts/run_doctests.py --doctest  # 只跑本件这一份用例
 
 2.68 起这里还多管一件事：**别的脚本自己那条 `--doctest` 支路怎么说结果**。那些支路以前
 一律写成 `raise SystemExit(doctest.testmod(verbose=False).failed)` —— 量到 31 条也好、
 一条都没量到也好，屏幕上都是 0 字节，而「一条都没量到」还照样退 0。
 `run_own` 就是那一支的正确写法（`own_line` 是它要说的那句话）。放在这里而不是各写一份，
 理由和 2.58 把「顿号闸」挪进 `baseline_guard` 一样：口径只有一份，下一把尺不必再抄一遍注释。
+
+2.69 再把这条支路往外推一步：`doctest_gate` 是「认得这面旗」的那一道门，一件脚本只要在
+收尾处问它一句，`--doctest` 就答自己的用例数，而不是把旗当成一个路径、一个子命令、
+或者一份 argparse 的「未识别的参数」。跑全量那一遍会在末尾印整棵树的形状
+（`survey_routes`），而「挂了号却没人应答」那种件由 `dead_flag_doors` 静态拦一道。
 """
 
 from __future__ import annotations
@@ -172,6 +178,75 @@ def run_own(mod) -> int:
     return 1 if res.failed else 0
 
 
+DOCTEST_FLAG = "--doctest"
+
+
+def add_doctest_flag(ap) -> None:
+    """给一把握关挂上 `--doctest` 这一旗，让它在 `--help` 里看得见。
+
+    为什么要共享这一句而不是每件自己写：`--help` 是这仓库里唯一一份**公开的旗标登记处** ——
+    命令尺（2.45／2.54 那一把）拿文档里每一条长参数去问的就是这里。门只写在收尾、
+    `--help` 里没有这一旗，那句话在尺子眼里就是「文档里写了照抄会失败」：
+    `unmarked_nums` 的注释里记着同一条约束（「写进 argparse 只为了一句：文档尺会拿 `--help`
+    核对每一条长参数」）。这一句把那本账接过来，一件不必再抄一遍理由。
+
+    挂两遍不放过：argparse 当场 `ArgumentError`。两个入口比一个入口糟（2.68 收尾删掉的
+    那一条重复支路就是这一族），所以让它响，不静默幂等。
+
+    >>> import argparse
+    >>> ap = argparse.ArgumentParser(prog="x.py")
+    >>> add_doctest_flag(ap)
+    >>> ap.parse_args(["--doctest"])
+    Namespace(doctest=True)
+    >>> ap.parse_args([]).doctest
+    False
+    >>> add_doctest_flag(ap)                                   # 挂第二遍：响
+    Traceback (most recent call last):
+        ...
+    argparse.ArgumentError: argument --doctest: conflicting option string: --doctest
+    """
+    ap.add_argument(DOCTEST_FLAG, action="store_true",
+                    help="只跑本文件说明书里的那些用例（不是 --self-test 的那些基线格子）")
+
+
+def doctest_gate(argv: list[str], mod=None) -> int | None:
+    r"""`--doctest` 的那一道门：旗在就跑用例并把退码递回去，旗不在返回 `None`。
+
+    用在**没有 argparse** 的那两件上（`run_doctests` 自己只收一个子串、`src.cli` 是自己
+    手写的子命令分派）。有 argparse 的件走另一条：`add_doctest_flag` 把旗挂进 parser，
+    收尾一句 `if args.doctest: return run_own(...)`。两种写法并存不是没收干净，是
+    「这一旗该在哪一层被认」本来就跟着那件收不收参数走 —— 收集器自己不认任何长参数，
+    给它挂一个 parser 等于为了一个旗重写它的入口。
+
+    为什么是「返回退码」而不是在门里自己 `raise SystemExit`：那样这一件事的门就**测不了**了 ——
+    测它的那条例子得跑在 `__main__` 里，而它一跑就把整个收集器带走。递退码出来，
+    例子可以拿一个假件喂 `mod`，本件的其余用例不必陪葬。这一族病和
+    `run_own` 那句「`mod` 必须点名递进来」是同一个：收尾那一步的可见性不能靠运气。
+
+    和 `--self-test` 不是一回事：那一旗跑的是各把尺的**基线格子**（沙盒里种假件），
+    这一旗跑的是**说明书里的例子**。
+
+    >>> import contextlib, io, types
+    >>> def fake(doc):                                    # 现造一件只有说明书的
+    ...     m = types.ModuleType("假件"); m.__doc__ = doc; return m
+    >>> doctest_gate(["docs/x.md"], mod=fake(">>> 1 + 1\n2\n")) is None   # 没递旗：门不拦
+    True
+    >>> buf = io.StringIO()
+    >>> with contextlib.redirect_stdout(buf):             # 旗在、外面还跟着真参数
+    ...     rc = doctest_gate(["--doctest", "docs/x.md"], mod=fake(">>> 1 + 1\n2\n"))
+    >>> rc, buf.getvalue().strip()
+    (0, '合计 1 个用例，0 个失败（量的件：假件）')
+    >>> buf = io.StringIO()
+    >>> with contextlib.redirect_stdout(buf):             # 旗在、可这一件没写例子：退 2
+    ...     rc = doctest_gate(["--doctest"], mod=fake("全是话，一条例子都没有"))
+    >>> rc, buf.getvalue().startswith("一条用例都没收到")
+    (2, True)
+    """
+    if DOCTEST_FLAG not in argv:
+        return None
+    return run_own(sys.modules["__main__"] if mod is None else mod)
+
+
 def bare_testmod_in(src: str) -> bool:
     r"""这段 .py 的**代码**里有没有「没点名量哪个件」的 `testmod()`（说明书里的字不算）。
 
@@ -228,12 +303,11 @@ def no_bare_testmod(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts",)) -> lis
                   and bare_testmod_in(p.read_text(encoding="utf-8")))
 
 
-DOCTEST_FLAG = "--doctest"
-
 ROUTE_RUNS = "走通"
-ROUTE_IGNORES = "不看参数"
+ROUTE_NO_FLAG = "不用旗标"
+ROUTE_ARGPARSE = "argparse 拦"
 ROUTE_AS_ARG = "当成一个参数"
-ROUTE_NO_DOOR = "根本没有入口"
+ROUTE_NO_DOOR = "没有入口"
 
 
 def _tree(src: str):
@@ -241,40 +315,6 @@ def _tree(src: str):
         return ast.parse(src)
     except SyntaxError:
         return None
-
-
-def _docstring_nodes(tree) -> set[int]:
-    """docstring 那几颗常量节点的位置 —— 下面的字面量统计要避开它们。
-
-    为什么避开：`no_bare_testmod` 那一刀已经付过一次学费（01:16:05），扫原文的闸分不清
-    「提到」和「用了」；这一层同理 —— 一件脚本在说明书里写「用法：`--doctest`」，
-    不等于它的代码认得这个开关。
-    """
-    out: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            for stmt in node.body:
-                if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
-                    out.add(id(stmt.value))
-    return out
-
-
-def code_strings(src: str) -> set[str]:
-    r"""这段 .py 的**代码**里出现过的字符串字面量（docstring 不算）。
-
-    >>> sorted(code_strings('if x == "--doctest":\n    pass\n'))
-    ['--doctest']
-    >>> code_strings("'''用法：--doctest'''\n")     # 只在说明书里提：不算
-    set()
-    >>> code_strings("def f(:\n")                    # 读不通：给空集，让它落进最坏那一档
-    set()
-    """
-    tree = _tree(src)
-    if tree is None:
-        return set()
-    skip = _docstring_nodes(tree)
-    return {c.value for c in ast.walk(tree)
-            if isinstance(c, ast.Constant) and isinstance(c.value, str) and id(c) not in skip}
 
 
 def example_count(src: str) -> int:
@@ -341,47 +381,317 @@ def reads_argv(src: str) -> bool:
                or (isinstance(c, ast.Name) and c.id == "argv") for c in ast.walk(tree))
 
 
-def calls_run_own(src: str) -> bool:
-    """这份件有没有用上 `run_own`（写成 `run_own(...)` 或 `x.run_own(...)` 都算）。
+OWN_DOORS = ("run_own", "doctest_gate")
 
-    >>> calls_run_own("from run_doctests import run_own\\nrun_own(m)")
+
+def _door_nodes(tree) -> set:
+    """门自己那几段函数体里的节点 —— 问「有没有人叫它」时要把这一片挖掉。
+
+    为什么要挖：这两道门的**体内**天生就写着「调用 `run_own`」「把 `DOCTEST_FLAG`
+    拿去和 argv 比」 —— 那是门的写法，不是这一件的写法。不挖的话，
+    「定义了一道没人叫的门」与「收尾叫了那一声明」在静态上长得一模一样，
+    而 2.69 变异机 `N1` 那一刀（把收尾 `rc = doctest_gate(...)` 换成 `rc = None`）
+    两面全绿 —— 本节要抓的正是这个形状，它和 §2.68 的 `M16` 是同一种病。
+    """
+    return {id(n) for fn in ast.walk(tree)
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and fn.name in OWN_DOORS for n in ast.walk(fn)}
+
+
+def calls_outside_door(src: str, names: tuple[str, ...]) -> bool:
+    """`names` 里那些名字，有没有在**门的外面**被调用一次。
+
+    >>> calls_outside_door("raise SystemExit(doctest_gate(a))", OWN_DOORS)
     True
-    >>> calls_run_own("'''说的是 run_own 这件事'''\\n")   # 说明书里提一句：不算
+    >>> calls_outside_door("def doctest_gate(a):\\n    return run_own(m)", OWN_DOORS)
+    False
+    >>> calls_outside_door("'''说的是 run_own 这件事'''\\n", OWN_DOORS)   # 说明书里提一句：不算
+    False
+    """
+    tree = _tree(src)
+    if tree is None:
+        return False
+    inside = _door_nodes(tree)
+    return any(isinstance(c, ast.Call) and id(c) not in inside
+               and ((isinstance(c.func, ast.Name) and c.func.id in names)
+                    or (isinstance(c.func, ast.Attribute) and c.func.attr in names))
+               for c in ast.walk(tree))
+
+
+def runs_own_cases(src: str) -> bool:
+    """这份件有没有**被走到**「跑自己那份用例」的路（`run_own` 与 `doctest_gate` 都算）。
+
+    为什么要认两道门：`run_own` 是 2.68 之前那三件手写的形状（自己先认旗、再叫号），
+    `doctest_gate` 是 2.69 起其余那些件的写法（把认旗这一步也交给共用的一件）。
+    两道门后面是同一个 `run_own`，所以这一句问的是「它有没有那一条支路」，不是「它怎么写」。
+    2.69 起这一句还多认一层：**只在门体内出现的调用不算**（见 `_door_nodes`）。
+
+    >>> runs_own_cases("from run_doctests import run_own\\nrun_own(m)")
+    True
+    >>> runs_own_cases("rc = doctest_gate(sys.argv[1:])")
+    True
+    >>> runs_own_cases("'''说的是 run_own 这件事'''\\n")   # 说明书里提一句：不算
+    False
+    >>> runs_own_cases("def run_own(m):\\n    return 0\\n")  # 自己定义一个同名件：也不算走过
+    False
+    """
+    return calls_outside_door(src, OWN_DOORS)
+
+
+def calls_parse_args(src: str) -> bool:
+    """这份件有没有把参数交给 `argparse`（`p.parse_args()` 是一种**不提 `argv` 就读 `argv`** 的写法）。
+
+    为什么必须会这一句：`route_shape` 老版本问的是「代码里提没提 argv」，而 `parse_args()`
+    从来不提 —— 于是 2.68 那句现状把 `probe_pack`／`serve_lan` 分进了「不看参数」，
+    并顺着写出「递 `--doctest` 给它们的语义正好是去干你自己的活」（§2.68 边界第 2 条）。
+    01:55:51 真跑那两遍：`usage: probe_pack.py [-h] ...`、131 字节、退 2，
+    `data/output/` 一个字节的 mtime 都没动；`serve_lan` 同形（94 字节、一个端口都没听）。
+    **那句话是假的**，判据就是这里补的：会拦旗标的那一位不是件自己，是 argparse。
+
+    >>> calls_parse_args("args = p.parse_args()")
+    True
+    >>> calls_parse_args("args, rest = p.parse_known_args(argv)")
+    True
+    >>> calls_parse_args("raise SystemExit(main(sys.argv[1:]))")
+    False
+    >>> calls_parse_args("'''用法里写着 p.parse_args()'''\\n")   # 说明书里提一句：不算
     False
     """
     tree = _tree(src)
     if tree is None:
         return False
     return any(isinstance(c, ast.Call)
-               and ((isinstance(c.func, ast.Name) and c.func.id == "run_own")
-                    or (isinstance(c.func, ast.Attribute) and c.func.attr == "run_own"))
+               and isinstance(c.func, ast.Attribute)
+               and c.func.attr in ("parse_args", "parse_known_args")
                for c in ast.walk(tree))
 
 
-def route_shape(src: str) -> str:
-    """直接跑 `python 这份件 --doctest` 会发生什么 —— 四档里的一档。
+def has_parser(src: str) -> bool:
+    """这份件自己**建了一把 argparse 的关**没有 —— 造 `ArgumentParser`、或调 `parse_args`。
 
-    这一把尺要量的是**约定到底覆盖了谁**：2.68 给三条支路换上了 `run_own`，屏幕上就有了
-    「合计 N 个用例」这句话，于是它看着像全项目的规矩。01:33:44 拿整棵树量过：
-    认这个开关的件是极少数，其余的递 `--doctest` 进去各走各的路，最坏的一档不是「不跑用例」，
-    而是**它照干自己的活**（写盘、起服务）—— 那两件事本节没有实测，判定只看静态。
+    为什么要有这一句，而不是「文件里提没提 `argparse` 这个词」：命令尺里有一条豁免，
+    「目标脚本没有 argparse ⇒ 它不认 `--help`，别报参数不存在」，2.69 之前那一句话写成
+    字面量 `not in text`。本节给收集器写了 `add_doctest_flag`（它的说明书里有
+    `import argparse`），而收集器自己仍然一把握关都没有 —— 那个字面量判据于是把
+    「提了一嘴」读成「有一把关」，豁免再也不成立，`check_doc_cmds` 的 `B10` 当场红了
+    （02:18 实测：`run_doctests.py --help` 答的是「我不收旗标」、退 2）。
+    跟上面 `_registers_flag` 同一个取舍：**走 AST，只认真会执行的那几种调用**。
 
-    >>> route_shape('if "--doctest" in a:\\n    run_own(m)\\n')
-    '走通'
-    >>> route_shape('if __name__ == "__main__":\\n    run_own(m)\\n')     # 不看参数，递什么都跑自己
-    '不看参数'
-    >>> route_shape('raise SystemExit(main(sys.argv[1:]))')               # 递进去就是个路径
-    '当成一个参数'
-    >>> route_shape("def f():\\n    pass\\n")                             # 纯库：静默退 0
-    '根本没有入口'
-    >>> route_shape("def f(:\\n")                                         # 读不通：也算静默那一档
-    '根本没有入口'
+    >>> has_parser("ap = argparse.ArgumentParser()")
+    True
+    >>> has_parser("args = p.parse_args(argv)")
+    True
+    >>> has_parser("import argparse\\nap = argparse.Namespace()")   # 只有那个词：不算有关
+    False
+    >>> has_parser("'''用法：p.parse_args()'''\\n")                  # 说明书里提一句：也不算
+    False
+    >>> has_parser("def f(:\\n")                                     # 读不通：不替它认账
+    False
     """
-    if DOCTEST_FLAG in code_strings(src) and calls_run_own(src):
+    tree = _tree(src)
+    if tree is None:
+        return False
+    for c in ast.walk(tree):
+        if not isinstance(c, ast.Call):
+            continue
+        f = c.func
+        name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+        if name in ("ArgumentParser", "parse_args", "parse_known_args"):
+            return True
+    return False
+
+
+def docs_claim_flag(src: str) -> bool:
+    """这份件的**模块说明书**里写没写 `--doctest` 这一旗。
+
+    只看模块级那一段：那是给人抄的用法。函数 docstring 里提一句「上面那个门怎么写的」
+    不算这一件对外承诺了这个旗标。
+
+    >>> docs_claim_flag("'''用法：\\n    python x.py --doctest\\n'''")
+    True
+    >>> docs_claim_flag("'''只跑全量：\\n    python x.py\\n'''")
+    False
+    >>> docs_claim_flag("def f(:\\n")                       # 读不通：不替它认账
+    False
+    """
+    tree = _tree(src)
+    return tree is not None and DOCTEST_FLAG in (ast.get_docstring(tree) or "")
+
+
+def _registers_flag(tree) -> bool:
+    """代码里有没有把 `--doctest` **挂进 parser**（两种写法：共用那一句 `add_doctest_flag`，
+    或自己 `ap.add_argument("--doctest", ...)`）。
+
+    走 AST 而不是扫字面量：说明书里写「用法：`--doctest`」不是挂号。
+    """
+    for c in ast.walk(tree):
+        if not isinstance(c, ast.Call):
+            continue
+        f = c.func
+        name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+        if name == "add_doctest_flag":
+            return True
+        if name == "add_argument" and any(isinstance(a, ast.Constant)
+                                         and a.value == DOCTEST_FLAG for a in c.args):
+            return True
+    return False
+
+
+def flag_answer(src: str) -> str:
+    """这一件是从哪一层应答 `--doctest` 的 —— 三种答法之一，或者「没有应答」。
+
+    为什么要分清答法、而不只问「有没有答」：三种答法的**可达性不一样**。排在
+    `parse_args` 后面那一种（读 `args.doctest`）得先过 argparse 那一关，
+    而 argparse 遇到缺了的必填位置参数会直接退 2 —— 应答那一行就再也读不到。
+    02:14:43 在 `verify_lines` 上撞到的正是这一条：`add_doctest_flag` 挂了、
+    `if args.doctest:` 也写了，屏幕上仍是 299 字节的 usage（「required: m3u」）。
+
+    本节后半又加了一条规矩：**「门里写着」不算这一件应答了**（理由见 `_door_nodes`）——
+    那一版的答法只认「字面量在不在文件的字符串里」，而 `DOCTEST_FLAG = "--doctest"`
+    那一行定义本身就是这样一个字面量，于是「定义了一声明没人叫的门」被读成「应答过」。
+    `N1` 那一刀两面全绿量出来的就是这一处。
+
+    >>> flag_answer("if args.doctest:\\n    return 0")
+    'parser'
+    >>> flag_answer("rc = doctest_gate(argv)")
+    '门'
+    >>> flag_answer('if "--doctest" in sys.argv:\\n    print(1)')
+    '自己比字面量'
+    >>> flag_answer("def doctest_gate(a):\\n    if DOCTEST_FLAG not in argv:\\n        return None")
+    '没有应答'
+    >>> flag_answer('print("这一件不认任何旗")')
+    '没有应答'
+    """
+    tree = _tree(src)
+    if tree is None:
+        return "没有应答"
+    if any(isinstance(n, ast.Attribute) and n.attr == "doctest" for n in ast.walk(tree)):
+        return "parser"
+    if calls_outside_door(src, OWN_DOORS):
+        return "门"
+    inside = _door_nodes(tree)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Compare) and id(n) not in inside:
+            operands = [n.left, *n.comparators]
+            if any((isinstance(o, ast.Constant) and o.value == DOCTEST_FLAG)
+                   or (isinstance(o, ast.Name) and o.id == DOCTEST_FLAG) for o in operands):
+                return "自己比字面量"
+    return "没有应答"
+
+
+def _needs_positional(src: str) -> bool:
+    r"""这把握关有没有一个**非递不可**的位置参数（`ap.add_argument("m3u")` 那种）。
+
+    带 `nargs` 或 `default` 的不算：那两种可以一个都不给 ——
+    `check_doc_cmds` 的 `[docs ...]` 就是这一种，所以它把应答挂在 `parse_args` 后面走得通。
+
+    >>> _needs_positional('ap.add_argument("m3u")')
+    True
+    >>> _needs_positional('ap.add_argument("docs", nargs="*")')
+    False
+    >>> _needs_positional('ap.add_argument("--top", type=int)')
+    False
+    """
+    tree = _tree(src)
+    if tree is None:
+        return False
+    for c in ast.walk(tree):
+        if not isinstance(c, ast.Call) or getattr(c.func, "attr", "") != "add_argument":
+            continue
+        if not c.args or not isinstance(c.args[0], ast.Constant):
+            continue
+        name = c.args[0].value
+        if not isinstance(name, str) or name.startswith("-"):
+            continue
+        if not any(k.arg in ("nargs", "default") for k in c.keywords):
+            return True
+    return False
+
+
+def dead_flag_doors(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts",
+                                                       ROOT / "src")) -> list[str]:
+    """对 `--doctest` 作了承诺（写进用法、或挂进 parser）、可那一旗到不了应答的件 —— 应该是空表。
+
+    为什么要有这一道：这一族的第一个实例不是假设，是本节当场撞出来的两件之一 ——
+    `unmarked_nums` 在 parser 里挂了这一旗（挂号的理由还写着「文档尺会拿 `--help`
+    核对每一条长参数」），可 `main()` 里**从来不读 `args.doctest`**，读它的位置在模块收尾。
+    命令行那一遍是对的（收尾先拦），而 `main(["--doctest"])` 这一种调法 ——
+    基线格子调尺子就是这一种 —— 会越过收尾直接去读那两篇真文档。
+    **字还在、路已死**：§2.68 变异机 `M16` 那一刀的形状在这里真发生过一次。
+
+    死法有两种，这一道两种都问（第二种是 02:14:43 在 `verify_lines` 上补进来的）：
+
+    1. 作了承诺、没有人应答；
+    2. 应答写了，可它排在 `parse_args` 后面，而这把握关有一个必填位置参数 —— 那一行永远读不到。
+
+    「没有人应答」按 `flag_answer` 那三种答法判，**定义了一道门、可全文件没人叫它** 也算没人应答
+    （`N1` 那一刀：把收尾那一句叫门换成 `rc = None`，两面全绿了三次复测才把它接上）。
+
+    名字不像模块名的（同步盘冲突副本）不看，理由同 `no_bare_testmod`。
+
+    >>> dead_flag_doors()
+    []
+    >>> dead_flag_doors((ROOT / "config",))       # 那里没有 .py：空表，不替它编一个错
+    []
+    """
+    out = []
+    for path in sum((list(d.rglob("*.py")) for d in dirs), []):
+        if not path.stem.isidentifier():
+            continue
+        src = path.read_text(encoding="utf-8", errors="replace")
+        tree = _tree(src)
+        if tree is None:
+            continue                              # 读不通的件不归这一道管：收集器先就走不动
+        if not (docs_claim_flag(src) or _registers_flag(tree)):
+            continue
+        how = flag_answer(src)
+        if how == "没有应答" or (how == "parser" and _needs_positional(src)):
+            out.append(path.name)
+    return sorted(out)
+
+
+def route_shape(src: str) -> str:
+    """直接跑 `python 这份件 --doctest` 会走到哪条路上 —— 五档里的一档。
+
+    这一把尺要量的是**约定到底覆盖了谁**。2.68 那一版是四档、按「代码里提没提 argv」分，
+    于是把「`parse_args` 不提 argv 却会退 2」和「`run_own` 不看旗标也照样跑用例」两类都读错了；
+    2.69 这一版改问「**这个旗标会被谁拦下**」，五档的判据都对着 01:55:51／01:59:14 两遍实测：
+
+    * `走通` —— 件自己问了那道门，答的是它自己的用例数。
+    * `不用旗标` —— 没有门，可它收尾根本不看参数：递什么都跑自己那一份（`baseline_guard`）。
+    * `argparse 拦` —— 旗标到不了件自己手里，`parse_args` 先印 usage、退 2：不跑用例，也不干活。
+    * `当成一个参数` —— 旗标被当成一个路径／子命令递进去了：最坏的一档，因为件的答复听着像判决。
+    * `没有入口` —— 纯库，没有 `if __name__ == "__main__"`：这一档有两种坏法，
+      带绝对导入的那件 traceback 退 1，其余的 **0 字节退 0**（01:59:14 实测 11 件里 7 件）。
+
+    判定只看**静态**：这一把认的是「字在不在」，不是「跑起来怎么样」——
+    门被写死成永远返回 `None` 时这里照样报 `走通`（那是 §2.68 变异机 `M16` 那一刀的形状，
+    本节仍然没有把它接成仓库里的实跑，理由与边界见计划书 §2.69）。
+    反过来，「定义了门、可全文件没人叫它」（`N1`）这一把认得出来：2.69 起
+    `runs_own_cases` 问的是「门的外面有没有一句调用」，不是「文件里有没有这些字」。
+
+    >>> route_shape('if __name__ == "__main__":\\n    doctest_gate(a)')
+    '走通'
+    >>> route_shape('if __name__ == "__main__":\\n    run_own(m)')      # 2.68 那三件的旧写法
+    '走通'
+    >>> route_shape('if __name__ == "__main__":\\n    raise SystemExit(main())\\n')
+    '不用旗标'
+    >>> route_shape('a = p.parse_args()\\nif __name__ == "__main__":\\n    main()')
+    'argparse 拦'
+    >>> route_shape('if __name__ == "__main__":\\n    raise SystemExit(main(sys.argv[1:]))')
+    '当成一个参数'
+    >>> route_shape("def f():\\n    pass\\n")                             # 纯库
+    '没有入口'
+    >>> route_shape("def f(:\\n")                                         # 读不通：也算没有入口
+    '没有入口'
+    """
+    if not has_main_block(src):
+        return ROUTE_NO_DOOR
+    if runs_own_cases(src):
         return ROUTE_RUNS
-    if not reads_argv(src):
-        return ROUTE_IGNORES if has_main_block(src) else ROUTE_NO_DOOR
-    return ROUTE_AS_ARG
+    if calls_parse_args(src):
+        return ROUTE_ARGPARSE
+    return ROUTE_AS_ARG if reads_argv(src) else ROUTE_NO_FLAG
 
 
 def survey_routes(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")) -> dict[str, list[str]]:
@@ -395,13 +705,25 @@ def survey_routes(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "sr
     >>> found = survey_routes()
     >>> sum(len(v) for v in found.values())                                # 每一档加起来 = 有用例的件数
     28
-    >>> [s.rsplit(" ", 1)[0] for s in sorted(found[ROUTE_RUNS])]           # 走通这一档点名到件
-    ['scripts/analyze_upstream.py', 'scripts/code_claims.py', 'scripts/unmarked_nums.py']
+    >>> sorted(found)                                                      # 接线之后只剩两档有件
+    ['没有入口', '走通']
+    >>> [k for k in (ROUTE_ARGPARSE, ROUTE_NO_FLAG, ROUTE_AS_ARG) if k in found]
+    []
+    >>> len(found[ROUTE_RUNS]) + len(found[ROUTE_NO_DOOR])                 # 28 = 接了门 + 纯库
+    28
+    >>> all(s.startswith("src/") for s in found[ROUTE_NO_DOOR])            # 没有入口的全是库
+    True
+    >>> len(found[ROUTE_NO_DOOR])                                          # 11 件、只有收集器跑得动
+    11
     >>> [k for k, v in found.items() if any("run_doctests" in s for s in v)]
-    ['当成一个参数']
+    ['走通']
 
-    这里**故意不钉用例条数**：本件自己就在被数的那一堆里，把「60」写进自己的说明书，
-    下一遍这条例子就算不上自己了 —— 多写一条用例它就红，而它红的理由是「你多写了一条用例」。
+    这里**故意不钉用例条数**、也不钉 `走通` 那一档的名单：本件自己就在被数的那一堆里，
+    而「接了门的件」是要往外长的（01:55:51 那一份普查里这一档只有 3 件，本节接完是 17 件），
+    把那一串名字写死在这里，下一件接门时就红一格 ——
+    红理由是「你多接了一件」，那是 2.68 记过的同一种自指。
+    上面凡是打集合的地方都过一道 `sorted`：字符串的哈希每个进程重新播种，
+    直接印 set 会让同一棵树的两遍跑出两种顺序（2.67 的「两遍必须同数」在这一层里同样成立）。
     """
     by: dict[str, list[str]] = {}
     for path in sorted(sum((list(d.rglob("*.py")) for d in dirs), [])):
@@ -429,7 +751,7 @@ def survey_line(by: dict[str, list[str]]) -> str:
     """
     if not by:
         return ""
-    order = [ROUTE_RUNS, ROUTE_IGNORES, ROUTE_AS_ARG, ROUTE_NO_DOOR]
+    order = [ROUTE_RUNS, ROUTE_NO_FLAG, ROUTE_ARGPARSE, ROUTE_AS_ARG, ROUTE_NO_DOOR]
     parts = []
     for key in order + [k for k in sorted(by) if k not in order]:
         rows = by.get(key)
@@ -522,4 +844,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    rc = doctest_gate(sys.argv[1:])       # 2.69：收集器自己也认这一旗（只跑本件那一份用例）
+    raise SystemExit(rc if rc is not None else main(sys.argv[1:]))

@@ -41,6 +41,7 @@ from src.cli import (                          # noqa: E402
     HISTORY_FILE, LOCAL_SOURCES_FILE, SOURCES_FILE,
     collect, load_local, load_sources,
 )
+from run_doctests import add_doctest_flag, run_own   # noqa: E402  `--doctest` 那一旗的口径只有一份
 
 # 补记字段时写进履历的一句说明：让任何后来翻 jsonl 的人都知道这些数字从哪来
 NOTE = ("srcs 由 scripts/backfill_srcs.py 在 {when} 事后补记："
@@ -130,7 +131,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="给旧履历补记 srcs（默认只预览）")
     ap.add_argument("--history", default=str(HISTORY_FILE))
     ap.add_argument("--write", action="store_true", help="确认预览无误后落盘")
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
+    if args.doctest:
+        return run_own(sys.modules[__name__])   # 2.69：答的是本件说明书里的例子，不补任何履历
 
     path = Path(args.history)
     runs = hist.load_history(path)

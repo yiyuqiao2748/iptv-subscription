@@ -86,6 +86,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / "scripts") not in sys.path:      # 为了 import `baseline_guard`（2.58 共用的那道闸）
     sys.path.insert(0, str(ROOT / "scripts"))
 from baseline_guard import guard as guard_names  # noqa: E402
+from run_doctests import add_doctest_flag, run_own   # noqa: E402  `--doctest` 那一旗的口径只有一份
 
 # 「 数字」结尾：`计划书 2.md` 的 stem 是 `计划书 2`，`index 3` 的 stem 就是它自己，两种都要认。
 CONFLICT = re.compile(r" \d+$")
@@ -513,8 +514,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="不扫仓库：往临时树里种 2.55 那 15 格名字，问这把尺还咬得动吗（2.56）")
     ap.add_argument("--by-dir", action="store_true",
                     help="把总数按顶层目录拆开印（总数会自己动，拆开才知道是谁动的）")
+    add_doctest_flag(ap)
     args = ap.parse_args(argv)
 
+    if args.doctest:
+        return run_own(sys.modules[__name__])   # 2.69：先答说明书，一个目录都不扫
     if args.self_test:
         return self_test()
 

@@ -49,6 +49,7 @@ from src.cli import (REACH_FILE, first_line_focus, load_probe, second_line_optio
 # _SCOPE_LABEL 是报告里那张「范围 → 人话」的表；这里直接用它，
 # 免得试播包和 report.md 对同一个主机族说出两种口径。
 from src.output.writer import _SCOPE_LABEL, OutputChannel, one_line     # noqa: E402
+from run_doctests import add_doctest_flag, run_own                      # noqa: E402  §2.69：旗的口径一份
 
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
 
@@ -671,7 +672,11 @@ def main() -> int:
                     help="挑「挂着最多台第一线」的 N 个主机族，0=全部")
     ap.add_argument("--keep-dead", action="store_true",
                     help="连实测整族失效的主机族也放进来（默认剔掉，省遥控器点击）")
+    add_doctest_flag(ap)
     args = ap.parse_args()
+    if args.doctest:
+        # 2.69：这一支排在读任何表之前 —— 递 `--doctest` 不该生成、也不该覆盖一张试播包。
+        return run_own(sys.modules[__name__])
 
     src = OUT_DIR / args.src
     if not src.exists():
