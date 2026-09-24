@@ -20,7 +20,10 @@
 
 退出码：**0 = 两张表是同一张表**（线路级一字不差）；**1 = 换表了**，
 并把换了谁点名（第一线换了算最重，台多了/少了次之，只动第 2、3 条线再次之）；
-2 = 一张都没比成或参数不对 —— 跳过的那些**不算一致**，「全跳过 + 报绿」是这种检查最坏的失败方式。
+**1 还管第二种**：某一张**在、却读不进来**（指到的是目录、里面不是 UTF-8）—— 那一条比不了，
+「量到了但覆盖缺一块」不是「量过了、没问题」；2 = 一张都没比成或参数不对 ——
+跳过的那些**不算一致**，「全跳过 + 报绿」是这种检查最坏的失败方式。
+「文件名两边都有才比」那条**不算**读不进来：那是要比的东西压根没被点名，屏幕上说得出「另 N 张没比」。
 属性差异（`tvg-id`、`tvg-logo`、头部那行节目单地址）**不算换表**，
 但一定写出来：它解释的是「那几百行 diff 到底是什么」，不是可以忽略的噪声。
 """
@@ -36,7 +39,13 @@ OUT_DIR = ROOT / "data" / "output"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from probe_pack import channel_groups                        # noqa: E402
+from doc_num import read_doc          # noqa: E402
+from probe_pack import channel_groups # noqa: E402
+
+# `read_doc` 不是这里另写的一份：那三种读法（不在 / 是目录 / 不是 UTF-8）在 2.36、2.58、2.62
+# 里一处一处补进 `doc_num`，共用一份才不会再出现「同一件事在两个脚本里说法不同」。
+# 这一族以前的样子：`pa.read_text(encoding="utf-8")` 直接崩，整段 traceback，退码 1 ——
+# 而 1 在这把尺上是「换表了」，一个崩溃就这样冒充了一个判定（2.62 立的口径）。
 
 
 def diff_tables(a: list[tuple[str, list[str]]],
@@ -250,6 +259,30 @@ def empty_pair(d: dict) -> bool:
     return not d["lines_a"] and not d["lines_b"]
 
 
+def outcome(checked: int, drift: int, unread: int) -> int:
+    """这一轮该退几：2 = 一张都没比成，1 = 换表了**或**有点名却读不进来的，0 = 都读到且一张没换。
+
+    为什么把这三档判断从一个数里拎出来单独钉：`main()` 以前只分「有没有 drift」和
+    「比成了几张」，退码是散在收尾那三段 `return` 里的 —— 于是 2.63 那种「读不进来也算一块没量到」
+    根本没有一个地方能钉住它（只能在屏幕上手量一遍，下次改回去也没人知道）。
+    口径同 2.62：**2 = 这把尺这次什么都没量到；1 = 量到了、但有毛病或覆盖缺一块；0 = 全对且全读到**。
+
+    >>> outcome(2, 0, 0)          # 两张都读到、一张没换
+    0
+    >>> outcome(2, 1, 0)          # 换表了
+    1
+    >>> outcome(1, 0, 1)          # 读到那张没换，可另一张点名要读却读不进来 —— 不给 0
+    1
+    >>> outcome(0, 0, 2)          # 一张都没比成，读不进来那两条并到 2 里（2 比 1 更该先说）
+    2
+    >>> outcome(0, 0, 0)          # 一个文件都没点名（`--files ""`）：也是什么都没量到
+    2
+    """
+    if not checked:
+        return 2
+    return 1 if (drift or unread) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="比对两张已生成的表：报告说的是不是电视上那张")
     ap.add_argument("--against", required=True, metavar="目录",
@@ -267,13 +300,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     drift = checked = 0
     skipped: list[str] = []
+    unread: list[str] = []
     for fn in [f.strip() for f in args.files.split(",") if f.strip()]:
         pa, pb = a_dir / fn, b_dir / fn
-        if not pa.exists() or not pb.exists():
-            print(f"{fn}：跳过（{pa if not pa.exists() else pb} 不在）")
+        ta, wa = read_doc(pa)
+        tb, wb = read_doc(pb)
+        # 「不在」和「在、却读不进来」是两件事，分两档走：前者是这一对压根没被点名
+        # （`--files` 那句 help 早就这么约定的），屏幕上说得出「另 N 张没比」，不进退码；
+        # 后者是手指头指错了地方（那是个目录）或那份东西不是 UTF-8 —— 它被点名了、却没读成，
+        # 算覆盖缺一块，要进退码（2.62 立的口径：1 = 量到了但有一块没量到）。
+        if wa == "文件不在" or wb == "文件不在":
+            print(f"{fn}：跳过（{pa if wa == '文件不在' else pb} 不在）")
             skipped.append(fn)
             continue
-        ta, tb = pa.read_text(encoding="utf-8"), pb.read_text(encoding="utf-8")
+        if ta is None or tb is None:
+            bad, why = (pa, wa) if ta is None else (pb, wb)
+            print(f"！{fn}：读不进来 —— {bad} —— {why}", file=sys.stderr)
+            unread.append(fn)
+            continue
         d = diff_tables(channel_groups(ta), channel_groups(tb))
         att = attribute_delta(ta, tb)
         if empty_pair(d):
@@ -287,16 +331,23 @@ def main(argv: list[str] | None = None) -> int:
         checked += 1
         if not d["lines_same"]:
             drift += 1
+    code = outcome(checked, drift, len(unread))
     if not checked:
         # 一张都没比成功，就不能说「完全一致」—— 那是最容易在自动化里蒙混过关的一种假绿
         sys.stdout.flush()            # 不然这行会插到上面那几条「跳过」前面，读起来像先报错再干活
         print(f"一张表都没比成（`--against` 那个目录里没有 {args.files} 中的任何一个，"
-              "或者有但两边都是空的）", file=sys.stderr)
-        return 2
+              "或者有但两边都是空的"
+              + (f"，另有 {len(unread)} 张读不进来" if unread else "") + "）", file=sys.stderr)
+        return code
     if drift:
         print(f"\n{drift} 张表和基准不是一张表 —— 报告里那些「集中度」「换线路」的数，"
               "说的已经不是电视上这份了，按新表重读一遍再据此决定。")
-        return 1
+        return code
+    if unread:
+        # 一张没换 ≠ 都读进来了：那几张的名字点过、内容没读到，这句不能替它们说话
+        print(f"\n比了的 {checked} 张线路级一致，另有 {len(unread)} 张读不进来（"
+              f"{'、'.join(unread)}）—— 上面那句不覆盖它们。")
+        return code
     # 「完全」只能在真的一张没落空时印：比了 1 张、跳过 1 张，说「线路级完全一致」是替没比的那张说话。
     head = ("线路级完全一致" if not skipped else
             f"比了的 {checked} 张线路级一致、另 {len(skipped)} 张没比")

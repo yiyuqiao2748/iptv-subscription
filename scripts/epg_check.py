@@ -46,10 +46,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
 
-from src.check.epg import align_all, coverages, load_bytes     # noqa: E402
-from src.cli import load_epg_config                            # noqa: E402
-from src.parse.m3u import parse_m3u                            # noqa: E402
+from doc_num import read_doc                               # noqa: E402
+from src.check.epg import align_all, coverages, load_bytes # noqa: E402
+from src.cli import load_epg_config                        # noqa: E402
+from src.parse.m3u import parse_m3u                        # noqa: E402
 
 DEFAULT_SOURCES = [
     # 上游头部自己声明的那条（master 分支，经 gh-proxy）：留着它，是为了让「404」这一行
@@ -120,6 +122,45 @@ def candidates(args_targets: list[str] | None, config: Path) -> list[str]:
     return out
 
 
+def rows_and_header(path: Path) -> tuple[list[tuple[str, str]], str, str]:
+    """读一张订阅表，一次给齐三样：[(tvg-id, 台名)]、头部那行节目单地址、读不进来时的为什么。
+
+    为什么要新加这一层，而不是让 `main()` 先 `read_doc` 再分别调 `read_channels()`
+    和 `header_url()`：那两个各自 `read_text` 一遍，于是「读进来」这一族要在两处各防一次，
+    而中间文件被换掉（同步盘把冲突副本塞回来）就会崩在第二遍上 —— 2.62 修的正是这一族，
+    2.63 量到这一层以前**根本没防**：`--playlist` 指到目录崩 `IsADirectoryError`、
+    指到非 UTF-8 的文件崩 `UnicodeDecodeError`，两下都是整段 traceback、退码 1，
+    而 1 在这把尺上是「一个候选都不能用」。屏幕上一行结论都没印，退码却在下判决。
+
+    第三种（文件不在）以前这一层已经会说人话，但说的是自己那一句，和 `doc_num.read_doc`
+    那三种不是一份 —— 现在三种都从 `read_doc` 出来，一句话只有一份。
+
+    >>> import pathlib, tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     p = pathlib.Path(d) / "a.m3u"
+    ...     _ = p.write_text('#EXTM3U x-tvg-url="https://e.erw.cc/e.xml.gz"\\n'
+    ...                      '#EXTINF:-1 tvg-id="81",湖南卫视\\nhttp://a/1.m3u8\\n', encoding="utf-8")
+    ...     rows_and_header(p)
+    ([('81', '湖南卫视')], 'https://e.erw.cc/e.xml.gz', '')
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     rows_and_header(pathlib.Path(d))                 # 指到目录：不是文档
+    ([], '', '那是个目录，不是文档')
+    >>> rows_and_header(ROOT / "config" / "definitely-missing.m3u")
+    ([], '', '文件不在')
+    """
+    text, why = read_doc(path)
+    if text is None:
+        return [], "", why
+    m3u = parse_m3u(text)
+    rows, seen = [], set()
+    for e in m3u.entries:
+        if (e.tvg_id, e.name) in seen:
+            continue
+        seen.add((e.tvg_id, e.name))
+        rows.append((e.tvg_id, e.name))
+    return rows, m3u.x_tvg_url, ""
+
+
 def read_channels(path: Path) -> list[tuple[str, str]]:
     """订阅表 -> [(tvg-id, 显示名)]，一条线路一行（按 (id, 台名) 去重）。
 
@@ -132,6 +173,7 @@ def read_channels(path: Path) -> list[tuple[str, str]]:
 
     读表用的是项目自己的 m3u 解析器（`src/parse/m3u.py`），不是这里另写一份 ——
     体检吃的是**生成出来的那张表**，解析口径必须和 APTV 看到的一致。
+    真正读文件的那一截在 `rows_and_header()`，这一层只是「只看台列表」的那个视图。
 
     >>> import pathlib, tempfile
     >>> with tempfile.TemporaryDirectory() as d:
@@ -146,12 +188,7 @@ def read_channels(path: Path) -> list[tuple[str, str]]:
     ...     read_channels(p)
     [('CCTV-1', 'CCTV-1综合'), ('CCTV-1综合', 'CCTV-1综合')]
     """
-    rows, seen = [], set()
-    for e in parse_m3u(path.read_text(encoding="utf-8")).entries:
-        if (e.tvg_id, e.name) in seen:
-            continue
-        seen.add((e.tvg_id, e.name))
-        rows.append((e.tvg_id, e.name))
+    rows, _url, _why = rows_and_header(path)
     return rows
 
 
@@ -196,7 +233,7 @@ def header_url(path: Path) -> str:
     ...     header_url(p)
     ''
     """
-    return parse_m3u(path.read_text(encoding="utf-8")).x_tvg_url
+    return rows_and_header(path)[1]
 
 
 def provenance(by_id: int, by_name: int) -> str:
@@ -327,7 +364,7 @@ def usable(lines: list[str]) -> bool:
     return "今天有节目" in txt and "合计 0/" not in txt
 
 
-def exit_code(n_targets: int, ok: int) -> int:
+def exit_code(n_targets: int, ok: int, *, drift_skipped: bool = False) -> int:
     """一个候选都没落进「可用」时退 1 —— 别的脚本要拿这个当门。
 
     为什么要改：这条脚本从 2.19 起只印结论、永远退 0，那会儿它是人肉看的一份报告，
@@ -336,13 +373,26 @@ def exit_code(n_targets: int, ok: int) -> int:
     （另外三把尺说不通就退非 0，只有它退 0）。
     没查任何候选仍然算 0：那只可能是 `--against` 单跑漂移，那不是「查了、都说不能用」。
 
+    2.63 起多一个入参：`--against` 那张表整个读不进来时（`drift_skipped`），
+    哪怕 EPG 这几个候选都可用也不给 0 —— 那是 2.62 立的口径，**量到了、但有一块没量到**
+    就是 1，不能和「都量到了、都没毛病」共用一个绿。至于「表压根读不进来」那种
+    什么都没量到的，在 `main()` 里直接退 2，不走这个函数。
+
     >>> exit_code(4, 1)      # 四个候选里有一个能用
     0
     >>> exit_code(4, 0)      # 一个都用不了
     1
     >>> exit_code(0, 0)      # 一条候选都没查，不是失败
     0
+    >>> exit_code(4, 4, drift_skipped=True)    # 全可用，可 id 漂移那一段没量
+    1
+    >>> exit_code(4, 0, drift_skipped=True)    # 两块毛病叠着，还是 1，不多挡一档
+    1
+    >>> exit_code(0, 0, drift_skipped=True)    # 「一条候选都没查」这一支回不来（见上）
+    1
     """
+    if drift_skipped:
+        return 1
     return 1 if n_targets and not ok else 0
 
 
@@ -468,21 +518,29 @@ def main(argv: list[str]) -> int:
         print(f"配置读不动，不量了：{e}", file=sys.stderr)
         return 1
     path = Path(args.playlist)
-    if not path.exists():
-        print(f"订阅表不在：{path}", file=sys.stderr)
-        return 1
-    channels = read_channels(path)
+    channels, head_url, why = rows_and_header(path)
+    if why:
+        # 这张表是这一整屏的分母：它读不进来，下面那些「配上几个台」一个都不成立 ——
+        # 「这把尺什么都没量到」那一档按 2.62 立的口径是退 **2**。以前只认「不在」那一档
+        # （而且退 1），指到目录和非 UTF-8 直接崩栈，三种都落在 1 = 「候选全不能用」那一档上。
+        print(f"订阅表读不进来，不量了：{path} —— {why}", file=sys.stderr)
+        return 2
+    drift_skipped = False
     if args.against:
         other = Path(args.against)
-        if not other.exists():
-            print(f"--against 那张表不在：{other}", file=sys.stderr)
-            return 1
-        print(f"id 漂移：{path} 相对 {other}")
-        print("\n".join(drift_lines(id_drift(channels, read_channels(other)))))
-        print()
+        other_rows, _other_url, other_why = rows_and_header(other)
+        if other_why:
+            # 这一段量不到，可 EPG 那几个候选照样量 —— 那是「量到了、有一块没量到」，退 1（见收尾）
+            print(f"！--against 那张表读不进来：{other} —— {other_why} —— id 漂移那一段这次没量",
+                  file=sys.stderr)
+            drift_skipped = True
+        else:
+            print(f"id 漂移：{path} 相对 {other}")
+            print("\n".join(drift_lines(id_drift(channels, other_rows))))
+            print()
     today = args.today or datetime.now().strftime("%Y%m%d")
     print(f"对表：{path.name}（{len(channels)} 个频道）  今天：{today}")
-    print(f"这张表头部写的节目单地址：{header_url(path) or '（没写）'}"
+    print(f"这张表头部写的节目单地址：{head_url or '（没写）'}"
           "　—— 电视自己去取的就是这一行，它和下面那行「来历」是两条独立的代码路径")
     if args.targets:
         print(f"候选：命令行给的 {len(targets)} 条（--config 这次没用上）")
@@ -516,7 +574,11 @@ def main(argv: list[str]) -> int:
             prov = prov or provenance_of(lines)   # 只认第一个**可用**的候选，取不到的不说
     print(f"结论：{len(targets)} 个候选里，{ok} 个既今天有节目、又配得上我们表里的台。"
           + (f" 这张表相对第一个可用的那份：{prov}。" if prov else ""))
-    return exit_code(len(targets), ok)
+    rc = exit_code(len(targets), ok, drift_skipped=drift_skipped)
+    if drift_skipped and rc and exit_code(len(targets), ok) != rc:
+        # 这一句只为「那一段没量」而退，不是因为候选不能用 —— 说清楚，别让人以为 EPG 也坏了
+        print("这一屏有一项没量：id 漂移（上面那条「读不进来」）—— 所以退 1，不是 0。")
+    return rc
 
 
 if __name__ == "__main__":
