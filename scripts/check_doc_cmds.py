@@ -64,11 +64,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from baseline_guard import sep_names            # noqa: E402  顿号那道闸的判据（三把尺共用）
+
 ROOT = Path(__file__).resolve().parent.parent
 # 「会自己过期的命令」那一层要复用 `src.cli` 里的 `build_parser()` / `replay_gate()`
 # （见 `clock_inputs` 的说明：同一件事不许有两个算法），所以这里得能 import 到 src。
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(ROOT / "scripts") not in sys.path:      # 为了 import `baseline_guard`（2.58 那道共用的闸）
+    sys.path.insert(0, str(ROOT / "scripts"))
 
 # `.venv/bin/python` 与 Windows 那台的 `.venv/Scripts/python.exe` 都算。
 # 注意 `(?:bin|Scripts)/` 那个斜杠：写成 `Scripts/` 而漏掉 bin 的，会只匹配到 Windows 那一行。
@@ -1042,12 +1046,15 @@ def sep_conflicts(cells: tuple[Cell, ...]) -> list[str]:
     一格数成了两格，那一轮的「判错」三处里有一处是这件事。名字是我起的，闸也得我来装：
     现在带顿号的名字当场退 2，不再等到读的时候才发现分不开。
 
+    2.58 把「什么算撞了分隔符」这条规矩挪进 `scripts/baseline_guard.py`（三把基线尺共用一份），
+    这里只剩一层委托：格子名换成字符串，判据在那一边。
+
     >>> sep_conflicts((Cell("A_好", "x"), Cell("B、坏", "y"), Cell("C\\n坏", "z")))
     ['B、坏', 'C\\n坏']
     >>> sep_conflicts(BASELINE)          # 今天这 25 个名字都读得开
     []
     """
-    return [c.who for c in cells if "、" in c.who or "\n" in c.who]
+    return sep_names(c.who for c in cells)
 
 
 def self_test(cells: tuple[Cell, ...] | None = None) -> int:

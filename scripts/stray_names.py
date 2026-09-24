@@ -83,6 +83,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT / "scripts") not in sys.path:      # 为了 import `baseline_guard`（2.58 共用的那道闸）
+    sys.path.insert(0, str(ROOT / "scripts"))
+from baseline_guard import guard as guard_names  # noqa: E402
 
 # 「 数字」结尾：`计划书 2.md` 的 stem 是 `计划书 2`，`index 3` 的 stem 就是它自己，两种都要认。
 CONFLICT = re.compile(r" \d+$")
@@ -460,6 +463,11 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
     那条 ✗ 到了人眼前就只剩一个「退 1」。
     """
     cells = BASELINE if cells is None else cells
+    knames = guard_names([c.who for c in cells])
+    if knames:
+        # 2.57 说过这一档「名字干净是巧合不是闸」—— 闸现在有了，判据在三把尺共用的那个文件里。
+        print(knames)
+        return 2
     ran = bad = skipped = 0
     fails: list[tuple[Cell, str, str]] = []
     misses: list[tuple[Cell, str]] = []

@@ -1,6 +1,6 @@
 """一条命令跑完这个项目的全部对账，包括「正在跑的那个页面有没有说谎」。
 
-    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认七条
+    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认八条
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --against /tmp/r226 # 顺手问「报告说的是不是这张表」
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --epg               # 再挂上 EPG 那条（读本地缓存，实测 0.08 秒）
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --port 8799 --skip page
@@ -38,7 +38,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "data" / "output"
@@ -161,7 +161,8 @@ def page_verdict(html: str, disk: dict[str, int], gone: list[str]) -> tuple[str,
 def check_page(port: int) -> tuple[str, str]:
     """问一眼正在跑的那个页面：它声称的台数对不对、它是不是 2.29 那一版。
 
-    这一条是那八条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`/`drift`/`epg`）
+    这一条是那九条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
+    /`num-test`/`drift`/`epg`）
     唯一量不到的那层 —— 它们全在量磁盘上躺着的东西（`self-test`、`doc-test` 量的是那两把尺自己，
     量的仍然是磁盘上那 15 格名字，不是正在跑的进程）。
     取页面必须绕过系统代理：TUN 开着时走代理去取 `127.0.0.1` 会拿到假答案。
@@ -234,7 +235,8 @@ def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
 def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[str, str]]]]:
     """这一轮要跑哪些检查：(名字, 给人看的那句, 怎么跑)。
 
-    默认七条 —— 六条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`）+ 那条只有
+    默认八条 —— 七条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
+    /`num-test`）+ 那条只有
     「问一眼正在跑的进程」才做得到的 `page`。`drift` 和 `epg` 要人点名，各有一条实在的理由：
     `drift` 得先有另一份表放在那儿（没有就是 2，不该混进这一屏）；
     `epg` 回答的不是「说的和算的是不是一回事」，而是「现在这份节目单对我们有几个台有用」——
@@ -244,6 +246,10 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     `self-test`（2.56）跟着它一起默认挂上，理由不是「顺手」而是**那条 ✓ 自己说不清自己**：
     仓库今天 0 颗，`names` 的退 0 既可能是干净也可能是那把尺瞎了，只有往临时树里种过名字
     才知道它咬得动 —— 所以它跟 `names` 是一对，缺一个另一个就不能读。
+    `num-test`（2.58）是第三把：`numbers` 说「比了 74 处：全部对得上」，那句话同样有两种读法。
+    14:26 那遍探针（22 格）还量出它带着一种比 2.57 更狠的错法：点名的两篇里有一篇不在时，
+    它把另一篇比出来的成绩**一个字都不印**，只留一句「点名的文档不在」；同一遍还量到
+    `--docs` 指到目录或非 UTF-8 的文件会裸崩。那一格现在由 `B7`／`B8`／`B9` 三格钉着。
     `doc-test`（2.57）是同一个理由递给命令尺的那一半：`doc-cmds` 说「143 条命令、0 条对不上」，
     这句话同样分不清「文档真干净」与「那几层判据整层不咬」，而 13:34 量到的现状里它连
     「自己找到了东西」都能报成「自己瞎了」（那一格现在由 `B9`/`B13` 两格钉住）。
@@ -255,13 +261,13 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
 
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=[])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'page']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', 'page']
     >>> ns = argparse.Namespace(port=8787, against="/tmp/r226", epg=True, skip=["page"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'drift', 'epg']
+    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', 'drift', 'epg']
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=["page", "numbers"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'doc-cmds', 'names', 'self-test', 'doc-test']
+    ['doctests', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test']
     """
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
@@ -276,6 +282,8 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/stray_names.py", "--self-test"])),
         ("doc-test", "命令尺自己还咬得动吗（往临时文件里种 25 格文档）",
          lambda: run_script(["scripts/check_doc_cmds.py", "--self-test"])),
+        ("num-test", "数尺自己还咬得动吗（往临时目录里种 26 格文档）",
+         lambda: run_script(["scripts/doc_num.py", "--self-test"])),
         ("page", "正在跑的那个页面声称的台数", lambda: check_page(args.port)),
     ]
     if args.against:
@@ -300,6 +308,91 @@ def epg_offline(cache: str) -> tuple[str, str]:
     return run_script(["scripts/epg_check.py", cache])
 
 
+def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
+    """红的那几条各自配的那句「这话该怎么读」—— 抽成纯函数，是为了让它**能被点着跑**。
+
+    为什么值得单独一个函数：这些句子以前只在 `main()` 里就地 `print`，于是它们只在
+    「某条尺真的红了」的时候才存在。而这一屏上最难读的就是那几句 —— 15:17 那一遍整屏
+    有五条不过，屏幕走到 `num-test` 那一句时崩在 `NameError: name 'oks' is not defined`
+    上，后面的处置句一句没印：**那个分支从本节写下它起就没被跑过**，变量名写错没有任何
+    东西会响（2.58「边界」里那条「量具的输出是证据、量具的说明书不是」，这一条是它的实物）。
+    抽出来之后每种组合都能在下面这些用例里点一次，代价是零。
+
+    返回 `(这句的钥匙, 要印的那句)`。钥匙只给用例看，印出去的还是原来那些字。
+
+    >>> dispositions([])
+    []
+    >>> [k for k, _ in dispositions(["page"])]
+    ['page']
+    >>> [k for k, _ in dispositions(["numbers"])]           # 那条要配的是「先重算」
+    ['recount']
+    >>> [k for k, _ in dispositions(["drift", "num-test"])]
+    ['recount', 'num-test', 'num-test/numbers-green']
+    >>> # 配对那三句：同一把尺的 `*-test` 红、正查的那条绿 —— 只有这一种意思
+    >>> [k for k, _ in dispositions(["self-test"])]
+    ['self-test', 'self-test/names-green']
+    >>> [k for k, _ in dispositions(["self-test", "names"])]     # 两红：各有一句，只少了配对那句
+    ['names', 'self-test']
+    >>> [k for k, _ in dispositions(["num-test", "numbers"])]    # numbers 红另配「先重算」那句
+    ['recount', 'num-test']
+    >>> [k for k, _ in dispositions(["doc-test", "doc-cmds"])]
+    ['doc-test']
+    >>> # 一句都不许是空的：钥匙配上就得真有字要印
+    >>> all(t.strip() for _, t in dispositions(
+    ...     ["page", "names", "self-test", "num-test", "doc-test", "drift"]))
+    True
+    >>> [k for k, _ in dispositions(["page", "names", "self-test", "num-test", "doc-test"])]
+    ['page', 'names', 'self-test', 'num-test', 'num-test/numbers-green', 'doc-test', \
+'doc-test/doc-cmds-green']
+    """
+    f = set(fails)
+    out: list[tuple[str, str]] = []
+    if f & {"numbers", "drift"}:
+        out.append(("recount",
+                    "如果报的是 `numbers` 或 `drift`：先跑 `table_drift` 再跑 `doc_num`，"
+                    "数对不上多半是「该重抄」而不是「算错了」（2.27 → 2.28 那个顺序）。"))
+    if "page" in f:
+        out.append(("page",
+                    "`page` 那条跟上面那些不是一类：它说的是**正在跑的那个进程**，"
+                    "磁盘上的东西全对也不会让它自己变好 —— 要么重启服务，要么 `--skip page`。"))
+    if "names" in f:
+        out.append(("names",
+                    "`names` 那条说的也不是内容，是**名字**：它点出来的那些是同步盘刚掉进来的东西。"
+                    "\n           别在这条命令里顺手 `rm` —— 先 `diff` 一下，确认没用了再搬出仓库（2.55）。"))
+    if "self-test" in f:
+        out.append(("self-test",
+                    "`self-test` 那条红**不是说仓库里掉进了冲突副本**：那 15 格名字是它自己种在临时目录里的，"
+                    "\n           跑完就回收。它说的是那把尺的判据变了或者它的措辞变了 —— "
+                    "先看它点的是哪一格，再 `git log -p scripts/stray_names.py`（2.56）。"))
+        if "names" not in f:
+            out.append(("self-test/names-green",
+                        "`names` 绿、`self-test` 红 —— 这个组合只有一种意思：**那把尺自己咬不动了**，"
+                        "\n           上面那条 `names` 的 ✓ 这一轮不能读（真仓库 0 颗到底是干净还是瞎，"
+                        "全靠这一条分开）。"))
+    if "num-test" in f:
+        out.append(("num-test",
+                    "`num-test` 那条红**不是说文档里的数抄错了**：那 26 份文档是它自己种的临时件，"
+                    "仓库里那两篇它一个字没读。它说的是数尺的判据或者措辞变了 —— "
+                    "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/doc_num.py`（2.58）。"))
+        if "numbers" not in f:
+            out.append(("num-test/numbers-green",
+                        "`numbers` 绿、`num-test` 红 —— 同一个意思的另一半：**那句「74 处全部对得上」"
+                        "这一轮不能读**，\n           它可能是文档真对得上，也可能是那层判据整层不咬 —— "
+                        "26 格只点到 153 个键里的 10 个，那就是这一句的价钱（2.58 边界第 1 条）。"))
+    if "doc-test" in f:
+        # 这一句要挡住的是那种最贵的误读：以为 `doc-test` 在说「文档里有一条命令写错了」。
+        # 那是 `doc-cmds` 的活；这一条扫的是它自己种的 25 份临时文档，跟仓库里那三篇无关。
+        out.append(("doc-test",
+                    "`doc-test` 那条红也**不是说文档里有命令写错了**：那 25 份文档是它自己种的临时件，"
+                    "\n           跑完就回收，仓库里那三篇它一个字没读。它说的是命令尺的判据或者措辞变了 —— "
+                    "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/check_doc_cmds.py`（2.57）。"))
+        if "doc-cmds" not in f:
+            out.append(("doc-test/doc-cmds-green",
+                        "`doc-cmds` 绿、`doc-test` 红 —— 同一个意思的另一半：**那句「0 条对不上」这一轮不能读**，"
+                        "\n           它可能是文档真干净，也可能是那几层判据整层不咬（143 条一条都没查中）。"))
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="selfcheck.py", description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=8787, help="订阅服务在哪个端口（默认 8787）")
@@ -307,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--epg", action="store_true", help="把 EPG 那条也挂上（只读本地缓存）")
     ap.add_argument("--skip", action="append", default=[],
                     help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / names / "
-                         "self-test / doc-test / drift / epg")
+                         "self-test / doc-test / num-test / drift / epg")
     args = ap.parse_args(argv)
 
     plan = steps(args)
@@ -318,7 +411,11 @@ def main(argv: list[str] | None = None) -> int:
     table = next((OUT_DIR / n for n in ("aptv.m3u",) if (OUT_DIR / n).exists()), None)
     stamp = (dt.datetime.fromtimestamp(table.stat().st_mtime).strftime("%m-%d %H:%M")
              if table else "没有产物")
-    print(f"自检 · {dt.datetime.now():%m-%d %H:%M} · 在用的这批表：{stamp}\n")
+    # 首行为什么带上解释器：15:14 那遍我用了系统的 `python3`（3.9.6），三把读文档的尺同时
+    # 退 1、屏幕上一片 traceback，而那一行只写着时间 —— 分不清「仓库坏了」还是「跑错人了」。
+    # `run_script` 用的是 `sys.executable`，所以这一行报的就是上面那些尺真正用的那一个。
+    print(f"自检 · {dt.datetime.now():%m-%d %H:%M} · 在用的这批表：{stamp}"
+          f" · 跑它的解释器：{sys.version.split()[0]}\n")
 
     ran = failed = 0
     skips: list[str] = []
@@ -344,32 +441,11 @@ def main(argv: list[str] | None = None) -> int:
           + ("" if ran else " —— 一条都没真跑起来，这不算通过"))
     if not ran:
         return 2
-    if {"numbers", "drift"} & set(fails):
-        print("如果报的是 `numbers` 或 `drift`：先跑 `table_drift` 再跑 `doc_num`，"
-              "数对不上多半是「该重抄」而不是「算错了」（2.27 → 2.28 那个顺序）。")
-    if "page" in fails:
-        print("`page` 那条跟上面那些不是一类：它说的是**正在跑的那个进程**，"
-              "磁盘上的东西全对也不会让它自己变好 —— 要么重启服务，要么 `--skip page`。")
-    if "names" in fails:
-        print("`names` 那条说的也不是内容，是**名字**：它点出来的那些是同步盘刚掉进来的东西。"
-              "\n           别在这条命令里顺手 `rm` —— 先 `diff` 一下，确认没用了再搬出仓库（2.55）。")
-    if "self-test" in fails:
-        print("`self-test` 那条红**不是说仓库里掉进了冲突副本**：那 15 格名字是它自己种在临时目录里的，"
-              "\n           跑完就回收。它说的是那把尺的判据变了或者它的措辞变了 —— "
-              "先看它点的是哪一格，再 `git log -p scripts/stray_names.py`（2.56）。")
-        if "names" not in fails:
-            print("`names` 绿、`self-test` 红 —— 这个组合只有一种意思：**那把尺自己咬不动了**，"
-                  "\n           上面那条 `names` 的 ✓ 这一轮不能读（真仓库 0 颗到底是干净还是瞎，"
-                  "全靠这一条分开）。")
-    if "doc-test" in fails:
-        # 这一句要挡住的是那种最贵的误读：以为 `doc-test` 在说「文档里有一条命令写错了」。
-        # 那是 `doc-cmds` 的活；这一条扫的是它自己种的 25 份临时文档，跟仓库里那三篇无关。
-        print("`doc-test` 那条红也**不是说文档里有命令写错了**：那 25 份文档是它自己种的临时件，"
-              "\n           跑完就回收，仓库里那三篇它一个字没读。它说的是命令尺的判据或者措辞变了 —— "
-              "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/check_doc_cmds.py`（2.57）。")
-        if "doc-cmds" not in fails:
-            print("`doc-cmds` 绿、`doc-test` 红 —— 同一个意思的另一半：**那句「0 条对不上」这一轮不能读**，"
-                  "\n           它可能是文档真干净，也可能是那几层判据整层不咬（143 条一条都没查中）。")
+    # 那些「这话该怎么读」全在 `dispositions()` 里（上面那条用例把它每条组合都点了一遍）。
+    # `main()` 这里只管印 —— 以前是就地 `print`，于是那九句只在「某条尺恰好红了」的那一遍
+    # 里存在过，写错一个变量名不会有人知道（15:14 那遍就是这么崩的，见 2.58 踩的第 11 条）。
+    for _, line in dispositions(fails):
+        print(line)
     return 1 if failed else 0
 
 
