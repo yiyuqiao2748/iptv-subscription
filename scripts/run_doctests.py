@@ -11,6 +11,7 @@
 
     .venv/bin/python scripts/run_doctests.py          # 全部
     .venv/bin/python scripts/run_doctests.py prober   # 只跑名字里含 prober 的文件
+    .venv/bin/python scripts/run_doctests.py --each   # 每件起一个子进程，真跑它自己的那一份
     .venv/bin/python scripts/run_doctests.py --doctest  # 只跑本件这一份用例
 
 2.68 起这里还多管一件事：**别的脚本自己那条 `--doctest` 支路怎么说结果**。那些支路以前
@@ -23,6 +24,13 @@
 收尾处问它一句，`--doctest` 就答自己的用例数，而不是把旗当成一个路径、一个子命令、
 或者一份 argparse 的「未识别的参数」。跑全量那一遍会在末尾印整棵树的形状
 （`survey_routes`），而「挂了号却没人应答」那种件由 `dead_flag_doors` 静态拦一道。
+
+2.70 量的是这一句的**反面**：静态认出来的「走通」到底跑不跑得起来。`--each` 那一档
+为每一件起一个子进程、把它那一串参数原样递过去（只递 `--doctest`），再核对三件事：
+它答没答（那一句「合计」）、答的数跟静态那把 `example_count` 对不对得上、它报的
+「量的件」是不是它自己。每一件都挂在 `scripts/work_guard.py` 底下跑，于是
+「递 `--doctest` 给它会不会顺便去干自己的活」也成了一个读数而不是一段担心 ——
+那一族最坏的形状（§2.68 的 `M16`：字还在、路已死）由 `each_verdict` 点名。
 """
 
 from __future__ import annotations
@@ -30,10 +38,21 @@ from __future__ import annotations
 import ast
 import doctest
 import importlib
+import os
 import pathlib
+import re
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# `--each` 那一档里一件的天花板。为什么要有：递 `--doctest` 给一件「会起监听」的脚本，
+# 最坏的读法不是它报错，是它**不返回** —— 那一遍整屏就停在那一行上，
+# 而屏幕上没有任何一行说「这一件我量完了」。03:27 实测 29 件全跑一遍 real **3.0 秒**
+# （`time` 那一栏，平均一件 0.1 秒），所以 60 秒**不是**按比例放出来的余量 —— 它是
+# 「一件卡住 = 它在等一个永远不来的东西」（起监听、等 stdin）那一族的兜底：给到一分钟，
+# 让它自己超时、屏幕上那一行照样落下来，而不是整屏停在那一件上。
+EACH_TIMEOUT = 60
 
 
 def modules(pattern: str = "") -> list[str]:
@@ -697,43 +716,38 @@ def route_shape(src: str) -> str:
 def survey_routes(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")) -> dict[str, list[str]]:
     """整棵树按 `route_shape` 分档，键是那一档、值是 `相对路径 用例数` 的名单。
 
-    跟收集器同一套取舍：`__init__.py` 不看（它没有用例可言），文件名不像模块名的不看
-    （同步盘冲突副本 —— 见 `no_bare_testmod` 那段理由），一条用例都没写的也不看
-    （它没有「这条路通不通」这个问题）。
+    在册的件由 `each_file` 那一层定（2.70 起它跟 `--each` 共用同一套取舍 —— 那两个数
+    必须能对着读，不然静态普查和实跑普查就是在数两堆件）。
     用例数写在名单里而不是只报件数：这一档真正要说的是「多少个用例只有收集器跑得动」。
 
     >>> found = survey_routes()
     >>> sum(len(v) for v in found.values())                                # 每一档加起来 = 有用例的件数
-    28
+    29
     >>> sorted(found)                                                      # 接线之后只剩两档有件
     ['没有入口', '走通']
     >>> [k for k in (ROUTE_ARGPARSE, ROUTE_NO_FLAG, ROUTE_AS_ARG) if k in found]
     []
-    >>> len(found[ROUTE_RUNS]) + len(found[ROUTE_NO_DOOR])                 # 28 = 接了门 + 纯库
-    28
+    >>> len(found[ROUTE_RUNS]) + len(found[ROUTE_NO_DOOR])                 # 29 = 接了门 + 纯库
+    29
     >>> all(s.startswith("src/") for s in found[ROUTE_NO_DOOR])            # 没有入口的全是库
     True
     >>> len(found[ROUTE_NO_DOOR])                                          # 11 件、只有收集器跑得动
     11
     >>> [k for k, v in found.items() if any("run_doctests" in s for s in v)]
     ['走通']
+    >>> [k for k, v in found.items() if any("work_guard" in s for s in v)] # 2.70 新接的那一件
+    ['走通']
 
     这里**故意不钉用例条数**、也不钉 `走通` 那一档的名单：本件自己就在被数的那一堆里，
-    而「接了门的件」是要往外长的（01:55:51 那一份普查里这一档只有 3 件，本节接完是 17 件），
-    把那一串名字写死在这里，下一件接门时就红一格 ——
+    而「接了门的件」是要往外长的（01:55:51 那一份普查里这一档只有 3 件，§2.69 接完是 17 件，
+    §2.70 又接了一件），把那一串名字写死在这里，下一件接门时就红一格 ——
     红理由是「你多接了一件」，那是 2.68 记过的同一种自指。
     上面凡是打集合的地方都过一道 `sorted`：字符串的哈希每个进程重新播种，
     直接印 set 会让同一棵树的两遍跑出两种顺序（2.67 的「两遍必须同数」在这一层里同样成立）。
     """
     by: dict[str, list[str]] = {}
-    for path in sorted(sum((list(d.rglob("*.py")) for d in dirs), [])):
-        if path.name == "__init__.py" or not path.stem.isidentifier():
-            continue
-        src = path.read_text(encoding="utf-8", errors="replace")
-        n = example_count(src)
-        if not n:
-            continue
-        by.setdefault(route_shape(src), []).append(f"{path.relative_to(ROOT)} {n}")
+    for path, n, route in each_file(dirs):
+        by.setdefault(route, []).append(f"{path.relative_to(ROOT)} {n}")
     return {k: sorted(v) for k, v in by.items()}
 
 
@@ -783,18 +797,305 @@ def zero_note(names: list[str]) -> str:
             + " —— 上面那句「全过」不包括它们")
 
 
+# `--each`：2.70 起本件收的第二个旗。它跟过滤器不是一类东西（一个是「跑法」，一个是「跑谁」），
+# 所以必须在下面那句「我不收旗标」之前先摊掉 —— 否则它就是那一屏要报的那件坏事。
+EACH_FLAG = "--each"
+
+# 那一句「合计」的形状，抄自 `own_line`。为什么用正则而不是把 `own_line` 反过来解：
+# 反向解要拿字符串做等式，而屏幕上那一句前后还有别的字（用例自己的输出、护栏那一句），
+# 正则只要求「这一行是这个形状」，才是拿**输出**当证据。两头都写着同一个形状，
+# 改一处忘了另一处会立刻红：`each_verdict` 会把那一件读成「一个字都没答」。
+ANSWER_RE = re.compile(r"合计 (\d+) 个用例，(\d+) 个失败（量的件：(.*?)）")
+ZERO_RE = re.compile(r"一条用例都没收到（量的件：(.*?)）")
+# 护栏那一句（`work_guard.guard_line`）。`:(\d+) 条` 后面那一段点名是可选的：
+# 0 条的时候它根本不会出现在屏幕上。
+GUARD_RE = re.compile(r"落在仓库里 (\d+) 条(?:：(.*?))?（被量件退")
+# 护栏那句「被量件根本没跑起来」——它跟「一条都没落在仓库里」不是一回事（见 `guard_line`）。
+GUARD_DEAD_RE = re.compile("可被量件根本没跑起来")
+
+
+def each_file(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")
+              ) -> list[tuple[pathlib.Path, int, str]]:
+    """树上每一件「写了用例的 .py」：`(路径, 静态用例数, 静态那一档)`，按路径排序。
+
+    这一句是 `survey_routes` 与 `each_targets` **共用**的那一层，理由是 2.58 立下的那条
+    （口径只有一份，下一把尺不必再抄一遍注释）：那两处对「什么件算在册」的取舍必须一样，
+    不然静态普查跟实跑普查会各数出一堆件，而那两个数是不能对比的。
+    取舍三条：`__init__.py` 不看（它没有用例可言）；文件名不像模块名的不看（同步盘的冲突
+    副本 —— 见 `strays` 那段理由）；一条用例都没写的也不看（它没有「这条路通不通」这个问题）。
+
+    >>> rows = each_file()
+    >>> len(rows)                                       # 接完 work_guard 之后在册的件数
+    29
+    >>> all(n > 0 for _, n, _ in rows)                  # 没写用例的不入册
+    True
+    >>> [str(p.relative_to(ROOT)) for p, _, _ in rows if not p.stem.isidentifier()]
+    []
+    >>> all(isinstance(r, str) for _, _, r in rows)     # 每一件都归了档
+    True
+    """
+    rows: list[tuple[pathlib.Path, int, str]] = []
+    for path in sorted(sum((list(d.rglob("*.py")) for d in dirs), [])):
+        if path.name == "__init__.py" or not path.stem.isidentifier():
+            continue
+        src = path.read_text(encoding="utf-8", errors="replace")
+        n = example_count(src)
+        if not n:
+            continue
+        rows.append((path, n, route_shape(src)))
+    return rows
+
+
+def parse_own_line(text: str) -> tuple[str, int, int] | None:
+    """从一片输出里读出那一件自己报的 `(量的件, 用例数, 失败数)`；它一个字都没答则 `None`。
+
+    取**最后**一条：一件的说明书里可能嵌着「这一句长什么样」的例子（本件就有），
+    拿第一条会把那句例子当成答复。
+    「一条用例都没收到」那一支也算答了，而且是**带着名字**答的 —— 它报 0 条，
+    跟「没答」不是一回事（见 `own_line` 那段：0 个用例和「全过」不能同形）。
+
+    >>> parse_own_line("合计 174 个用例，0 个失败（量的件：src/cli.py）")
+    ('src/cli.py', 174, 0)
+    >>> parse_own_line("一条用例都没收到（量的件：__main__）—— 这不算过：0 个用例和「全过」在这一屏上同形")
+    ('__main__', 0, 0)
+    >>> parse_own_line("护栏：一条这类动作都没看见、落在仓库里 0 条（被量件退 0）") is None
+    True
+    >>> parse_own_line("合计 1 个用例，0 个失败（量的件：例子）\\n合计 12 个用例，3 个失败（量的件：x）")
+    ('x', 12, 3)
+    """
+    got = ANSWER_RE.findall(text)
+    if got:
+        n, failed, label = got[-1]
+        return label, int(n), int(failed)
+    zero = ZERO_RE.findall(text)
+    if zero:
+        return zero[-1], 0, 0
+    return None
+
+
+def parse_guard(text: str) -> tuple[int | None, str]:
+    """读护栏那一句：`(落在仓库里的条数, 那串点名)`；屏幕上没有那一句时条数是 `None`。
+
+    为什么 `None` 不能写成 0：0 是「护栏说了：一条都没落在仓库里」，`None` 是「护栏那句话
+    根本没到屏幕上」—— 子进程没起来、被 `EACH_TIMEOUT` 掐了、或者它炸在护栏挂上之前，
+    这几种都长一样。把它们读成 0 就是 2.62 那一族「两种 0 同形」。
+    同样取最后一条：被量件自己的用例里可能印着一句假的那个形状。
+
+    >>> parse_guard("护栏：看见 2 条（open 2）、落在仓库里 1 条：写 /r/data/x（被量件退 0）")
+    (1, '写 /r/data/x')
+    >>> parse_guard("护栏：一条这类动作都没看见、落在仓库里 0 条（被量件退 0）")
+    (0, '')
+    >>> parse_guard("合计 3 个用例，0 个失败（量的件：x）")                 # 护栏那句没来
+    (None, '')
+    >>> parse_guard("护栏：一条都没看见 —— 可被量件根本没跑起来，这一句读不出「它没干活」")
+    (None, '')
+    """
+    hits = list(GUARD_RE.finditer(text))
+    if not hits:
+        return None, ""
+    m = hits[-1]
+    return int(m.group(1)), m.group(2) or ""
+
+
+def each_targets(pattern: str = "",
+                 dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")
+                 ) -> list[tuple[pathlib.Path, int, str]]:
+    """`--each` 要跑的那些件：`each_file` 那一堆里相对路径含 `pattern` 的（空串＝全部）。
+
+    >>> len(each_targets()) == len(each_file())                             # 默认就是全册
+    True
+    >>> [str(p.relative_to(ROOT)) for p, _, _ in each_targets("work_guard")]
+    ['scripts/work_guard.py']
+    >>> each_targets("没有这样一个件")
+    []
+    """
+    return [row for row in each_file(dirs) if pattern in str(row[0].relative_to(ROOT))]
+
+
+def each_verdict(rel: str, want: int, route: str, rc: int, out: str) -> str:
+    """一件跑完之后那一行话。纯函数：跑在 `spawn_each`，判在这里，判的部分全部能拿假输出喂。
+
+    一行分两截，因为这一屏要同时说「读到了什么」和「哪里不对」：前面那一截把子进程那几样
+    东西（它自己答的那句、静态那把尺数出来的、护栏那本账）并排摊开 —— **连静态判错的那几行
+    也照摊**，摊错了才有得查；后面那一截只装毛病，一条毛病一句话，用「；」接。
+
+    判的是一头一尾两件事：
+    * 静态说它答、可它一个字都没答 —— §2.68 `M16` 那一刀的形状，也是本节存在的理由；
+    * 静态说它不答、可它答了 —— 那是静态那把尺判错了（§2.69 的 `baseline_guard` 正是这一族，
+      当时是 02:46:52 拿眼睛从屏幕上看出来的，今天由这一行说）。
+    中间那一层是「答了，可答的不是它自己那份」：条数对不上静态、或者「量的件」报的不是这个
+    路径（2.68 那句「`testmod()` 不点名就量了调用方」在这一层的形状）。
+
+    >>> GOOD = "合计 12 个用例，0 个失败（量的件：scripts/x.py）\\n" \\
+    ...        "护栏：一条这类动作都没看见、落在仓库里 0 条（被量件退 0）"
+    >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, 0, GOOD)
+    '· scripts/x.py                       答 12／静态 12、量的件=scripts/x.py、护栏 0 条'
+    >>> DEAD = "护栏：一条都没看见 —— 可被量件根本没跑起来，这一句读不出「它没干活」"
+    >>> each_verdict("src/y.py", 30, ROUTE_NO_DOOR, 2, DEAD)   # 纯库白跑：那不是毛病
+    '· src/y.py                           没答（静态：没有入口，退 2）、只有收集器跑得动它'
+    >>> each_verdict("scripts/z.py", 9, ROUTE_RUNS, 2, DEAD)   # 字还在、路已死
+    '✗ scripts/z.py                       没答（静态：走通，退 2） —— 字还在、路已死：静态说「走通」，它一个字都没答'
+    >>> each_verdict("src/y.py", 12, ROUTE_NO_DOOR, 0, GOOD.replace("scripts/x.py", "src/y.py"))
+    '✗ src/y.py                           答 12／静态 12、量的件=src/y.py、护栏 0 条 —— 静态那一档说「没有入口」，可它答了：那把尺判错了'
+    >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, 1,
+    ...     "合计 12 个用例，3 个失败（量的件：scripts/x.py）\\n"
+    ...     "护栏：看见 1 条（open 1）、落在仓库里 0 条（被量件退 1）")
+    '✗ scripts/x.py                       答 12／静态 12、量的件=scripts/x.py、护栏 0 条 —— 用例里有 3 个失败'
+    >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, 1, GOOD)  # 退码说有事、屏幕上却全对
+    '✗ scripts/x.py                       答 12／静态 12、量的件=scripts/x.py、护栏 0 条 —— 子进程退 1，可它报的用例全过、护栏也没意见：这一档对不上'
+    >>> each_verdict("scripts/x.py", 20, ROUTE_RUNS, 0, GOOD)  # 跑到的比写下来的少
+    '✗ scripts/x.py                       答 12／静态 20、量的件=scripts/x.py、护栏 0 条 —— 少 8 条：跑到的跟静态那把尺数出来的不是同一份'
+    >>> each_verdict("scripts/x.py", 8, ROUTE_RUNS, 0, GOOD)   # 跑到的比写下来的多
+    '✗ scripts/x.py                       答 12／静态 8、量的件=scripts/x.py、护栏 0 条 —— 多 4 条：跑到的跟静态那把尺数出来的不是同一份'
+    >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, 0,
+    ...     GOOD.replace("量的件：scripts/x.py", "量的件：__main__"))      # 量错了件
+    '✗ scripts/x.py                       答 12／静态 12、量的件=__main__、护栏 0 条 —— 量的不是自己：它报 __main__'
+    >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, 1,
+    ...     "合计 12 个用例，0 个失败（量的件：scripts/x.py）\\n"
+    ...     "护栏：看见 3 条（open 3）、落在仓库里 2 条：写 data/x、写 config/y（被量件退 0）")
+    '✗ scripts/x.py                       答 12／静态 12、量的件=scripts/x.py、护栏 2 条 —— 它去干了自己的活：写 data/x、写 config/y'
+    >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, 2, "")    # 子进程压根没说话
+    '✗ scripts/x.py                       没答（静态：走通，退 2） —— 护栏那一句没到屏幕上（子进程连 work_guard 都没跑起来？）；字还在、路已死：静态说「走通」，它一个字都没答'
+    """
+    got = parse_own_line(out)
+    guard_n, guard_detail = parse_guard(out)
+    problems: list[str] = []
+    if guard_n is None and not GUARD_DEAD_RE.search(out):
+        problems.append("护栏那一句没到屏幕上（子进程连 work_guard 都没跑起来？）")
+    elif guard_n:
+        problems.append(f"它去干了自己的活：{(guard_detail or f'{guard_n} 条')[:120]}")
+    if got is None:
+        note = f"没答（静态：{route}，退 {rc}）"
+        if route == ROUTE_RUNS:
+            problems.append(f"字还在、路已死：静态说「{ROUTE_RUNS}」，它一个字都没答")
+        else:
+            note += "、只有收集器跑得动它"
+    else:
+        label, attempted, failed = got
+        note = (f"答 {attempted}／静态 {want}、量的件={label}、"
+                f"护栏 {'?' if guard_n is None else guard_n} 条")
+        if attempted != want:
+            gap = want - attempted
+            problems.append(f"{'少' if gap > 0 else '多'} {abs(gap)} 条："
+                            "跑到的跟静态那把尺数出来的不是同一份")
+        if label != rel:
+            problems.append(f"量的不是自己：它报 {label}")
+        if failed:
+            problems.append(f"用例里有 {failed} 个失败")
+        elif rc and not guard_n:
+            # 屏幕上一切都对、子进程却退非 0：那一句「全过」跟退码是两本账，得有一行说这事。
+            problems.append(f"子进程退 {rc}，可它报的用例全过、护栏也没意见：这一档对不上")
+        if route != ROUTE_RUNS:
+            problems.append(f"静态那一档说「{route}」，可它答了：那把尺判错了")
+    return ("✗ " if problems else "· ") + f"{rel:<34} {note}" + (
+        " —— " + "；".join(problems) if problems else "")
+
+
+def each_tally(total: int, answered: int, silent: int, bad: int, guarded: int) -> str:
+    """那一屏收尾的一句合计。
+
+    「没答」单独报数而不是混在「有毛病」里：那 11 件纯库**本来就不该答**（§2.69 的
+    「没有入口」那一档），把它们算成毛病就等于把上一节的读数又判红一遍；
+    可它们必须写在屏幕上，因为「今天有 29 件在跑、其中 11 件是白跑」这件事
+    只有那一句能说出来。
+
+    >>> each_tally(29, 18, 11, 0, 0)
+    '合计 29 件：答 18 件、没答 11 件；用例数与静态全对上、护栏一件都没拦下'
+    >>> each_tally(29, 18, 11, 3, 2)
+    '合计 29 件：答 18 件、没答 11 件；3 件有毛病，其中 2 件是护栏拦下来的'
+    """
+    if not bad:
+        return (f"合计 {total} 件：答 {answered} 件、没答 {silent} 件；"
+                "用例数与静态全对上、护栏一件都没拦下")
+    tail = f"，其中 {guarded} 件是护栏拦下来的" if guarded else ""
+    return f"合计 {total} 件：答 {answered} 件、没答 {silent} 件；{bad} 件有毛病{tail}"
+
+
+def spawn_each(path: pathlib.Path, argv: tuple[str, ...] = (DOCTEST_FLAG,)
+               ) -> tuple[int, str, str]:
+    """在护栏底下起一个子进程真跑这一件，返回（它的退码，它的 stdout，它的 stderr）。
+
+    没有 doctest：这一句要起进程。判据全部在上面那三层（`parse_own_line`／`parse_guard`／
+    `each_verdict`），它们都能拿一段假输出喂 —— 这一句只负责「真跑」。
+
+    两个细节是有原因的：
+    * `PYTHONDONTWRITEBYTECODE=1` —— 不递的话子进程往 `.venv` 掉 `.pyc`，
+      `names` 那把尺当场涨（2.56 记过的那一格：871 与 891 的差就是这么来的）。
+    * `-X utf8` —— 跟这个仓库里每一条写进文档的命令一致；不带的话在
+      `LANG` 不是 UTF-8 的 shell 里，那些中文说明书会变成 `UnicodeDecodeError`。
+    """
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    cmd = [sys.executable, "-X", "utf8", str(ROOT / "scripts" / "work_guard.py"),
+           str(path.relative_to(ROOT)), *argv]
+    try:
+        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                           timeout=EACH_TIMEOUT, env=env)
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
+        return -1, out + f"\n✗ 超过 {EACH_TIMEOUT} 秒没回来（它多半在干自己的活）", ""
+    return p.returncode, p.stdout, p.stderr
+
+
+def run_each(pattern: str = "") -> int:
+    """`--each` 那一档：逐件真跑，屏幕上那一屏就是本件的产物。
+
+    为什么这一档不进 `selfcheck.py`：它要起 29 个进程（03:27 实测全跑 3.0 秒），而自检那一屏
+    的规矩是「14 条、每一秒都要有理由」；更要紧的是它会把每一件自己的 stdout 再过一遍 ——
+    中性那一遍就不中性了。它是**手跑的**：改完一批门之后自己去看一眼。
+
+    退码按 2.62 那三档：**2** = 护栏那一句一件都没读到（什么都没量到，包括「护栏没意见」
+    这一条都没读到）；**1** = 有毛病；**0** = 全对且全读到。
+    """
+    rows = each_targets(pattern)
+    if not rows:
+        print(f"✗ 一件都没挑出来（过滤器 {pattern!r}）—— 这一遍什么都没量到", file=sys.stderr)
+        return 2
+    print(f"逐件真跑 `{DOCTEST_FLAG}`（{len(rows)} 件，每件一个子进程、"
+          f"都挂在 scripts/work_guard.py 底下）")
+    bad = answered = silent = guarded_files = no_guard = 0
+    for path, want, route in rows:
+        rel = str(path.relative_to(ROOT))
+        rc, out, err = spawn_each(path)
+        line = each_verdict(rel, want, route, rc, out)
+        print(line)
+        if parse_own_line(out) is None:
+            silent += 1
+        else:
+            answered += 1
+        n, _ = parse_guard(out)
+        if n is None:
+            no_guard += 1
+            if err.strip():                       # 护栏那句都没读到，stderr 是那唯一的一点线索
+                print(f"    它那边的 stderr 第一行："
+                      f"{(err.splitlines() or [''])[0][:150]}")
+        elif n:
+            guarded_files += 1
+        if line.startswith("✗"):
+            bad += 1
+    print(each_tally(len(rows), answered, silent, bad, guarded_files))
+    if no_guard == len(rows):
+        print("✗ 护栏那一句一件都没读到 —— 这一遍什么都没量到，不算「全过」")
+        return 2
+    return 1 if bad else 0
+
+
 def main(argv: list[str]) -> int:
     for p in (str(ROOT), str(ROOT / "scripts")):
         if p not in sys.path:
             sys.path.insert(0, p)
 
-    # 这支脚本只收一个位置参数（模块名的子串），没有 `--help`。递给它一个旗标，
-    # 它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和 scripts/ 还在不在」——
+    # 这支脚本只收一个位置参数（模块名的子串），加上 2.70 那一档 `--each`。递给它一个别的
+    # 旗标，它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和 scripts/ 还在不在」——
     # 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己踩过一次，见 2.56。
+    if argv and argv[0] == EACH_FLAG:
+        rest = [a for a in argv[1:] if not a.startswith("-")]
+        return run_each(rest[0] if rest else "")
     if argv and argv[0].startswith("-"):
-        print(f"✗ 我不收旗标（给的是 {argv[0]!r}）。唯一的参数是模块名里的一个子串：\n"
+        print(f"✗ 我不收这个旗标（给的是 {argv[0]!r}）。旗标只有 `--each` 一个"
+              f"（{DOCTEST_FLAG} 除外，那是跑本件这一份用例的）；位置参数是模块名里的一个子串：\n"
               f"    .venv/bin/python scripts/run_doctests.py            # 全部\n"
-              f"    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的",
+              f"    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的\n"
+              f"    .venv/bin/python scripts/run_doctests.py --each     # 每件一个子进程，真跑",
               file=sys.stderr)
         return 2
 
