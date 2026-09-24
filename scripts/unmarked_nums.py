@@ -48,8 +48,9 @@ import re
 import sys
 import tempfile
 from collections import Counter
+from dataclasses import field
 from pathlib import Path
-from typing import NamedTuple, Sequence
+from typing import Mapping, NamedTuple, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "output"
@@ -101,7 +102,14 @@ class Hit(NamedTuple):
 
 
 class Ledger(NamedTuple):
-    """一屏的账。`yi` 是个性质不是个数 —— 乙 由定义就是那三桶之和，配平不会自己崩。"""
+    """一屏的账。`yi` 是个性质不是个数 —— 乙 由定义就是那三桶之和，配平不会自己崩。
+
+    `bydoc` 是 2.67 加的那本逐篇账：键是 `(哪一档, 哪一篇)`。这一屏每一行原来都只有一个总数，
+    「乙 109 处」「丙 481 处」都不说**是谁贡献的**，于是「这一轮分母为什么涨了 1」只能靠人开
+    `--all` 数 127 行 —— 2.63/2.64/2.65 三节收笔人肉回答的就是同一句话，2.66 给命令尺那一档
+    装过同一个形状。篇名直接用 `read_all` 给出的那一串（`docs/…`），不另写一份短名：两层的
+    名字必须逐字相同，否则「丁 点名到的那一篇」和「戊/己 拆分里的同一篇」会读成两篇。
+    """
     marks: int            # 甲：挂了标记、且数尺也数到同一批位置
     digits: int           # 读到的数字 token 总数（围栏内的不算读）
     ding: list[Hit]       # 乙·丁：同一行有标记 + 值撞得上
@@ -109,6 +117,7 @@ class Ledger(NamedTuple):
     ji: list[Hit]         # 乙·己：这个值文档里没挂过
     other: int            # 丙：数字后面既没量词也没标记
     skips: Counter        # ordinal / code / time
+    bydoc: Counter = field(default_factory=Counter)   # (档, 篇名) → 处数，只记**读到**的那些篇
 
     @property
     def yi(self) -> int:
@@ -281,6 +290,7 @@ def bucketize(docs: Sequence[tuple[str, str]], values: dict[str, int]) -> Ledger
     keyed_vals: set[int] = set()
     marks = digits = other = 0
     skips: Counter = Counter()
+    bydoc: Counter = Counter()          # 2.67：每一档各是谁贡献的，见 `Ledger.bydoc`
     for name, text in docs:
         lines: list[object] = []
         inside = False
@@ -295,8 +305,10 @@ def bucketize(docs: Sequence[tuple[str, str]], values: dict[str, int]) -> Ledger
             mk = marks_at(line)
             toks, sk = scan_line(line)
             marks += len(mk)
+            bydoc[("甲", name)] += len(mk)
             keyed_vals.update(v for _s, _e, v, _k in mk)
             digits += len(mk) + len(toks) + sum(sk.values())
+            bydoc[("数字", name)] += len(mk) + len(toks) + sum(sk.values())
             skips.update(sk)
             lines.append((mk, toks))
         per_doc.append((name, lines))
@@ -312,6 +324,7 @@ def bucketize(docs: Sequence[tuple[str, str]], values: dict[str, int]) -> Ledger
             for val, unit in toks:
                 if not unit:
                     other += 1
+                    bydoc[("丙", name)] += 1
                     continue
                 h = Hit(name, lineno, val, unit, mates, by_val.get(val, ()))
                 if val not in keyed_vals:
@@ -320,7 +333,20 @@ def bucketize(docs: Sequence[tuple[str, str]], values: dict[str, int]) -> Ledger
                     ding.append(h)
                 else:
                     wu.append(h)
-    return Ledger(marks, digits, ding, wu, ji, other, skips)
+    for kind, hits in (("丁", ding), ("戊", wu), ("己", ji)):
+        bydoc.update((kind, h.doc) for h in hits)
+    # 「只报数」是结论句里那一个数的档名（戊＋己）。单独记一份而不是在渲染时现加：
+    # 那一屏要说的是「这 {n} 处是谁」，与乙那一行的三桶拆分是两句话。
+    bydoc.update(("只报数", h.doc) for h in wu + ji)
+    # 丁/戊/己/只报数 那四档靠名单数，一篇一处没贡献时它**根本不在名单里**；甲/丙/数字 靠
+    # 逐行累加，那一篇会留下一个 0。09-25 00:30 那遍 `G17` 第一次跑就抓到这件事：同一屏上
+    # 「甲 …其中 A 1、B 1」有零、「戊 …其中 A 1」没有零 —— 同一个词在两行里是两种账，
+    # 读的人无从知道。所以这里把四档也按读到的篇补 0，让「这一档谁都没贡献」与「这篇没查」
+    # 在屏幕上长得不一样（后者由 `unread` 那一行说，见 `B10`）。
+    for name, _lines in per_doc:
+        for kind in ("甲", "丁", "戊", "己", "只报数", "丙", "数字"):
+            bydoc[(kind, name)] += 0
+    return Ledger(marks, digits, ding, wu, ji, other, skips, bydoc)
 
 
 def cross_check(mine: int, theirs: int) -> str | None:
@@ -343,26 +369,80 @@ def cross_check(mine: int, theirs: int) -> str | None:
             "这一屏每个处数都不可信，先看数尺那一屏。")
 
 
+def split(counts: Mapping[str, int], total: int) -> str:
+    """把「某一档逐篇各几处」收成一句尾巴：`，其中 甲篇 18、乙篇 14`。
+
+    为什么要有这一层（2.67）：这一屏每一行以前只有一个总数。`render` 结论句里那句
+    「另有 104 处只报数」连着三节都要靠人开 `--all` 数 —— 09-25 00:21:39 那遍量到的是
+    `--all` 127 行、13227 字节，而默认那一屏 19 行、1959 字节（同一棵树里 00:42:54 拿 HEAD 那一版
+    现跑；改后 127 行、13639 字节与 19 行、2371 字节 —— 两处都正好多 412 字节，这一层只往既有行
+    尾巴上接字，一行都没多）：想知道「是哪一篇动了」得先摊开
+    六倍半的东西。命令尺那一档（`check_doc_cmds.py`）2.66 刚装过同一个形状，排序照它一样按
+    `(-处数, 篇名)`，多的在前，**不折算成百分比**（分母本身可能缺一块，见 `unread`）。
+
+    连接词用「，其中」而不是 2.66 那句的「 —— 」：这一屏的拆分有三处落在句中或括号里
+    （丙 那行「 —— 日期、钟点…」后面还要留「 —— 」给那句限定、结论句那个括号里面套一层），
+    同一条线上出现两个「 —— 」就读不出哪个是限定、哪个是拆分了。
+
+    逐篇之和对不上这一行报的总数时说「分不开」，不报那个错的和：这一层只可能因为
+    `bucketize` 记漏某一篇而不对，而那种时候最坏的就是屏幕上留下一个看着像结论的数。
+
+    >>> split({"docs/电视订阅接入.md": 18, "docs/真机验收单.md": 14}, 32)
+    '，其中 docs/电视订阅接入.md 18、docs/真机验收单.md 14'
+    >>> split({"b.md": 1, "a.md": 1}, 2)          # 一样多时按名字排，不按插入顺序
+    '，其中 a.md 1、b.md 1'
+    >>> split({}, 0)                              # 这一档一处都没有：不印一句空尾巴
+    ''
+    >>> split({"a.md": 0, "b.md": 2}, 2)          # 一处没贡献的篇也点名：0 是个结论
+    '，其中 b.md 2、a.md 0'
+    >>> split({"a.md": 1}, 3)                     # 加起来对不上 → 说清楚分不开，不报那个 1
+    '，其中各篇加起来 1 处，与这一行报的 3 处分不开'
+    >>> split({"a.md": 0}, 3)                     # 一格都没记到，总数却不是 0：同一种大声
+    '，其中各篇加起来 0 处，与这一行报的 3 处分不开'
+    >>> split({"a.md": 0, "b.md": 0}, 0)          # 整档全空：不印一句「其中 0、0」
+    ''
+    """
+    s = sum(counts.values())
+    if not s:
+        return "" if not total else f"，其中各篇加起来 0 处，与这一行报的 {total} 处分不开"
+    if s != total:
+        return f"，其中各篇加起来 {s} 处，与这一行报的 {total} 处分不开"
+    return ("，其中 " + "、".join(f"{n} {c}" for n, c in
+                                 sorted(counts.items(), key=lambda t: (-t[1], t[0]))))
+
+
 def render(led: Ledger, docs: Sequence[Path], base: Path, *, show_all: bool,
            unread: Sequence[tuple[str, str]] = ()) -> list[str]:
-    """那一屏：先配平，再点名，最后一行是给 `selfcheck.conclusion()` 挑走的结论。"""
+    """那一屏：先配平，再点名，最后一行是给 `selfcheck.conclusion()` 挑走的结论。
+
+    2.67 给每一行只有总数的地方接了一句「是谁贡献的」（`split`）。为什么不并成一行
+    「分篇明细见 `--all`」：改前两遍实测是 127 行与 19 行（差六倍半），而三节履历里反复要回答的
+    只有「哪一篇动了几个」这一句 —— 为了一句话摊开六倍半的东西，等于没有那一档。
+    """
+    by = led.bydoc
+
+    def tail(kind: str, total: int) -> str:
+        return split({n: c for (k, n), c in by.items() if k == kind}, total)
+
     out = ["文档里写了数、没挂标记的地方 —— 这一档报数，不拦候选",
            f"以 {doc_num.as_of(base)} 为准 · {'、'.join(p.name for p in docs)}",
            "",
-           f"甲 挂了标记、且与数尺数到同一批位置：{led.marks} 处",
+           f"甲 挂了标记、且与数尺数到同一批位置：{led.marks} 处{tail('甲', led.marks)}",
            f"乙 数字＋量词、没挂标记：{led.yi} 处 = 丁 {len(led.ding)} + 戊 {len(led.wu)}"
            f" + 己 {len(led.ji)}",
            f"   丁 同一行别处挂着标记、这个值又是文档里挂过的数：{len(led.ding)} 处 ← 逐条点名",
-           f"   戊 值对得上、同一行没有标记：{len(led.wu)} 处（只报数：撞值的多半是别的数）",
-           f"   己 这个值文档里从没挂过标记：{len(led.ji)} 处（只报数）",
-           f"丙 数字后面没有量词、也没标记：{led.other} 处 —— 日期、钟点、编号都在里面，这一档不分它"]
+           f"   戊 值对得上、同一行没有标记：{len(led.wu)} 处"
+           f"（只报数：撞值的多半是别的数）{tail('戊', len(led.wu))}",
+           f"   己 这个值文档里从没挂过标记：{len(led.ji)} 处（只报数）{tail('己', len(led.ji))}",
+           f"丙 数字后面没有量词、也没标记：{led.other} 处{tail('丙', led.other)}"
+           " —— 日期、钟点、编号都在里面，这一档不分它"]
     if led.skips:
         out.append("   跳过的：" + "、".join(
             f"{SKIP_WHY.get(k, k)} {v} 处"
             for k, v in sorted(led.skips.items(), key=lambda t: (-t[1], t[0]))))
     out.append("   配平：甲 + 乙 + 丙 + 跳过 = " + str(led.marks + led.yi + led.other
                + sum(led.skips.values()))
-               + (f"，读到的数字 {led.digits} 个" if led.balanced else
+               + (f"，读到的数字 {led.digits} 个{tail('数字', led.digits)}" if led.balanced else
                   f" 不等于读到的数字 {led.digits} 个 —— 不合：有数字被两处同时认领，"
                   "这一屏每个处数都别读"))
     if led.ding:
@@ -381,7 +461,8 @@ def render(led: Ledger, docs: Sequence[Path], base: Path, *, show_all: bool,
         out += ["", f"上面每一行处数只覆盖读到的那 {len(docs) - len(unread)} 篇，"
                     f"另有 {len(unread)} 篇没读到 —— 这一屏不是「文档里就这些数」。"]
     out += ["", f"扫了 {len(docs)} 篇文档：甲 {led.marks} 处、乙 {led.yi} 处"
-            f"（点名 {len(led.ding)} 处、另有 {len(led.wu) + len(led.ji)} 处只报数）、"
+            f"（点名 {len(led.ding)} 处、另有 {len(led.wu) + len(led.ji)} 处只报数"
+            f"{tail('只报数', len(led.wu) + len(led.ji))}）、"
             f"丙 {led.other} 处、跳过 {sum(led.skips.values())} 处"
             + (f"，{len(unread)} 篇没读到" if unread else "")
             + " —— 候选点几条都不改退码"]
@@ -397,7 +478,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="把只报数的那两档（戊/己）也逐条摊开")
     ap.add_argument("--self-test", action="store_true", dest="self_test",
                     help=f"往临时目录里种 {len(BASELINE)} 格已知形状的文档，问这把尺分桶分得对不对")
-    # `--doctest` 不在 `main()` 里走，它在模块末尾先被拦下（那 22 格是调 `main(argv)`，
+    # `--doctest` 不在 `main()` 里走，它在模块末尾先被拦下（那 30 格是调 `main(argv)`，
     # 让这一支进 `main` 就等于让基线去跑基线）。写进 argparse 只为了一句：文档尺会拿
     # `--help` 核对每一条长参数，不写进来的话，计划书里那条照抄的命令会被判「对不上」。
     ap.add_argument("--doctest", action="store_true",
@@ -534,10 +615,70 @@ BASELINE: tuple[Cell, ...] = (
     Cell("G13_日期落丙", "日期那种数没量词：落 丙，且不许被序数闸吃掉",
          0, files=((DOC, L1 + "。2026-09-21 量过"),),
          has=("丙 数字后面没有量词、也没标记：3 处", "配平：甲 + 乙 + 丙 + 跳过 = 4")),
+    # —— 以下 6 格钉的是 2.67 那句「，其中 …」：每一行的处数要说得出是谁贡献的 ——
+    #    期望句里带着 `<T>/本格名/` 那一段：沙盒里 `read_all` 给不出仓库相对名，篇名就是那条
+    #    长路径（`hide_tmp` 只把临时根换成 `<T>`）。写全它顺带钉住一件事 —— 拆分里的名字与
+    #    丁 逐条点名用的是同一串，不是又短写了一份。
+    Cell("G14_戊拆分到篇", "「戊 3 处」后面得跟着哪一篇几个 —— 为的是不用再开一次 `--all`",
+         0, files=((DOC, L3 + "\n另外那 {aptv:lines} 条"),
+                   ("另一篇.md", L3 + "\n另外那 {aptv:lines} 条\n还那 {aptv:lines} 条")),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/另一篇.md"),
+         has=("戊 值对得上、同一行没有标记：3 处（只报数：撞值的多半是别的数），"
+              "其中 <T>/G14_戊拆分到篇/另一篇.md 2",
+              "、<T>/G14_戊拆分到篇/假文档.md 1"),
+         lacks=("分不开",)),
+    Cell("G15_一样多按名字排", "两篇各 1 处时排在前面的必须是名字，不是谁先读到",
+         0, files=((DOC, L3 + "\n另外那 {aptv:lines} 条"),
+                   ("另一篇.md", L3 + "\n另外那 {aptv:lines} 条")),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/另一篇.md"),
+         has=("甲 挂了标记、且与数尺数到同一批位置：2 处，"
+              "其中 <T>/G15_一样多按名字排/假文档.md 1、<T>/G15_一样多按名字排/另一篇.md 1",)),
+    Cell("G16_丙也点名到篇", "丙 是这一屏最大的一个数，它同样得说得出是谁写的",
+         0, files=((DOC, L1 + "。2026-09-21 量过"), ("另一篇.md", L1 + "。2026 量过")),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/另一篇.md"),
+         has=("丙 数字后面没有量词、也没标记：4 处，其中 <T>/G16_丙也点名到篇/假文档.md 3",
+              "、<T>/G16_丙也点名到篇/另一篇.md 1 —— 日期、钟点、编号都在里面，这一档不分它")),
+    Cell("G17_零也要点名", "一篇在这一档一处都没有，那一个 0 也得摆在拆分里 —— 少了它读成没查",
+         0, files=((DOC, L3 + "\n另外那 {aptv:lines} 条"), ("另一篇.md", L3)),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/另一篇.md"),
+         has=("戊 值对得上、同一行没有标记：1 处（只报数：撞值的多半是别的数），"
+              "其中 <T>/G17_零也要点名/假文档.md 1、<T>/G17_零也要点名/另一篇.md 0",),
+         lacks=("0 处（只报数），其中",)),      # 整档全空那一行不印「其中 0、0」：那是一句废话
+    Cell("G18_数字拆分跟着配平", "配平那行的「读到的数字 N 个」逐篇加起来必须等于 N",
+         0, files=((DOC, L3 + "\n另外那 {aptv:lines} 条"),
+                   ("另一篇.md", L3 + "\n那边也是 {aptv:lines} 条")),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/另一篇.md"),
+         has=("配平：甲 + 乙 + 丙 + 跳过 = 4，读到的数字 4 个，"
+              "其中 <T>/G18_数字拆分跟着配平/假文档.md 2、"
+              "<T>/G18_数字拆分跟着配平/另一篇.md 2",),
+         lacks=("分不开",)),
+    Cell("G19_结论那句也点名", "selfcheck 只印这一屏最后一行 —— 拆分不挂到结论句上就等于没挂",
+         0, files=((DOC, L3 + "\n另外那 {aptv:lines} 条"),
+                   ("另一篇.md", L3 + "\n另外那 {aptv:lines} 条\n还那 {aptv:lines} 条")),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/另一篇.md"),
+         has=("扫了 2 篇文档：甲 2 处、乙 3 处（点名 0 处、另有 3 处只报数，"
+              "其中 <T>/G19_结论那句也点名/另一篇.md 2",
+              "、<T>/G19_结论那句也点名/假文档.md 1）"),
+         lacks=("分不开",)),
+    Cell("G20_己那行也点名", "己 是三桶里最大的那一桶（真文档上 72／104），它不能只有一行总数",
+         0, files=((DOC, L1 + "，还有 {aptv:lines+1} 条"),
+                   ("另一篇.md", L1 + "，还有 {aptv:lines+1} 条、{aptv:lines+2} 条")),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/另一篇.md"),
+         has=("己 这个值文档里从没挂过标记：3 处（只报数），"
+              "其中 <T>/G20_己那行也点名/另一篇.md 2、<T>/G20_己那行也点名/假文档.md 1",),
+         lacks=("分不开",)),
     Cell("B1_一篇不在", "量到了但要说出缺一块：退 1，不是退 0（2.58 那条同形）",
          1, files=((DOC, L3),), argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/不在.md"),
          has=("没读到：", "上面每一行处数只覆盖读到的那 1 篇，另有 1 篇没读到",
               "甲 挂了标记、且与数尺数到同一批位置：1 处")),
+    Cell("B10_没读到的不进拆分", "2.67 那一句「，其中 …」里只许出现**读到**的篇：给没读到的补一个 0 "
+                                "就等于把「查了，没有」写成结论（§2.32 那一族，换个形状重现）",
+         1, files=((DOC, L3 + "\n另外那 {aptv:lines} 条"),),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/不在.md"),
+         has=("戊 值对得上、同一行没有标记：1 处（只报数：撞值的多半是别的数），"
+              "其中 <T>/B10_没读到的不进拆分/假文档.md 1",),
+         lacks=("其中 <T>/B10_没读到的不进拆分/不在.md",
+                "假文档.md 1、<T>/B10_没读到的不进拆分/不在.md")),
     Cell("B2_标记写歪", "标记前面没贴着数：数尺数到两处、我只数到一处 → 每个处数都不可信",
          2, files=((DOC, L3 + "，括号〔数:aptv:lines〕 前面没数"),),
          has=("两把尺对不上：我数到 1 处", "`doc_num` 数到 2 处")),
@@ -613,7 +754,7 @@ def run_cell(cell: Cell, base: Path, values: dict[str, int]) -> tuple[str, str, 
 
 
 def self_test() -> int:
-    """`--self-test`：往临时目录里种 22 格已知形状的文档，逐格对**跑之前**写死的期望。
+    """`--self-test`：往临时目录里种 30 格已知形状的文档，逐格对**跑之前**写死的期望。
 
     结论行带着「扫了」那个词（`scripts/selfcheck.py` 的 `conclusion()` 靠它挑句子），
     过的一格一行流水、不符期望的留在最后 —— 与 §2.56~2.58 那三档同形，理由也同形：
