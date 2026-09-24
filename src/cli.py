@@ -78,7 +78,7 @@ from src.check.epg import (  # noqa: E402
 from src.check.prober import ProbeResult, is_fake_live, probe_many  # noqa: E402
 from src.check.scope import (  # noqa: E402
     AUDIO, INTRANET, PUBLIC, RANK, Reachability, config_fingerprint, dead_tier_lines,
-    diff_alert_lines, diff_rule_rounds, load_reachability, pool_fingerprint)
+    diff_alert_lines, diff_rule_rounds, load_reachability, pool_fingerprint, reach_order_note)
 from src.keys import (  # noqa: E402
     _NOT_SET, check_keys, check_version, flag_value, order_value, shape_word, text_value)
 from src.match.matcher import load_index  # noqa: E402
@@ -1546,7 +1546,8 @@ def load_lean_fn():
 
 
 def build_arg_problems(max_lines: int, max_per_host: int, timeout: int,
-                       workers: int, *, verifying: bool) -> list[str]:
+                       workers: int, *, verifying: bool,
+                       try_reach: str = "", out_is_default: bool = False) -> list[str]:
     """那几个数字取到「什么都能干掉」的值时，先说清楚再去碰网络和磁盘。
 
     2.37 实测：`--max-lines 0`（手一抖把 10 打成 0）走完整条 `build` 是
@@ -1561,6 +1562,12 @@ def build_arg_problems(max_lines: int, max_per_host: int, timeout: int,
     数字只在它管得着的地方管：`--timeout` / `--workers` 只有实测那一支会用到，
     离线重出表时它们根本没参与，所以不拦（拦了反而挡住「先离线试试配置」这条路）。
 
+    `--try-reach`（2.53 的试算）走的是同一道闸，因为它是同一种坏法：**拿一份没打算
+    用上的规则，出张表，盖在订阅目录上**。候选规则出的表跟真表差多少，屏幕上不会说
+    （挪得巧时两遍逐字节相同，谁也不知道这一轮到底比的是哪份配置），而它退 0 时无声无息。
+    所以这一条只认「换个 `--out`」，不给 `--allow-untrusted` 那种明知故犯的口子 ——
+    那个 flag 管的是「判决可不可信」，这里管的是「这张表是不是拿来播的」，两回事。
+
     >>> build_arg_problems(3, 2, 12, 20, verifying=True)
     []
     >>> build_arg_problems(0, 2, 12, 20, verifying=False)
@@ -1572,6 +1579,14 @@ def build_arg_problems(max_lines: int, max_per_host: int, timeout: int,
     >>> print(*build_arg_problems(3, 2, 0, 0, verifying=True), sep="\\n")
     --timeout 是 0：每条线路都会被判成超时，那一轮记录等于「全军覆没」，别把它写进履历
     --workers 是 0：线程池开不出来（实测那一支会直接 ValueError 崩）
+    >>> build_arg_problems(3, 2, 12, 20, verifying=False,
+    ...                    try_reach="/tmp/候选.yaml", out_is_default=True)
+    ['--try-reach 换的是范围规则，出来的那张表也跟着变：这种表不许盖掉 data/output/ 里那张能播的。加一个 --out /tmp/试算 再跑']
+    >>> build_arg_problems(3, 2, 12, 20, verifying=False,
+    ...                    try_reach="/tmp/候选.yaml", out_is_default=False)     # 换个目录就放行
+    []
+    >>> build_arg_problems(3, 2, 12, 20, verifying=False, out_is_default=True)   # 没试算就不关这件事
+    []
     """
     bad: list[str] = []
     if max_lines < 1:
@@ -1586,6 +1601,9 @@ def build_arg_problems(max_lines: int, max_per_host: int, timeout: int,
                        f"那一轮记录等于「全军覆没」，别把它写进履历")
         if workers < 1:
             bad.append(f"--workers 是 {workers}：线程池开不出来（实测那一支会直接 ValueError 崩）")
+    if try_reach and out_is_default:
+        bad.append("--try-reach 换的是范围规则，出来的那张表也跟着变：这种表不许盖掉 "
+                   "data/output/ 里那张能播的。加一个 --out /tmp/试算 再跑")
     return bad
 
 
@@ -1684,6 +1702,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="临时指定上游（URL 或本地文件），可重复；给了它就忽略 sources.yaml")
     ap.add_argument("--sources-file", default=str(SOURCES_FILE))
     ap.add_argument("--config", default=str(ROOT / "config" / "channels.yaml"))
+    ap.add_argument("--try-reach", metavar="PATH", default="",
+                    help="拿另一份范围规则**试算**：这一条挪个位置、删掉，那张表会怎么变（计划书 2.53）。"
+                         "config/ 一个字都不改，且必须另给一个 --out —— 候选规则出的表不许盖掉"
+                         "订阅目录里那张能播的表")
     ap.add_argument("--out", default=str(ROOT / "data" / "output"))
     ap.add_argument("--max-lines", type=int, default=3, help="每个频道最多保留几条线路")
     ap.add_argument("--max-per-host", type=int, default=2, help="同一频道内同一主机最多几条")
@@ -1729,8 +1751,11 @@ def cmd_build(argv: list[str]) -> int:
         return 1
     # 数字取歪了要在这里说，不能等到写盘那一刻：`--max-lines 0` 以前能把
     # data/output/ 四张表各自盖成一行表头，然后退 0（见 build_arg_problems）。
+    # `--try-reach` 那份表是不是「拿来播的」也在这里问：判据是 `--out` 有没有离开默认目录。
     problems = build_arg_problems(args.max_lines, args.max_per_host, args.timeout,
-                                  args.workers, verifying=bool(args.verify))
+                                  args.workers, verifying=bool(args.verify),
+                                  try_reach=args.try_reach,
+                                  out_is_default=Path(args.out) == Path(str(ROOT / "data" / "output")))
     if problems:
         for p in problems:
             print(f"⚠️ {p}", file=sys.stderr)
@@ -1743,8 +1768,16 @@ def cmd_build(argv: list[str]) -> int:
         print(f"⚠️ --out {out_hint} 是一个文件，不是放产物的目录。\n"
               f"   这一轮不出表 —— 换个目录，或者先把那个文件挪走", file=sys.stderr)
         return 1
+    # 试算那份候选文件根本不存在时，要在读上游之前说：否则先白跑一遍缓存/网络，
+    # 最后才告诉你路径打错了（`--config` 那份的账早在 2.37 就还过，这一条是同一格）。
+    if args.try_reach and not Path(args.try_reach).is_file():
+        print(f"⚠️ --try-reach {args.try_reach} 不是一份读得进来的文件（要它存在、是普通文件）。\n"
+              f"   这一轮不出表；config/reachability.yaml 一个字都没动。", file=sys.stderr)
+        return 1
 
-    # 频道配置决定表上有哪些台，所以它要在**读那 1868 条上游之前**先读进来。
+    # 频道配置决定表上有哪些台，所以它要在**读整批上游条目之前**先读进来。
+    # （这里不写条数：那批数是缓存里有多少条就是多少条，而「1868」和「1869」在本仓库
+    #  分别是「三份缓存」与「含手工源的池子」两个口径 —— 2.53 抄数时撞上，注释只指口径名。）
     # 以前它在 collect 之后：一份合法、只是缺 `hunan_local` 分组的配置，会先把上游
     # 读完、把 aptv.m3u 盖成 7 行，然后才崩在 group_title() 的 KeyError 上（2.37 实测）。
     try:
@@ -1805,11 +1838,32 @@ def cmd_build(argv: list[str]) -> int:
         return 1
 
     # `index` 在碰网络之前就读好了（2.37：它读不进去时最晚在这里说，见函数开头）
+    # `--try-reach`（2.53）只换掉「读哪一份规则」这一件事：判档、排序、窗口全走同一条代码，
+    # 所以它答的是「这张表会怎么变」，不是「另一套逻辑会怎么算」。
+    reach_file = Path(args.try_reach) if args.try_reach else REACH_FILE
     try:
-        reach = load_reachability(REACH_FILE)
+        reach = load_reachability(reach_file)
     except (OSError, ValueError, yaml.YAMLError) as e:
-        return stop_config("范围规则", REACH_FILE, e,
-                           "少一档规则，运营商内网地址就会跑去占第一线 —— 真机上正是这么坏的（2.9）")
+        return stop_config("范围规则", reach_file, e,
+                           "少一档规则，运营商内网地址就会跑去占第一线 —— 真机上正是这么坏的（2.9）"
+                           + ("；这一份是 --try-reach 给的候选文件，跟 config/ 里那份无关"
+                              if args.try_reach else ""))
+    if args.try_reach:
+        # 这句话是这一轮的全部前提：表上那些「公网/专网」的判法来自一份**不打算用上的**文件。
+        # 少了它，看的人会把试算出来的那张表当成部署事实（2.44 那种「两个读法」的病，反过来）。
+        # 顺带把 config 那一份也读一遍：不是为了用它判档，是为了「挪了什么」这句答得出来，
+        # 也是为了不让一份读不进来的正式配置藏在这次试算后面。
+        try:
+            base_reach = load_reachability(REACH_FILE)
+            note = reach_order_note(base_reach, reach)
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            note = f"`config/reachability.yaml` 这一份读不进来（{type(e).__name__}），比不了"
+        n_rules = len(reach.rules) + len(reach.audio_rules)
+        print(f"\n⚠️ 本轮是**试算**：范围规则读的是 `{reach_file}`（{n_rules} 条），"
+              f"不是 `config/reachability.yaml`。\n"
+              f"   这一动：{note}\n"
+              f"   它只回答「挪一下会怎样」，不回答「电视上现在是什么」；"
+              f"产物在 `{args.out}`，`config/` 与订阅目录都没动。")
 
     # P3（计划书 2.19）：`tvg-id` 由「选定的节目单里到底有哪个 id」决定，不再由谁先创建频道桶决定。
     # 节目单取不到就是空单，`apply_ids()` 拿到空单什么都不改 —— 这一层不能变成新的失效面。
@@ -2025,7 +2079,12 @@ def cmd_build(argv: list[str]) -> int:
                    "at": round_at, "mode": round_mode, "egress": egress, "warnings": warns,
                    "replay_at": replay_at if replay else "",
                    "fingerprint": pool_fingerprint(up_urls),
-                   "cfg_fingerprint": config_fingerprint(REACH_FILE),
+                   # 「本轮判档读的是哪一份」也是观测，得跟指纹一起落进履历那一行：
+                   # 试算那几轮的表跟正式那一份不同源，下一轮比对时那句「规则文件改过了」
+                   # 必须说得出改的是哪一份（2.53）。没挂 `--try-reach` 时它是仓库里那个相对路径。
+                   "cfg_name": (str(reach_file.relative_to(ROOT)) if reach_file.is_relative_to(ROOT)
+                                else str(reach_file)),
+                   "cfg_fingerprint": config_fingerprint(reach_file),
                    "chan_fingerprint": config_fingerprint(args.config),
                    # 排序窗口也进那一份履历：`--max-lines 2` 跑一次，进表那一列必然往下掉，
                    # 不记下参数就会把它读成「规则不管用了」。

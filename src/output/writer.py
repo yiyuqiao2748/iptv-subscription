@@ -10,7 +10,7 @@ from typing import Iterable
 
 from src.check.history import Suggestion  # 建议行的格式只有一份实现（2.17）
 from src.check.scope import (  # 「跟上一轮比」那一段的措辞只有一份实现（2.51）
-    diff_rule_rounds, eaten_clause, rule_diff_lines)  # 前者只给下面的 doctest 当「形状由生产者给」的样板
+    DEFAULT_REACH_NAME, diff_rule_rounds, eaten_clause, rule_diff_lines)  # 前者只给下面的 doctest 当「形状由生产者给」的样板
 
 _M3U_ATTRS = ("tvg-id", "tvg-name", "tvg-logo", "group-title")
 
@@ -900,9 +900,18 @@ def _reach_rule_section(meta: dict | None) -> list[str]:
     if meta is None:
         return []
     rows = meta.get("rows") or []
+    # 「本轮判档读的是哪一份」也是这一节的前提（2.53）。它为什么写在表**上面**而不是脚注：
+    # 这张表下面每一格都是那份文件的后果，而一份 /tmp 里的候选文件与 `config/` 那份的关系
+    # 是「试算」，不是「电视现在这样」。这句话漏了，读的人只能靠表上那些数不像真的去猜。
+    cfg_name = str(meta.get("cfg_name") or DEFAULT_REACH_NAME)
+    trial = "" if cfg_name == DEFAULT_REACH_NAME else (
+        f"- ⚠️ 这一节的每一格都出自 `{cfg_name}`（`--try-reach` 的**试算**），"
+        f"不是仓库里那份 `{DEFAULT_REACH_NAME}` —— 这张表不回答「电视上现在是什么」。\n")
     out = ["", "## 范围规则各自抓到几条（这一档今天到底有没有在起作用）", ""]
+    if trial:
+        out += [trial.rstrip("\n"), ""]
     if not rows:
-        return out + ["- `config/reachability.yaml` 里一条规则都没配上（文件不在，或者两格都留了空）："
+        return out + [f"- `{cfg_name}` 里一条规则都没配上（文件不在，或者两格都留了空）："
                       "本轮所有 http 线路一律按**公网**排，运营商内网地址会重新占住第一线 —— "
                       "计划书 2.9 那个「订阅加得上、湖南台全部超时」就是这个形状。"]
     out += ["| 档 | 规则 | 上游候选 | 进表 | 第一线 | 说法 |",
@@ -1152,9 +1161,12 @@ def format_report(
                   "所以内网线路是「手动切换备选」而不是默认路径。"
                   "电台地址排在最后，避免点开只出声音。"]
         if no_public:
+            # 「见哪份规则」也跟着本轮实际读的那一份走（2.53）：试算那一轮「哪些台没有公网线」
+            # 是候选文件的后果，指向仓库那份会让人在一份没参与的文件里找这些台。
+            seen = str((reach_rules or {}).get("cfg_name") or DEFAULT_REACH_NAME)
             lines += ["", f"### 一条公网线路都没有的 {len(no_public)} 个频道（Wi-Fi 上不用试）", "",
                       "、".join(no_public), "",
-                      "> 这些台目前唯一的来源是运营商 IPTV 内网，或只有电台同播（见 config/reachability.yaml）。"
+                      f"> 这些台目前唯一的来源是运营商 IPTV 内网，或只有电台同播（见 {seen}）。"
                       "要在电视上看，只能走 IPTV 机顶盒那个 VLAN，或者等 P5 找到它们的公网视频流。"]
 
     lines += _reach_rule_section(reach_rules)

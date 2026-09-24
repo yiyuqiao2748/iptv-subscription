@@ -30,6 +30,12 @@ import yaml
 
 from src.keys import _NOT_SET, check_keys, check_version, str_list_value
 
+# 正式那一份范围规则的位置，仓库相对路径。为什么要当常量写下来而不是在各句子里手抄：
+# 报告与屏幕那几处「去 diff `config/reachability.yaml`」以前是**写死的文件名**，
+# 而 `--try-reach`（2.53）那一轮读的是另一份 —— 那句话就从提醒变成了支使，把人支去
+# diff 一份这一轮根本没读过的文件。现在那句子的名字从履历那一行读，默认才是这一个。
+DEFAULT_REACH_NAME = "config/reachability.yaml"
+
 REACH_KEYS = ["version", "iptv_intranet", "audio_only"]
 # 这两档的键写歪就是整档失效，而表上完全看不出少了一档（2.9 那个真机故障的形状）。
 REACH_NOTES = {
@@ -434,6 +440,140 @@ def _indented(text: str, pad: str = "   ") -> str:
     return "\n".join(pad + ln.strip() for ln in text.strip().splitlines() if ln.strip())
 
 
+def reach_order_note(base: Reachability, cand: Reachability) -> str:
+    """两份范围规则的差别，一句话 —— 「这一动到底挪了什么」。
+
+    只比**名单里有哪些条、各在自己那一档的第几位**，不比注释、不比键的顺序。为什么连注释都不比：
+    注释不进 `_classify`，改一行注释会让内容指纹变（2.51 那个 `cfg_fingerprint`）而判档一字不差 ——
+    要是拿指纹当「挪了什么」，屏幕上就会出现一句「改过了」，而那一轮四张表逐字节相同
+    （2.53 量的就是这一格：`_pool_evidence` 那句归因当时说的是「不是同一份内容」，
+    听下来像规则动了，实际一个台的第一线都没换）。
+    档与档之间也不比顺序：判档永远是电台档先扫（2.52 量到的那条），把一条规则从内网档"挪到"
+    电台档，只能记成「这一档少了一条、那一档多了一条」，那是**换档**，不是挪位置。
+
+    名单一字不差时那一句**不许**说「那是重跑不是试算」：09-24 09:25 量到，
+    换一份只改过注释的文件，名单同样一字不差，可它确实是试算 —— 那半句会把这一动
+    说成没发生过。所以它只报事实（没进判定），把「重跑 / 只改注释」两种可能都摆着。
+
+    >>> a = Reachability(["tvgslb.hn.chinamobile.com", ".chinamobile.com"], [".qingting.fm"])
+    >>> b = Reachability([".chinamobile.com", "tvgslb.hn.chinamobile.com"], [".qingting.fm"])
+    >>> reach_order_note(a, b)
+    '档内先后换了 2 条：`.chinamobile.com` 第 2 → 第 1 位（内网档）、`tvgslb.hn.chinamobile.com` 第 1 → 第 2 位（内网档）'
+    >>> reach_order_note(a, Reachability(["tvgslb.hn.chinamobile.com"], [".qingting.fm"]))
+    '内网档少了 1 条：`.chinamobile.com`'
+    >>> reach_order_note(a, Reachability(["tvgslb.hn.chinamobile.com", ".chinamobile.com"], []))
+    '电台档少了 1 条：`.qingting.fm`'
+    >>> reach_order_note(a, Reachability(["tvgslb.hn.chinamobile.com", ".chinamobile.com", ".gw"], [".qingting.fm"]))
+    '内网档多了 1 条：`.gw`'
+    >>> reach_order_note(a, a)
+    '两档名单一字不差 —— 这一动没进判定（改的是注释、排版，或者干脆就是重跑）'
+    >>> reach_order_note(a, Reachability(["x.com"], [".qingting.fm"]))   # 又少又多：先说少、后说多
+    '内网档少了 2 条：`tvgslb.hn.chinamobile.com`、`.chinamobile.com`；内网档多了 1 条：`x.com`'
+    """
+    moves: list[str] = []
+    parts: list[str] = []
+    for tier, key in (("内网档", "rules"), ("电台档", "audio_rules")):
+        b, c = list(getattr(base, key)), list(getattr(cand, key))
+        for name, verb in (([r for r in b if r not in c], "少了"), ([r for r in c if r not in b], "多了")):
+            if name:
+                parts.append(f"{tier}{verb} {len(name)} 条：" + "、".join(f"`{r}`" for r in name))
+        for r in c:
+            if r in b and b.index(r) != c.index(r):
+                moves.append(f"`{r}` 第 {b.index(r) + 1} → 第 {c.index(r) + 1} 位（{tier}）")
+    if moves:
+        parts.append(f"档内先后换了 {len(moves)} 条：" + "、".join(moves))
+    return "；".join(parts) if parts else \
+        "两档名单一字不差 —— 这一动没进判定（改的是注释、排版，或者干脆就是重跑）"
+
+
+def reach_from_rows(rows: Iterable[dict]) -> Reachability:
+    """从一节 `rule_states` 那几行里把两档名单拼回来 —— 履历那一行没有名单，只有那几行。
+
+    为什么要拼得回来：`--try-reach` 之外，正式轮之间也会改配置，而下一轮比对时手里只有
+    上一轮落的那七行。「内容指纹不同」说的是**文件字节**，「这一动挪了什么」要说的是**名单**，
+    这两件事差得很远（2.53：只改一行注释 —— 指纹变、名单一字不差、四张表逐字节相同；
+    把 `.chinamobile.com` 挪到档内最前 —— 名单换了 2 条、192 条地址换了归属，四张表照样一字不差）。
+    那七行本身就带着名单与档内先后（`rule_states` 按 `coverage()` 那个 dict 的插入顺序走，
+    而它是按文件顺序摊开的），所以不必给履历那一行添新键。
+
+    边界：一条规则同时写进两档时 `coverage()` 只留一行（后写那档的名），拼回来的名单就少一条 ——
+    那一格另有 `dup` 在报警，这里不重复报。
+
+    >>> rs = Reachability(["a.com", "b.com"], ["c.fm"])
+    >>> back = reach_from_rows(rs.rule_states([], [], []))
+    >>> (list(back.rules), list(back.audio_rules))
+    (['a.com', 'b.com'], ['c.fm'])
+    >>> reach_order_note(rs, back)                 # 拼回来再比：等于没动
+    '两档名单一字不差 —— 这一动没进判定（改的是注释、排版，或者干脆就是重跑）'
+    >>> list(reach_from_rows([]).rules)
+    []
+    >>> r = Reachability(["tvgslb", ".chinamobile.com"], ["tvgslb"])   # 两档各写一遍：只留一行
+    >>> back = reach_from_rows(r.rule_states([], [], []))
+    >>> (list(back.rules), list(back.audio_rules))   # 内网档少的那一条拼不回来，落在电台档那行
+    (['.chinamobile.com'], ['tvgslb'])
+    >>> [x["tier"] for x in r.rule_states([], [], [])]   # 一行一个名：归到后写的那一档
+    ['audio_only', 'iptv_intranet']
+    """
+    tiers: dict[str, list[str]] = {INTRANET: [], AUDIO: []}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("tier") or "")
+        rule = str(row.get("rule") or "").strip()
+        if t in tiers and rule:
+            tiers[t].append(rule)
+    return Reachability(tiers[INTRANET], tiers[AUDIO])
+
+
+def roster_verdict(diff: dict | None) -> str:
+    """「文件字节换了，名单到底换没换」那半句 —— 两个面共用（屏幕上那行 ⚠️、
+    报告里「跟上一轮比」那一句）。空串 = 没什么要补的。
+
+    为什么单独一个函数而不是塞进 `_pool_evidence`：那两面对「指纹」的措辞不同
+    （一个说「换了一份规则文件」，一个说「不是同一份内容」），但对「名单」的说法必须一样。
+    2.53 量到那格就是这里漏了：只加一行注释的历史轮，报告归因说「与上一轮那份
+    `config/reachability.yaml` 不是同一份内容（内容指纹不同）」，而那一轮四张表逐字节相同、
+    那七行的归属也一字没动 —— 那句话把「注释变了」说成了「规则变了」。
+
+    三种名单变化里只有 `same` 和 `order_only` 值得单独说：
+    * `same` —— 名单一字不差：那一动只在这份文件的字节上（注释、排版），判定没跟着动；
+    * `order_only` —— 只换了同档内的先后：`_classify` 记给第一条匹配上的规则，所以**归属**会挪
+      （2.53 量到：把 `.chinamobile.com` 挪到内网档最前，192 条地址换了归属），
+      但两档名单扫出来的**档位**一个字不变，而排序键用的是档位（`RANK`）不是规则序号 ——
+      所以「归它的条数」那栏会大变，四张表却逐字节相同。这两件事必须分开说，
+      否则看报告的人会拿「归属挪了 192 条」去解释「表变了」，而那张表没变。
+    * 其余（少了/多了/换档）下面那串逐条变化本来就一条条点了名，这里不重复。
+
+    返回的那句话**不带**换行与缩进：两个面各自决定怎么接（屏幕那面另起一行缩三个空格，
+    报告那面接在同一句后面）。
+
+    >>> roster_verdict(None)
+    ''
+    >>> roster_verdict({"cfg_same": True})
+    ''
+    >>> roster_verdict({})          # 不是 `diff_rule_rounds` 算出来的那一份：不猜
+    ''
+    >>> roster_verdict({"rules_same": True})
+    '名单本身：两档名单与上一轮**一字不差** —— 那一动只在这份文件的字节上（注释、排版），判定没跟着动。'
+    >>> roster_verdict({"rules_order_only": True, "rules_note": "档内先后换了 2 条：`x` 第 1 → 第 2 位（内网档）"})
+    '名单本身：只换了同档内的先后（档内先后换了 2 条：`x` 第 1 → 第 2 位（内网档）） —— 它会挪「归哪条规则」，但每条线路判成哪一档没变，而排序看的是档位，所以这张表不会因此变。'
+    >>> roster_verdict({"rules_note": "内网档少了 1 条：`x`"})   # 名单真少了东西：那一串逐条变化会说
+    ''
+    """
+    if not diff or diff.get("cfg_same"):
+        return ""
+    if diff.get("rules_same"):
+        return ("名单本身：两档名单与上一轮**一字不差** —— 那一动只在这份文件的字节上"
+                "（注释、排版），判定没跟着动。")
+    if diff.get("rules_order_only"):
+        note = str(diff.get("rules_note") or "")
+        return ("名单本身：只换了同档内的先后"
+                + (f"（{note}）" if note else "")
+                + " —— 它会挪「归哪条规则」，但每条线路判成哪一档没变，"
+                  "而排序看的是档位，所以这张表不会因此变。")
+    return ""
+
+
 def _pool_evidence(diff: dict | None) -> str:
     """「是规则变了还是上游少给了」那一句 —— 三样指纹凑齐才能把话说死（2.51）。
 
@@ -441,6 +581,16 @@ def _pool_evidence(diff: dict | None) -> str:
     池子没变 + 规则文件没变 + 数变了 ⇒ 变的是**判定代码**（这一格 2.50 那把尺自己就该撞上）；
     池子没变 + 规则文件变了 ⇒ 是这次改配置改坏的，去 diff `config/reachability.yaml`；
     池子变了 ⇒ 先别谈规则对不对，上游少抓了一个源能把五条规则一起打成 0。
+
+    2.53 又添第四个方向：**这一轮读的根本不是上一轮那一份文件**（`--try-reach` 试算）。
+    那时那句「去 diff `config/reachability.yaml`」是支使 —— 那一轮没读过那个文件，
+    diff 它当然什么都看不出来。所以文件名从履历那一行走，名字不同就说「换了一份」。
+
+    第五个方向也是 2.53 量出来的：**文件字节换了，名单却不一定换了**。内容指纹比的是字节
+    （注释、排版、键的先后都算字节），而 `_classify` 只读那两档名单。于是「去 diff 那两份」
+    这句真话会把人支去看两行相同的字 —— 那一句由 `rules_verdict` 补，见它。
+    没有 `rules_same` 那一格（不是 `diff_rule_rounds` 算出来的那份，比如手写 fixture）时
+    **不猜**，照旧只说「换了一份」。
 
     >>> _pool_evidence({"pool_same": True, "cfg_same": True, "fingerprint": "7eae708d153a"})
     '   这批线路与上一轮**一条不差**（指纹 7eae708d153a），`config/reachability.yaml` **也没变** ——\\n   那就是判定代码变了，去查 src/check/scope.py 最近的改动。'
@@ -451,6 +601,15 @@ def _pool_evidence(diff: dict | None) -> str:
     True
     >>> _pool_evidence(None)
     ''
+    >>> _pool_evidence({"pool_same": True, "cfg_same": False, "fingerprint": "7eae",
+    ...                 "cfg_name": "/tmp/候选.yaml", "prev_cfg_name": "config/reachability.yaml"})
+    '   这批线路与上一轮**一条不差**（指纹 7eae），所以不是上游少给了 —— 是这一轮**换了一份规则文件**：`config/reachability.yaml` → `/tmp/候选.yaml`，去 diff 那两份。'
+    >>> _pool_evidence({"pool_same": True, "cfg_same": True, "fingerprint": "7eae",
+    ...                 "cfg_name": "/tmp/候选.yaml", "prev_cfg_name": "/tmp/候选.yaml"})
+    '   这批线路与上一轮**一条不差**（指纹 7eae），`/tmp/候选.yaml` **也没变** ——\\n   那就是判定代码变了，去查 src/check/scope.py 最近的改动。'
+    >>> _pool_evidence({"pool_same": True, "cfg_same": False, "fingerprint": "7eae",
+    ...                 "cfg_name": "/tmp/候选.yaml", "prev_cfg_name": "/tmp/候选.yaml"})
+    '   这批线路与上一轮**一条不差**（指纹 7eae），所以不是上游少给了 —— 是 `/tmp/候选.yaml` 改过，去 diff 那一格。'
     """
     if not diff:
         return ""
@@ -458,12 +617,21 @@ def _pool_evidence(diff: dict | None) -> str:
     if not diff.get("pool_same"):
         return (f"   上游池子本身也变了（指纹 {diff.get('fp_prev')} → {fp}）："
                 f"先确认抓取有没有出问题，再谈这一档的规则对不对。")
+    name = str(diff.get("cfg_name") or DEFAULT_REACH_NAME)
+    prev_name = str(diff.get("prev_cfg_name") or DEFAULT_REACH_NAME)
     if diff.get("cfg_same"):
         return (f"   这批线路与上一轮**一条不差**（指纹 {fp}），"
-                f"`config/reachability.yaml` **也没变** ——\n"
+                f"`{name}` **也没变** ——\n"
                 f"   那就是判定代码变了，去查 src/check/scope.py 最近的改动。")
+    # 名单那一层单独补一句：上面那两句指挥人去 diff 两份文件，而那两份的名单可能相同
+    # （2.53 那格 —— 只有注释不同的两份文件，diff 出来是空的）。
+    rv = roster_verdict(diff)
+    add = f"\n   {rv}" if rv else ""
+    if name != prev_name:
+        return (f"   这批线路与上一轮**一条不差**（指纹 {fp}），所以不是上游少给了 —— "
+                f"是这一轮**换了一份规则文件**：`{prev_name}` → `{name}`，去 diff 那两份。" + add)
     return (f"   这批线路与上一轮**一条不差**（指纹 {fp}），所以不是上游少给了 —— "
-            f"是 `config/reachability.yaml` 改过，去 diff 那一格。")
+            f"是 `{name}` 改过，去 diff 那一格。" + add)
 
 
 # ---------------------------------------------------------------------------
@@ -662,13 +830,16 @@ def eaten_clause(eaten: dict | None, limit: int = 3) -> str:
 
 
 def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
-    """把本轮那一节和上一轮那一节摆在一起，问四件事（2.51）。
+    """把本轮那一节和上一轮那一节摆在一起，问五件事（前四件 2.51 立，第五件 2.53 加）。
 
     1. 有没有哪条规则**上一轮在上游还抓到东西、本轮归 0** —— 这是唯一值得上屏幕的那种；
     2. 这个 0 该算在谁头上：上游池子换了（`fingerprint`）、规则文件改了（`cfg_fingerprint`）、
        还是判定代码变了（两个指纹都说没变，数却变了）；
     3. 进表 / 第一线那两层**能不能比**（判决来源不同就不比，见 `verdict_source`）；
     4. 「一条公网线路都没有的频道」那个数塌了没有 —— 它是 §2.49 那句会跟着规则一起哑掉的报警。
+    5. 名单本身换没换、怎么换的（`rules_same` / `rules_order_only` / `rules_note`）——
+       第 2 问那个「规则文件改了」比的是**文件字节**，而判定只读两档名单：
+       只加一行注释、或把一条规则挪到同档末尾，都会换掉字节而不换掉判档（2.53 量的两格）。
 
     没有上一轮（首轮、`--ignore-history`、那份履历读不出）时返回 None，
     调用方要明说「比不了」，不能把「没量」印成「没变」。
@@ -731,6 +902,23 @@ def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
     [('.chinamobile.com', 'up')]
     >>> diff_rule_rounds(None, cur) is None
     True
+    >>> p = {"at": "x", "mode": "offline", "fingerprint": "f", "cfg_fingerprint": "c1",
+    ...      "rows": [{"tier": "iptv_intranet", "rule": "a", "any_up": 1, "own_up": 1,
+    ...                "own_table": 0, "own_first": 0, "state": "out"},
+    ...               {"tier": "iptv_intranet", "rule": "b", "any_up": 2, "own_up": 2,
+    ...                "own_table": 0, "own_first": 0, "state": "out"}]}
+    >>> d_same = diff_rule_rounds(p, {**p, "cfg_fingerprint": "c2"})   # 只换文件字节，名单没动
+    >>> (d_same["rules_same"], d_same["rules_order_only"], d_same["rules_note"])
+    (True, False, '')
+    >>> d_swap = diff_rule_rounds(p, {**p, "cfg_fingerprint": "c2",   # 同档内换了先后
+    ...                               "rows": list(reversed(p["rows"]))})
+    >>> (d_swap["rules_same"], d_swap["rules_order_only"])
+    (False, True)
+    >>> d_swap["rules_note"]
+    '档内先后换了 2 条：`b` 第 2 → 第 1 位（内网档）、`a` 第 1 → 第 2 位（内网档）'
+    >>> d_gone = diff_rule_rounds(p, {**p, "cfg_fingerprint": "c2", "rows": p["rows"][:1]})
+    >>> (d_gone["rules_same"], d_gone["rules_order_only"])   # 真少了一条：那一串逐条变化去点名
+    (False, False)
     """
     if not prev or not isinstance(prev, dict) or not prev.get("rows"):
         return None
@@ -789,6 +977,15 @@ def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
     # 整档全 0 是**新**摊开的才算：上一轮就全 0 的那一档不是这一轮的事（它一直摊着）。
     prev_dead = set(dead_tiers(prev_rows))
     dead_now = [t for t in tiers if t in set(dead_tiers(cur_rows)) and t not in prev_dead]
+    # 「文件换了没有」与「名单换了没有」是两个问题（2.53）。名单不另存一份：
+    # 那几行本来就按文件里的档与先后摊开，拼回来即可（`reach_from_rows` 说清了它的边界）。
+    prev_reach = reach_from_rows(prev_rows)
+    cur_reach = reach_from_rows(cur_rows)
+    rules_same = (list(prev_reach.rules) == list(cur_reach.rules)
+                  and list(prev_reach.audio_rules) == list(cur_reach.audio_rules))
+    order_only = (not rules_same
+                  and sorted(prev_reach.rules) == sorted(cur_reach.rules)
+                  and sorted(prev_reach.audio_rules) == sorted(cur_reach.audio_rules))
     return {
         "items": items,
         "prev_at": str(prev.get("at") or ""), "prev_mode": str(prev.get("mode") or ""),
@@ -807,6 +1004,17 @@ def diff_rule_rounds(prev: dict | None, cur: dict) -> dict | None:
         "uniq_prev": int(prev.get("n_up_uniq") or 0), "uniq_cur": int(cur.get("n_up_uniq") or 0),
         "cfg_same": bool(prev.get("cfg_fingerprint"))
                     and prev.get("cfg_fingerprint") == cur.get("cfg_fingerprint"),
+        # 「这一轮判档读的是哪一份」也要各记一份（2.53）。为什么内容指纹之外还要这个：
+        # `--try-reach` 那几轮读的是 /tmp 里一份候选文件，指纹当然与上一轮不同 —— 只报
+        # 「规则文件改过，去 diff config/reachability.yaml」会把人支去 diff 一份**这一轮
+        # 根本没读过**的文件。名字对上而内容不同 = 真改了配置；名字不同 = 那是一次试算。
+        "cfg_name": str(cur.get("cfg_name") or DEFAULT_REACH_NAME),
+        "prev_cfg_name": str(prev.get("cfg_name") or DEFAULT_REACH_NAME),
+        # 名单那三格是 `cfg_name`/`cfg_fingerprint` 之外的第四、第五个方向（2.53）：
+        # 指纹说「文件字节变了」，这两格说「判定意义上的那两档名单变没变、怎么变的」。
+        "rules_same": rules_same,
+        "rules_order_only": order_only,
+        "rules_note": "" if rules_same else reach_order_note(prev_reach, cur_reach),
         "chan_same": bool(prev.get("chan_fingerprint"))
                      and prev.get("chan_fingerprint") == cur.get("chan_fingerprint"),
         "tier_own_prev": {t: sum(int(x.get("own_up") or 0) for x in prev_rows
@@ -975,8 +1183,19 @@ def rule_diff_lines(diff: dict | None, hist_name: str = "rule-history.jsonl") ->
             f"这批线路**换了**：上一轮 {diff['n_up_prev']} 条（去重 {diff['uniq_prev']}）"
             f" → 本轮 {diff['n_up_cur']} 条（去重 {diff['uniq_cur']}），"
             f"指纹 {diff['fp_prev']} → {diff['fingerprint']}")
-    cfg = ("`config/reachability.yaml` **没变**" if diff["cfg_same"]
-           else "`config/reachability.yaml` **改过了**（内容指纹不同）")
+    cfg_name = str(diff.get("cfg_name") or DEFAULT_REACH_NAME)
+    prev_cfg_name = str(diff.get("prev_cfg_name") or DEFAULT_REACH_NAME)
+    if not diff["cfg_same"]:
+        # 名字不同就不是「有人改了配置」，是「这一轮换了一份文件读」（2.53 的试算）：
+        # 那两句的区别很重要 —— 前者去 diff `config/reachability.yaml`，后者 config 里什么都没有。
+        cfg = (f"这一轮判档读的是 `{cfg_name}`，与上一轮那份 `{prev_cfg_name}` "
+               f"**不是同一份内容**（内容指纹不同）") if cfg_name != prev_cfg_name else \
+            f"`{cfg_name}` **改过了**（内容指纹不同）"
+    else:
+        cfg = f"`{cfg_name}` **没变**"
+    # 「字节换了」下面还压着「名单换没换」，那才是判定吃不吃这一动（2.53 量到的那一格：
+    # 只加一行注释的那一轮，上面那句「不是同一份内容」是真话，可它把人支去 diff 两行相同的字）。
+    rv = f" {roster_verdict(diff)}" if not diff["cfg_same"] else ""
     chan = ("" if diff["chan_same"] else
             "；`config/channels.yaml` 也改过了（名单一变，进表那两层跟着动）")
     if diff["table_comparable"]:
@@ -989,7 +1208,7 @@ def rule_diff_lines(diff: dict | None, hist_name: str = "rule-history.jsonl") ->
     else:
         cmp_note = (f"**不比** —— 上一轮的判决来自 `{diff['verdict_prev']}`，"
                     f"本轮是 `{diff['verdict_cur']}`，那两列本来就会因跑法不同而不同")
-    out += [f"- {pool}；{cfg}{chan}。",
+    out += [f"- {pool}；{cfg}{chan}。{rv}",
             f"- 进表 / 第一线那两层：{cmp_note}。"]
     items = diff["items"]
     if not items:
