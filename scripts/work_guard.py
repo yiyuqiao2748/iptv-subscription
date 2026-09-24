@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import argparse
 import functools
+import ipaddress
 import os
 import pathlib
 import runpy
 import sys
 from collections import Counter
+from urllib.parse import urlsplit
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -47,12 +49,34 @@ if str(ROOT / "scripts") not in sys.path:      # 为了 import run_doctests（�
 
 from run_doctests import add_doctest_flag, run_own  # noqa: E402
 
-# 出门这一族：一次连接、一次 DNS、一次 HTTP 请求，全都要在这只眼睛面前过。
-NET_EVENTS = frozenset({
-    "socket.connect", "socket.connect_ex", "socket.sendto", "socket.create_connection",
-    "socket.getaddrinfo", "socket.getnameinfo", "http.client", "urllib.Request",
-    "ftplib.FTP", "smtplib.SMTP",
-})
+# 出门这一族。地址摆在第几位是**量出来的**：03:55:42 与 03:56:21 两遍 `/tmp/net_probe271.py`
+# （只碰 127.0.0.1、0.0.0.0 和这台机器自己的网口地址 192.168.31.119 —— `route -n get` 那一条
+# 的 interface 是 lo0，包不出机器；换成任何一个公网地址就会走 utun6，那一遍读到的就不是
+# 「护栏抓到了」而是代理的出口）。名单下面那三行是同一遍量到的**坏名字**：
+# PEP 578 写着 `socket.connect_ex`、`socket.create_connection`、`http.client`，
+# 这一台的 3.12.14 一个都不发 —— `connect_ex()` 发的是 `socket.connect`（它返回 61，
+# 屏幕上只有 `socket.connect` 那一条），`create_connection()` 发的是 `getaddrinfo` ＋ `connect`，
+# `http.client` 那一族真发的是 `http.client.connect` 与 `http.client.send`。
+# §2.70 的边界里写着「`WATCHED` 是一份封闭名单…只歪一半就会读成『它只起了进程』」——
+# 它歪的正是这一半：那一节的 244 条里「出门零条」有一半是名单本身读不到东西。
+NET_ADDR: dict[str, int] = {                     # 事件名 → 地址（或主机名、或 URL）在第几位
+    "socket.connect": 1, "socket.sendto": 1, "socket.bind": 1,
+    "socket.getaddrinfo": 0, "http.client.connect": 1, "urllib.Request": 0,
+}
+NET_EVENTS = frozenset(NET_ADDR)
+# 量过、可那一位里根本没有地址的：`socket.__new__` 递的是 `(件, family, type, proto)`，
+# 每造一个 socket 对象发一次。这一族**不记** —— 记了，屏幕上那句「看见 N 条」就成了对象计数。
+# 同一次实测（04:06:08 的 `/tmp/net_names271.py`：一遍完整的生命周期 —— 造、绑、听、连、
+# 发、收、关）量到的只有三个名字：`socket.__new__`、`socket.bind`、`socket.connect`。
+# `socket.close`／`socket.accept`／`socket.send` 根本不发，因此它们**不进任何名单**：
+# 一条一次都不发的判据写进集合就是死码（§2.39 删的正是这一族），留在这儿只配当注释。
+NET_NO_ADDR = frozenset({"socket.__new__"})
+# 名单外、可一眼是这一族的名字（实测会发而本节判不了的，例：`http.client.send` 递的是
+# `(件, 那一堆字节)` —— 里面没有主机，判不了去哪儿）：全落到「说不清在哪儿」那一档，
+# 不静默放过 —— 这一条就是本节给「名单写歪」装的那道兜。它只记名字、不判地址。
+NET_PREFIXES = ("socket.", "http.client.", "urllib.", "ftplib.", "smtplib.", "ssl.")
+
+
 # 起进程这一族：`subprocess` 与 `os` 那几条 exec／system／spawn。
 PROC_EVENTS = frozenset({
     "subprocess.Popen", "os.system", "os.exec", "os.execv", "os.execve",
@@ -366,6 +390,150 @@ def proc_note(event: str, args: tuple, root: str, cwd: str) -> str:
     return ""
 
 
+def net_host(event: str, args: tuple) -> tuple[str, str]:
+    """这一条出门事件点对的是**哪台主机**，以及给人看的那一句地址；摆法没量过 → `("", "")`。
+
+    为什么回来一个二元组：判据要用「主机」那一截（是不是回环），屏幕上要印的是「主机:端口」
+    那一截 —— 合成一个字符串就得在调用方再拆一次，而 IPv6 字面量里全是冒号，拆不得。
+    四位一体的地址（`('127.0.0.1', 55317)`，IPv6 是四元组）取第 0 位当主机，
+    量过的两遍里那些地址全是元组，只有 `getaddrinfo` 与 `http.client.connect` 递的是散开的
+    字符串/整数（`('example.com', 80, 0, 0, 0)` 与 `(<件>, '127.0.0.1', 55302)`）。
+
+    >>> net_host("socket.connect", ("<s>", ("192.168.31.119", 55323)))
+    ('192.168.31.119', '192.168.31.119:55323')
+    >>> net_host("socket.bind", ("<s>", ("0.0.0.0", 8080)))
+    ('0.0.0.0', '0.0.0.0:8080')
+    >>> net_host("socket.getaddrinfo", ("example.com", 80, 0, 0, 0))
+    ('example.com', 'example.com:80')
+    >>> net_host("http.client.connect", ("<c>", "127.0.0.1", 55302))
+    ('127.0.0.1', '127.0.0.1:55302')
+    >>> net_host("urllib.Request", ("http://127.0.0.1:55304/x", None, {}, "GET"))
+    ('127.0.0.1', '127.0.0.1:55304')
+    >>> net_host("socket.sendto", ("<s>", ("127.0.0.1", 9)))
+    ('127.0.0.1', '127.0.0.1:9')
+    >>> net_host("socket.connect_ex", ("<s>", ("8.8.8.8", 53)))      # 这名字 3.12 根本不发
+    ('', '')
+    >>> net_host("http.client.send", ("<c>", b"GET / HTTP/1.1"))     # 量过，可那位上没地址
+    ('', '')
+    >>> net_host("socket.connect", ("<s>",))                         # 摆法不对：说不清，不猜
+    ('', '')
+    >>> net_host("socket.connect", ("<s>", ("127.0.0.1",)))          # 只有主机、没有端口
+    ('127.0.0.1', '127.0.0.1')
+    """
+    slot = NET_ADDR.get(event)
+    if slot is None or len(args) <= slot:
+        return "", ""
+    a = args[slot]
+    if event == "urllib.Request":               # 那一位是一条 URL，不是一个地址
+        try:
+            parts = urlsplit(str(os.fsdecode(a) if isinstance(a, bytes) else a))
+            port = parts.port                   # 端口写歪（`http://x:abc/`）时 urlsplit 会抛
+        except (ValueError, UnicodeDecodeError):
+            return "", ""
+        if not parts.hostname:                  # 相对路径、空串、`file:` 那种：说不清
+            return "", ""
+        return parts.hostname, (f"{parts.hostname}:{port}" if port else parts.hostname)
+    if isinstance(a, tuple):
+        if not a:
+            return "", ""
+        host = os.fsdecode(a[0]) if isinstance(a[0], (str, bytes)) else str(a[0])
+        port = a[1] if len(a) > 1 and isinstance(a[1], int) else None
+        return host, (f"{host}:{port}" if port is not None else host)
+    if isinstance(a, (str, bytes)):             # host 单独一位，端口在下一位
+        host = os.fsdecode(a)
+        port = args[slot + 1] if len(args) > slot + 1 and isinstance(args[slot + 1], int) else None
+        return host, (f"{host}:{port}" if port else host)
+    return "", ""
+
+
+def local_host(host: str) -> bool:
+    """这个主机字面量是不是「哪儿都没去」：回环，或未指定地址。
+
+    为什么「未指定」算哪儿都没去而不是出门：03:55:42 实测 `connect(("0.0.0.0", 端口))`
+    的对端是 `('127.0.0.1', 55325)` —— 内核自己接了，一个字节都没上墙。**这一句只对
+    `connect` 这一族成立**，`bind` 到未指定地址是反过来的（门开到所有网口），那条走
+    `loopback_only`。为什么**名字**一律不算：认不出是 IP 字面量的，就得问 DNS，而问 DNS
+    这一步在这台机器上会走 utun6 —— 本节不能拿「它看起来像个内网名字」放过它。
+
+    >>> local_host("127.0.0.1"), local_host("127.255.9.9"), local_host("::1")
+    (True, True, True)
+    >>> local_host("0.0.0.0"), local_host("::")
+    (True, True)
+    >>> local_host("192.168.31.119")             # 这台机自己的网口：仍然算出门
+    False
+    >>> local_host("localhost")                  # 是个名字 ⇒ 要问 DNS ⇒ 不算哪儿都没去
+    False
+    >>> local_host("")
+    False
+    """
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
+
+
+def loopback_only(host: str) -> bool:
+    """这个字面量是不是**明确**写着回环 —— 未指定地址（`0.0.0.0`、`::`）不算。
+
+    为什么不复用 `local_host`：那两个词在 `bind` 与 `connect` 上指的是相反的一件事，
+    这一格是 03:59:21 被自己的用例抓出来的（那条「开门 socket.bind -> 0.0.0.0:8080」
+    期望落空、屏幕上印的是空串）：`connect` 到未指定地址，内核自己就接了（03:55:42 实测
+    对端是 `('127.0.0.1', 55325)`），而 `bind` 到未指定地址是把门开到**所有**网口上 ——
+    后者正是 §2.68 从最开始就担心的那个形状（`serve_lan` 会起监听）。
+    一个词两头用，就会有一头是错的。
+
+    >>> loopback_only("127.0.0.1"), loopback_only("::1")
+    (True, True)
+    >>> loopback_only("0.0.0.0"), loopback_only("::")
+    (False, False)
+    >>> loopback_only("192.168.31.119"), loopback_only("localhost"), loopback_only("")
+    (False, False, False)
+    """
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def net_note(event: str, args: tuple) -> str:
+    """这一条出门事件该说成哪一句；哪儿都没去（或摆法没量过）返回空串。
+
+    为什么不把回环也报出来：这一族的取舍跟 `proc_note` 一样 —— 「递 `--doctest` 给一件
+    会起监听的脚本」最怕的是它真把门开到局域网里去了，而它在自己进程里造一对回环套接字
+    互发一个字节，那是它的 doctest **该**做的事。03:56:21 那份探针就是照这个判的：
+    八个 `bind`、八个 `connect`、两条 `http.client.connect`、一条 `urllib.Request`，
+    全在 127.0.0.1 与 0.0.0.0 上 ⇒ 落在仓库里 0 条；同一遍里那条连到
+    `192.168.31.119` 的就响。`bind` 的动词单独一个、判据也单独一条（见 `loopback_only`）：
+    起监听不是出门，是开门让人出门来。
+
+    >>> net_note("socket.connect", ("<s>", ("127.0.0.1", 55317)))
+    ''
+    >>> net_note("socket.bind", ("<s>", ("127.0.0.1", 8080)))
+    ''
+    >>> net_note("socket.connect", ("<s>", ("0.0.0.0", 55325)))   # 内核自己接了：哪儿都没去
+    ''
+    >>> net_note("socket.bind", ("<s>", ("0.0.0.0", 8080)))       # 未指定 = 所有网口都开着
+    '开门 socket.bind -> 0.0.0.0:8080'
+    >>> net_note("socket.connect", ("<s>", ("192.168.31.119", 55323)))
+    '出门 socket.connect -> 192.168.31.119:55323'
+    >>> net_note("socket.getaddrinfo", ("example.com", 80, 0, 0, 0))
+    '出门 socket.getaddrinfo -> example.com:80'
+    >>> net_note("http.client.send", ("<c>", b"GET / HTTP/1.1"))  # 说不清：一句都不印
+    ''
+    """
+    host, label = net_host(event, args)
+    if not host:
+        return ""
+    if event == "socket.bind":
+        return "" if loopback_only(host) else f"开门 {event} -> {label}"
+    return "" if local_host(host) else f"出门 {event} -> {label}"
+
+
 def dir_fds(event: str, args: tuple) -> list[int]:
     """这条事件里有没有「目录描述符」。有，那个相对路径就是相对**那个目录**、不是相对 cwd。
 
@@ -416,14 +584,21 @@ def unclear_tag(event: str, args: tuple) -> str:
     'os.remove?'
     >>> unclear_tag("os.remove", ("/var/T/x/probe.json", -1))
     'os.remove'
-    >>> unclear_tag("socket.connect", ("<s>", ("1.2.3.4", 80)))     # 没有路径的这一族：不加问号
+    >>> unclear_tag("socket.connect", ("<s>", ("1.2.3.4", 80)))     # 摆法量过：说得清
     'socket.connect'
+    >>> unclear_tag("socket.connect", ("<s>",))                     # 递上来的不像元组：打问号
+    'socket.connect?'
+    >>> unclear_tag("http.client.send", ("<c>", b"GET / HTTP/1.1")) # 这一族里没量过的名字
+    'http.client.send?'
     >>> unclear_tag("subprocess.Popen", ("git", ["git"], "/T/x", None))    # cwd 那一位量过：说得清
     'subprocess.Popen'
     >>> unclear_tag("os.execv", ("/r/bin/x", []))                  # 摆法没量过：这一条说不清
     'os.execv?'
     """
-    if event in OPEN_EVENTS or event in NET_EVENTS:
+    if event in NET_EVENTS or event.startswith(NET_PREFIXES):
+        # 这一族里「说得清」等于「那一位上真读得出一个主机」，跟有没有出门无关
+        return event if net_host(event, args)[0] else event + "?"
+    if event in OPEN_EVENTS:
         return event
     if event in PROC_EVENTS:
         # 说得清「在哪儿起」才不加问号：`proc_where` 递一个占位的 cwd，它返回空串就是摆法没量过
@@ -450,7 +625,11 @@ def why_event(event: str, args: tuple, root: str, cwd: str) -> str:
     >>> why_event("os.rename", ("/r/data/a", "/r/data/b", -1, -1), "/r", "/r")
     '改名 /r/data/a -> /r/data/b'
     >>> why_event("socket.connect", ("<sock>", ("203.0.113.9", 80)), "/r", "/r")
-    "出门 socket.connect ('<sock>', ('203.0.113.9', 80))"
+    '出门 socket.connect -> 203.0.113.9:80'
+    >>> why_event("socket.connect", ("<sock>", ("127.0.0.1", 55317)), "/r", "/r")
+    ''
+    >>> why_event("socket.bind", ("<sock>", ("0.0.0.0", 8080)), "/r", "/r")
+    '开门 socket.bind -> 0.0.0.0:8080'
     >>> why_event("subprocess.Popen", ("git", ["git", "ls-files"], "/T/x", None), "/r", "/r")
     ''
     >>> why_event("subprocess.Popen", ("git", ["git", "status"], None, None), "/r", "/r")
@@ -461,7 +640,7 @@ def why_event(event: str, args: tuple, root: str, cwd: str) -> str:
     ''
     """
     if event in NET_EVENTS:
-        return f"出门 {event} {str(args)[:120]}"
+        return net_note(event, args)
     if event in PROC_EVENTS:
         return proc_note(event, args, root, cwd)
     if event in OPEN_EVENTS:
@@ -643,10 +822,18 @@ def install(root: str = str(ROOT)) -> list[tuple[str, str]]:
     hits: list[tuple[str, str]] = []
 
     def hook(event: str, args) -> None:
-        if event not in WATCHED:
-            return
         try:
             a = tuple(args)
+            if event in NET_NO_ADDR:
+                return                           # 量过、那一位上没有地址：记了就成对象计数
+            if event not in WATCHED:
+                # 名单写歪的兜（§2.70 边界第三条点名的那一格）：一眼是这一族、可不在名单里的名字
+                # 照样记一条，打上问号、不判地址 —— 判不了，摆法没量过。03:55:42 那一遍就是靠
+                # 这个手法把 `http.client.send` 露出来的：它跟 `http.client.connect` 同一次请求，
+                # 一个量过、一个没进名单，屏幕上就成了「说不清在哪儿 1 条」，不是安静地少一条。
+                if event.startswith(NET_PREFIXES):
+                    hits.append((unclear_tag(event, a), ""))
+                return
             if event in OPEN_EVENTS:
                 flags, mode = open_parts(event, a)
                 if not write_mode(flags, mode):
