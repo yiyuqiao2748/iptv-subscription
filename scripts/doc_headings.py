@@ -33,23 +33,40 @@ r"""量一遍文档的标题结构：编号连着排没有、层级跳没跳档�
   层级：相邻两条标题不许跳两级、`####` 不许出现在还没有 `###` 的章里、`#` 只许一条。
   引用：`计划书 N.M`／`§N.M` 那种带前缀的话，指过去的节必须真在文档里。
      它比的不只文档自己，还有 `scripts/`、`src/`、`docs/` 那些件 —— 仓库里那些说明书每写一句
-     「§2.68 的 `M16`」，就多一根钉在文档结构上的钉子。这一层是本节唯一一份**跨层的记性**：
+     「§2.68 的 `M16`」，就多一根钉在文档结构上的钉子。这一层是本件唯一一份**跨层的记性**：
      末尾丢一节，结构那一层看不出断号（序列仍然连着），但那一节被别处引用过时，这一层喊。
+     它拿去当靶子的那份件由 `--target` 说，**不由 `--docs` 说**（2.73 装的就是这一层）：
+     结构层查三篇、引用层判的是「`计划书.md` 里那些 `### N.M` 还在不在」。这两件事在 2.72 之前
+     是同一个参数 —— 那时默认名单只有 `计划书.md` 一篇，两个职责恰好重合，所以没人看得出它们是两份工。
+     名单一递进那两篇，靶子当场空掉，空靶子把 38 份件里每一句带前缀的话都判成断链
+     （11:34:35 拿 `git show HEAD:` 那份原样重放：「扫了 2 篇文档、18 条标题、比了 212 处引用：
+     结构毛病 0 处、引用断链 212 处」退 1 —— 一处文档都没坏）。所以这一层今天多一条闸：
+     **靶子里一条编号小节都没有，而引用层真有东西要判，那一层就只数不判、并且拒绝判**（退 2），
+     屏幕上那两行写「这一层不敢判」与「断链 未判」，而不是把编出来的条数摊出来。
 
 它不量什么，一并说清（三条都是这一遍量到的现状，不是猜想）：
 
-  · **没带前缀的那种 `N.M` 串一处都不读** —— 本件数它，但一句都不判。今天 `计划书.md` 正文里
-    有 1809 处，其中「文档里没有对应 `### N.M`」的 249 处（10:55:48 那遍，用本件自己那两条正则
-    现数）采样过最集中的几个号：`58.20` 39 处、`74.91` 6 处是 `58.20.64.92`／`74.91.26.218`
-    那两台出口 IP 的**打头两拍**，`3.12` 21 处是 Python 版本，`0.5`／`0.6`／`3.9` 是时长与概率。
-    读进来，这一屏当场多出 249 处假断链 —— 本节第一遍真读到的那 3 处（改完 349 那句话之后剩 2 处、
-    本节正文落地之后剩 0 处）就埋在里面。
-    代价一并说清：正文里「见 2.11、2.12」那种不写前缀的话本节读不到（文档自己带前缀的只有 48 处）。
+  · **没带前缀的那种 `N.M` 串一处都不读** —— 本件数它，但一句都不判。今天**靶子那一篇**
+    （`计划书.md`）正文里有 1838 处，其中「文档里没有对应 `### N.M`」的 257 处（11:44:30 那遍，
+    用本件自己那两条正则现数）采样过最集中的几个号：`58.20` 39 处、`74.91` 6 处是
+    `58.20.64.92`／`74.91.26.218` 那两台出口 IP 的**打头两拍**，`3.12` 21 处是 Python 版本，
+    `0.5`／`0.6`／`3.9` 是时长与概率。
+    读进来，这一屏当场多出 257 处假断链 —— 2.72 第一遍真读到的那 3 处（改完 349 那句话之后剩 2 处、
+    那一节正文落地之后剩 0 处）就埋在里面。
+    代价一并说清：正文里「见 2.11、2.12」那种不写前缀的话本件读不到（靶子自己带前缀的只有 51 处）。
     `BARE` 那个回顾只挡得住 IP **中间**的那一拍（前面顶着 `.`），挡不住打头的那一对，所以这一档
     量的是「有多少不读」，不是「读得干净」。
-    自数一遍记在这里：本节正文里为了说清这一档而写下的那几个号，自己也被这一档数进去了 ——
-    正文落地之前那一遍（10:50:51）是 1778 处、`58.20` 38、`3.12` 20、`74.91` 5，落地之后（10:55:48）
-    涨成 1809 处、39、21、6，而 `3.0` 原本不在前十二名里。这一档只数不判，所以涨了不碍事；
+    **它跟着靶子走、不跟 `--docs`**（2.73）：今天 `--docs` 是三篇、那三篇的 `N.M` 串合计 1891 处，
+    可屏幕上那一句说的是靶子那一篇的 1838 处 —— 那一行的 label 因此从「没带前缀的那种」改成
+    「靶子里没带前缀的那种」，否则「扫了三篇」配「1838」就是一句把两批件混在一起的话。
+    自数一遍记在这里：正文里为了说清这一档而写下的那几个号，自己也被这一档数进去了 ——
+    2.72 落地之前那一遍（10:50:51）是 1778 处、`58.20` 38、`3.12` 20、`74.91` 5，落地之后（10:55:48）
+    涨成 1809 处、39、21、6，而 `3.0` 原本不在前十二名里。**那一节当时就写着「下一节再抄一次上面
+    那几个数，那一句必须重新数」，2.73 就是那个下一节，于是重数出两笔**：11:35:39（本节正文落地之前）
+    是 1812 处、无对应 249 处 —— 与上面那句 1809 差 3，那 3 处正是 2.72 的正文自己涨的，而本件说明书里
+    那句当时没人量、也没有过期闸拦（`GRID` 只钉「N 格」，「N 处」这一族从头到尾没人看）；
+    11:43:35 与 11:44:30（本节正文落地之后）是 1838 处、无对应 257 处，而 `58.20` 39、`3.12` 21、
+    `74.91` 6 三个号一个没动。这一档只数不判，所以涨了不碍事；
     碍事的是**下一节再抄一次上面那几个数** —— 那一句必须重新数。
   · **`####` 那 356 条自由标题不查编号** —— 它们本来就没号（「为什么挑它」「判据」这一类），
     本节只查它们挂在谁底下。
@@ -57,7 +74,8 @@ r"""量一遍文档的标题结构：编号连着排没有、层级跳没跳档�
     真做跨轮要落一份履历件，而那会让一条只读文本的对账尺变成**会写文件的件**（2.65 数过谁在写）。
 
     ./.venv/bin/python -X utf8 scripts/doc_headings.py                 # 量仓库自己（离线，不写任何文件）
-    ./.venv/bin/python -X utf8 scripts/doc_headings.py --docs 计划书.md  # 只查点名的那几篇
+    ./.venv/bin/python -X utf8 scripts/doc_headings.py --docs 计划书.md  # 结构层只查点名的那几篇
+    ./.venv/bin/python -X utf8 scripts/doc_headings.py --target 计划书.md # 引用层拿它当靶子（默认就是它）
     ./.venv/bin/python -X utf8 scripts/doc_headings.py --refs 计划书.md   # 引用层只比文档自己
     ./.venv/bin/python -X utf8 scripts/doc_headings.py --all             # 把「认不出」那一档逐条摊开
     ./.venv/bin/python -X utf8 scripts/doc_headings.py --self-test       # 往临时目录里种已知坏形状的文档
@@ -65,8 +83,10 @@ r"""量一遍文档的标题结构：编号连着排没有、层级跳没跳档�
 
 退出码（2.62 那三档）：**0 = 每一层都量到了、且没有毛病**；**1 = 量到了，但有毛病**
 （断号／重号／串章／跳档／孤悬／断链），**或点名的文档与引用件里有一份没读到**
-（这一屏每一行数因此只覆盖读到的那几篇）；**2 = 一个字都没量到** —— 点名的文档全没读到、
-读到的一篇标题都没有、或 `--refs` 给了空名单（那一层等于没比，不许混进「比了 0 处」那种绿）。
+（这一屏每一行数因此只覆盖读到的那几篇，靶子那侧同理）；**2 = 一个字都没量到** —— 点名的文档全没读到、
+读到的一篇标题都没有、`--refs` 给了空名单（那一层等于没比，不许混进「比了 0 处」那种绿）、
+**或靶子里一条编号小节都没有而那 N 份件里真写着带前缀的引用**（2.73 那一档：那一层**不敢判**，
+屏幕上那一句因此是「引用断链 未判」，不是「0 处」）。
 """
 from __future__ import annotations
 
@@ -101,13 +121,18 @@ CHAPTER = re.compile(r"^([零一二三四五六七八九十百千]+)、")
 SECTION = re.compile(r"^(\d+)\.(\d+)(\s|$)")
 CITE = re.compile(r"(?:计划书|§)\s*(\d+)\.(\d{1,2})")
 BARE = re.compile(r"(?<![\d§.])(\d{1,2})\.(\d{1,2})(?![\d])")
-DEFAULT_DOCS = "计划书.md"
+DEFAULT_DOCS = "计划书.md,docs/真机验收单.md,docs/电视订阅接入.md"
+DEFAULT_TARGET = "计划书.md"
 DEFAULT_REFS = "计划书.md,scripts,src,docs"
 NAMED = 6          # 「认不出」那一档默认摊几条
 # 往沙盒里种的那一句「指着不存在的节」的话。它**不能**在本件里写成一行活的话 ——
 # `cites_in` 读 .py 的源码，而本节不给引用层开任何一种豁免，所以一个假节号写在这里，
 # 这把尺先在自家判一处断链，仓库从此绿不回来（缘由见模块那段）。拼出来的是同一句。
 DEAD = "计划书 " + "5.3"
+# 格子里没写 `argv` 时走这一串。三层两份名单、一个都不许留给仓库（缘由见 `targetless`）：
+# 那一条的第 3 个例子正是钉住这条默认串的地方 —— 删掉里面的 `--target`，用例当场红。
+DEFAULT_CELL_ARGV = ("--docs", f"{SANDBOX}/{DOC}", "--refs", f"{SANDBOX}/{DOC}",
+                     "--target", f"{SANDBOX}/{DOC}")
 
 
 class Heading(NamedTuple):
@@ -180,10 +205,29 @@ class Cites:
     copies: list[str] = field(default_factory=list)
     bare: int = 0                  # 没带前缀的那种串（本节不读，只报分母）
     asked: int = 0                 # 点名要读的件数
+    target_secs: int = 0           # 靶子里那些 `### N.M` 的条数 —— 「断链 0 处」的分母
+    target_names: list[str] = field(default_factory=list)    # 靶子点名的那几篇
+    target_unread: list[str] = field(default_factory=list)   # 点名了、没读到的靶子
+    no_target: str = ""            # 非空 = 这一层不敢判，里面就是「为什么不敢」
 
     @property
     def no_list(self) -> bool:
         return self.asked == 0
+
+    @property
+    def refused(self) -> bool:
+        """有引用可判、可靶子里一条编号小节都没有 —— 于是这一层一个字都没判。
+
+        「0 处断链」在这一格上是**不敢判**的 0，不是**量出来干净**的 0（2.50 那一族）。
+        只在 `tokens` 不为 0 时才成立：靶子空、而全仓库也真的一处引用都没写，那一句
+        「比了个空」是量出来的，不需要拒绝。
+
+        >>> c = Cites(tokens=212, target_secs=0); c.no_target = "靶子里一条编号小节都没有"; c.refused
+        True
+        >>> Cites(tokens=0, target_secs=0, no_target="靶子空").refused
+        False
+        """
+        return bool(self.no_target) and self.tokens > 0
 
 
 def headings_of(text: str) -> tuple[list[Heading], int]:
@@ -430,13 +474,48 @@ def have_sections(text: str) -> set[tuple[int, int]]:
             for h in headings_of(text)[0] if h.level == 3 for m in [SECTION.match(h.title)] if m}
 
 
+def load_docs(spec: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """逗号分隔的文档名单 → `(读到的 [(显示名, 原文)], 没读到的 [(显示名, 为什么)])`。
+
+    结构层（`--docs`）与引用层的靶子（`--target`）**走这一条读法**，不各写一遍循环：
+    两边都要「点名了三篇、读到两篇」那种分母，两边都说人话而不裸崩（2.36 那一族）。
+    读到但一条标题都没有的，仍然算 `got` —— 那是**结构层**的事，由 `main` 去挑；
+    靶子那一层要的只是原文里有几条 `### N.M`，一条标题都没有的文档照样能当靶子读。
+
+    >>> import pathlib, tempfile
+    >>> with tempfile.TemporaryDirectory() as td:
+    ...     p = pathlib.Path(td) / "甲.md"
+    ...     _ = p.write_text("# 题\\n## 一、甲\\n", encoding="utf-8")
+    ...     got, unread = load_docs(f"{p},  {td}/乙.md ")
+    >>> [n.split("/")[-1] for n, _t in got], [n.split("/")[-1] for n, _w in unread]
+    (['甲.md'], ['乙.md'])
+    >>> unread[0][1]
+    '文件不在'
+    >>> load_docs("")[0] == [] and load_docs("")[1] == []
+    True
+    """
+    got: list[tuple[str, str]] = []
+    unread: list[tuple[str, str]] = []
+    for item in [s.strip() for s in spec.split(",") if s.strip()]:
+        p = Path(item)
+        if not p.is_absolute():
+            p = ROOT / p
+        disp = str(p.relative_to(ROOT)) if str(p).startswith(str(ROOT)) else str(p)
+        text, why = doc_num.read_doc(p)
+        if text is None:
+            unread.append((disp, why))
+        else:
+            got.append((disp, text))
+    return got, unread
+
+
 def cites_in(text: str) -> list[tuple[int, tuple[int, int], str]]:
     """这一份件里那些**带前缀**的节号引用：`(行号, (章, 节), 那一句)`。
 
     只认带 `计划书`／`§` 前缀的，是有代价的一条界（见模块那段「它不量什么」）：
-    正文里 1809 处没带前缀的 `N.M` 串装着出口 IP 打头的两拍、Python 版本和时长，
-    读进来当场多出 249 处假断链 —— 本节第一遍真读到的那 3 处就埋在里面（10:55:48 现数）。
-    代价也钉住：`>>>` 那些示例行**照样读** —— 本节不给引用开豁免（2.66 对命令尺定过一次了）。
+    靶子正文里 1838 处没带前缀的 `N.M` 串装着出口 IP 打头的两拍、Python 版本和时长，
+    读进来当场多出 257 处假断链 —— 2.72 第一遍真读到的那 3 处就埋在里面（11:44:30 现数）。
+    代价也钉住：`>>>` 那些示例行**照样读** —— 本件不给引用开豁免（2.66 对命令尺定过一次了）。
 
     >>> cites_in("见 计划书 2.8 那一条")
     [(1, (2, 8), '计划书 2.8')]
@@ -503,12 +582,17 @@ def ref_paths(spec: str) -> tuple[list[Path], list[str], list[str]]:
 
 
 def check_cites(have: set[tuple[int, int]], files: Sequence[Path],
-                base_bare_from: str = "") -> Cites:
+                base_bare_from: str = "", target_empty: str = "") -> Cites:
     """比对：每一份件里那些带前缀的引用，指过去的节还在不在。
 
-    `base_bare_from` 是文档原文 —— 只为量那个「不读」的分母，一句判据都不靠它。
+    `base_bare_from` 是**靶子那几篇**的原文 —— 只为量那个「不读」的分母，一句判据都不靠它。
     它**不**进 `asked`：那个数是「点名要读的件数」，拿一份没点名的原文去充它，
     `--refs` 给了空名单那一格（`B11`）就会被它顶成「读到了件」。
+
+    `target_empty` 是「靶子为什么是空的」那一句（`--target` 一个字都没给／点名的靶子一篇没读到／
+    读到了可里面一条编号小节都没有）。靶子空的时候这一层**只数不判**：`tokens` 照记，
+    `dangling` 一格不添 —— 11:09:42 那一遍把 `--docs` 指到两篇没有 `### N.M` 的文档上，
+    空靶子当场把全仓库的引用判成 212 处断链，那是尺在编，不是文档在坏。
 
     >>> import pathlib, tempfile
     >>> with tempfile.TemporaryDirectory() as td:
@@ -526,9 +610,19 @@ def check_cites(have: set[tuple[int, int]], files: Sequence[Path],
     (1, 0, 0, 1)
     >>> check_cites({(2, 1)}, []).asked          # 空名单：这一层一个字都没比
     0
+    >>> with tempfile.TemporaryDirectory() as td:      # 空靶子：那 212 处假断链的最小形状
+    ...     a = pathlib.Path(td) / "假件.py"
+    ...     _ = a.write_text("见 §2.1\\n§2.2 也算一处\\n", encoding="utf-8")
+    ...     led3 = check_cites(set(), [a], target_empty="读到了，可里面一条编号小节都没有")
+    >>> (led3.tokens, led3.dangling, led3.refused, led3.target_secs)
+    (2, [], True, 0)
+    >>> led3.no_target
+    '读到了，可里面一条编号小节都没有'
     """
     led = Cites(bare=len(BARE.findall(base_bare_from)) if base_bare_from else 0,
-                asked=len(files))
+                asked=len(files), target_secs=len(have))
+    if not have:
+        led.no_target = target_empty or "靶子里一条 `### N.M` 都没有"
     for p in files:
         text, why = doc_num.read_doc(p)
         disp = str(p.relative_to(ROOT)) if str(p).startswith(str(ROOT)) else str(p)
@@ -539,9 +633,10 @@ def check_cites(have: set[tuple[int, int]], files: Sequence[Path],
         led.per_file[disp] = len(cs)
         led.tokens += len(cs)
         for line, pair, said in cs:
-            if pair not in have:
+            if pair not in have and not led.no_target:
                 led.dangling.append(f"{disp}:{line} 写着「{said}」，可{have_note(have, pair)}")
     return led
+
 
 
 def have_note(have: set[tuple[int, int]], pair: tuple[int, int]) -> str:
@@ -568,9 +663,10 @@ def shares(counts: Mapping[str, int], keep: int) -> str:
     """把「哪一份件里写了几句引用」收成一句尾巴，只摊前 `keep` 名。
 
     为什么要有这一句（2.66/2.67 那个形状在本件里又管用一次）：那一屏原来只说「出自 38 份件」，
-    而这一层的价值全在**是谁**上 —— 今天那一句是「`计划书.md` 48、`docs/电视订阅接入.md` 25、
-    `scripts/doc_headings.py` 21」（10:55:48 现数），说的是「跨层的记性主要写在哪几件里」，
-    38 这一个字答不了；而第三名是本件自己 —— 一把读引用的尺，自己就是引用的一个大户。
+    而这一层的价值全在**是谁**上 —— 今天那一句是「`计划书.md` 51、`scripts/doc_headings.py` 28、
+    `docs/电视订阅接入.md` 25」（11:45:21 现数），说的是「跨层的记性主要写在哪几件里」，
+    38 这一个字答不了；而第二名是本件自己 —— 一把读引用的尺，自己就是引用的一个大户，
+    2.73 之后它超过那篇说明书排到了第二（那一节往自己的说明书里写了七句带前缀的引用）。
     （`selfcheck.py` 只在第 21 名、2 句 —— 打前那把尺自己几乎不引用文档，这一层是给说明书装的。）
 
     为什么不抄 `unmarked_nums.split`：那一句要把**每一篇**都摊出来，好让
@@ -601,11 +697,23 @@ def render(docs: Sequence[Found], cites: Cites, *, unread_docs: Sequence[tuple[s
 
     每一层自己报自己的「照见 / 认不出 / 毛病」三个数，不写「见上面那句毛病数」那种话 ——
     那一层今天 0 实例时，「见上面」指的是一个压根没出现的东西，读的人无从知道它查过。
+
+    顶上第二、第三行分成「本篇 …」与「靶子 …」两句，是因为 11:09:42 那一遍：`--docs` 一个名字
+    同时管着「结构层查谁」和「引用层拿谁的节号当真」，指到两篇没有 `### N.M` 的文档上，
+    引用层就没了靶子。所以靶子单独一行、单独报几条编号小节，与被查那几篇不重叠时明说；
+    结论那一句末尾也带着「靶子 N 条编号小节」—— 「断链 0 处」配不上一个空靶子。
     """
     out = ["文档的标题结构 —— 编号连着排没有、层级跳没跳、引用指得到指不到",
-           f"本篇 {'、'.join(d.doc for d in docs)}"
-           + (f" · 引用层比了 {len(cites.per_file)} 份件" if cites.per_file else " · 引用层一份都没比"),
+           f"本篇 {'、'.join(d.doc for d in docs)}",
+           f"靶子 {'、'.join(cites.target_names) if cites.target_names else '（`--target` 一个字都没给）'}"
+           f"：{cites.target_secs} 条 `### N.M`"
+           + (" —— 与被查那几篇不重叠，引用判的是另一篇的节号"
+              if cites.target_names and not (set(cites.target_names)
+                                             & {d.doc for d in docs}) else "")
+           + (f" · 引用层读了 {len(cites.per_file)} 份件" if cites.per_file
+              else " · 引用层一份都没读"),
            ""]
+
     for d in docs:
         out.append(f"   {d.doc}  照成标题 {d.heads} 条 · 毛病 {len(d.bad)} 处"
                    + (" ← 逐条点名" if d.bad else ""))
@@ -637,6 +745,10 @@ def render(docs: Sequence[Found], cites: Cites, *, unread_docs: Sequence[tuple[s
     out.append("")
     if cites.no_list:
         out.append("   引用：`--refs` 给了空名单 —— 这一层今天一个字都没比（不是「都对」）")
+    elif cites.refused:
+        out.append(f"   引用：**这一层不敢判** —— {cites.no_target}，"
+                   f"那 {cites.tokens} 处带前缀的引用无处可判")
+        out.append("   断链 未判 —— 这一格空着是**没判**，不是干净（两种 0 不同形）")
     elif not cites.tokens:
         out.append(f"   引用：读了 {len(cites.per_file)} 份件，一处带前缀的节号引用都没有 —— "
                    "这一层比了个空，但没有断链")
@@ -646,9 +758,16 @@ def render(docs: Sequence[Found], cites: Cites, *, unread_docs: Sequence[tuple[s
         out.append(f"   断链 {len(cites.dangling)} 处"
                    + (" ← 逐条点名" if cites.dangling else " —— 一处都没断"))
         out += [f"   ✗ {x}" for x in cites.dangling]
+    if cites.target_unread:
+        out.append(f"   靶子有 {len(cites.target_unread)} 篇没读到："
+                   + "、".join(cites.target_unread[:NAMED])
+                   + (f" …另有 {len(cites.target_unread) - NAMED} 篇"
+                      if len(cites.target_unread) > NAMED else "")
+                   + f" —— 上面那句「{cites.target_secs} 条 `### N.M`」只覆盖读到的那些靶子")
     if cites.bare:
-        out.append(f"   没带前缀的那种 `N.M` 串 {cites.bare} 处，本节一处都不读"
+        out.append(f"   靶子里没带前缀的那种 `N.M` 串 {cites.bare} 处，本节一处都不读"
                    "（那是版本、时长、IP 尾巴 —— 见模块那段边界）")
+
     if cites.copies:
         out.append(f"   跳过同步盘冲突副本 {len(cites.copies)} 份："
                    + "、".join(cites.copies[:NAMED])
@@ -663,17 +782,23 @@ def render(docs: Sequence[Found], cites: Cites, *, unread_docs: Sequence[tuple[s
                    + "、".join(f"{n}（{w}）" for n, w in unread_docs)
                    + " —— 这一屏不是「整个仓库的标题结构」。")
     bad = sum(len(d.bad) for d in docs)
+    link = (f"引用断链 {len(cites.dangling)} 处" if not cites.refused else "引用断链 未判")
     out += ["", f"扫了 {len(docs)} 篇文档、{sum(d.heads for d in docs)} 条标题、"
-          f"比了 {cites.tokens} 处引用：结构毛病 {bad} 处、引用断链 {len(cites.dangling)} 处"
+          f"比了 {cites.tokens} 处引用：结构毛病 {bad} 处、{link}、"
+          f"靶子 {cites.target_secs} 条编号小节"
           + (f"，{len(unread_docs)} 篇没读到" if unread_docs else "")
-          + (f"，{len(cites.unread)} 份引用件没读到" if cites.unread else "")]
+          + (f"，{len(cites.unread)} 份引用件没读到" if cites.unread else "")
+          + (f"，{len(cites.target_unread)} 篇靶子没读到" if cites.target_unread else "")]
     return out
+
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="文档的标题结构：编号连着排没有、引用指不指得到")
     ap.add_argument("--docs", default=DEFAULT_DOCS,
-                    help=f"查哪几篇文档，逗号分隔（默认 {DEFAULT_DOCS}）")
+                    help=f"结构层查哪几篇文档，逗号分隔（默认 {DEFAULT_DOCS}）")
+    ap.add_argument("--target", default=DEFAULT_TARGET, dest="target",
+                    help=f"引用层拿哪几篇的 `### N.M` 当真，逗号分隔（默认 {DEFAULT_TARGET}）")
     ap.add_argument("--refs", default=DEFAULT_REFS,
                     help=f"引用层比哪几份件，逗号分隔、目录递归（默认 {DEFAULT_REFS}）")
     ap.add_argument("--all", action="store_true", dest="show_all",
@@ -691,24 +816,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_own(sys.modules[__name__])   # 2.69：答在 `main()` 里，不在收尾那一道
     if args.self_test:
         return self_test()                      # 先跑掉：这一档一个字都不该读仓库里那几篇
-    docs = [Path(d.strip()) if Path(d.strip()).is_absolute() else ROOT / d.strip()
-            for d in args.docs.split(",") if d.strip()]
+    docs = [s.strip() for s in args.docs.split(",") if s.strip()]
     if not docs:
         print("--docs 里一个名字都没给：这一屏没有可读的东西，也不算量过。", file=sys.stderr)
         return 2
+    got, unread = load_docs(args.docs)
     found: list[Found] = []
-    unread: list[tuple[str, str]] = []
-    have: set[tuple[int, int]] = set()
-    base_text = ""
-    for p in docs:
-        disp = str(p.relative_to(ROOT)) if str(p).startswith(str(ROOT)) else str(p)
-        text, why = doc_num.read_doc(p)
-        if text is None:
-            unread.append((disp, why))
-            continue
-        if not base_text:
-            base_text = text
-        have |= have_sections(text)
+    for disp, text in got:
         led = survey(text, disp)
         if not led.heads:
             unread.append((disp, "读到了，可一条标题都没照见"))
@@ -719,9 +833,26 @@ def main(argv: list[str] | None = None) -> int:
     if not found:
         print(f"点名的 {len(docs)} 篇一篇都没读到标题 —— 一个字都没量到，不算通过。", file=sys.stderr)
         return 2
+    # 引用层的靶子单独一份名单：它不跟着 `--docs` 走（缘由见 `render` 那段与 `check_cites`）。
+    got_t, unread_t = load_docs(args.target)
+    have: set[tuple[int, int]] = set()
+    base_text = ""
+    for _disp, text in got_t:
+        have |= have_sections(text)
+        base_text += text
+    if not [s for s in args.target.split(",") if s.strip()]:
+        why_t = "`--target` 一个字都没给，靶子是空的"
+    elif not got_t:
+        why_t = f"点名的 {len(unread_t)} 篇靶子一篇都没读到"
+    elif not have:
+        why_t = f"靶子那 {len(got_t)} 篇里一条 `### N.M` 都没有"
+    else:
+        why_t = ""
     files, copies, empty_dirs = ref_paths(args.refs)
-    cites = check_cites(have, files, base_text)
+    cites = check_cites(have, files, base_text, why_t)
     cites.copies = copies
+    cites.target_names = [d for d, _t in got_t]
+    cites.target_unread = [f"{d}（{w}）" for d, w in unread_t]
     for d in empty_dirs:
         print(f"！`--refs` 里那个目录一份件都没有：{d}", file=sys.stderr)
     for line in render(found, cites, unread_docs=unread, show_all=args.show_all):
@@ -731,7 +862,16 @@ def main(argv: list[str] | None = None) -> int:
         print("引用层一个字节都没读 —— 结构那一层量到了，可这一屏说的是两层，不是三层。",
               file=sys.stderr)
         return 2
-    return 1 if (bad or cites.dangling or unread or cites.unread) else 0
+    if cites.no_target and not cites.refused:
+        print("靶子一条编号小节都没有 —— 今天没有一处引用要判，所以这一格没响；"
+              "下一句 `§N.M` 写进任何一份件，它就大声退 2。", file=sys.stderr)
+    if cites.refused:
+        print(f"引用层一个字都没判 —— {cites.no_target}。结构那一层量到了，"
+              "可「断链 0 处」是判不出来的 0，这一屏不许读成两层都对。", file=sys.stderr)
+        return 2
+    return 1 if (bad or cites.dangling or unread or cites.unread
+                 or cites.target_unread) else 0
+
 
 
 # ——————————————————————————————————————————————————————————
@@ -753,6 +893,13 @@ T1 = "### 2.1 乙章的头一节\n"
 # 而 `§2.1` 写在本件里也**恰好**是这份仓库真有的节号 —— 引用层读 .py 的源码，
 # 本件里凡是假号都得走 `DEAD` 那一支，这一句不必。
 OK = "# 题\n" + CH1 + S1 + CH2 + T1
+# 「整篇一条编号章都没有」那一族：`## 1.`、`## 2.` 这种步骤号版式。今天仓库里就有两篇这样写的
+# （11:15:25 现数：`docs/真机验收单.md` 8 条 `##` 全认不出、`docs/电视订阅接入.md` 2 条 `##`
+# 加 6 条 `###` 全认不出，两篇的 `### N.M` 都是 0 条）—— 本节把这两篇递进默认名单，
+# 于是「认不出全部」从设想变成每一遍自检都会路过的常态，得有格子钉住它不等于「有毛病」。
+STEP1 = "## 1. 点第一个台\n"
+STEP2 = "## 2. 点第二个台\n"
+NO_NUM = "# 真机验收单\n" + STEP1 + STEP2
 
 BASELINE: tuple[Cell, ...] = (
     # ———— G 组：这些情形**不许**报错。它们红了就是尺在瞎咬 ————
@@ -777,19 +924,37 @@ BASELINE: tuple[Cell, ...] = (
               "围栏里以 `#` 开头没照进来的 2 行"]),
     Cell("G5_引用都对", "带前缀的引用指着真存在的节：断链 0 处，且那一句要说「一处都没断」",
          0, files=((DOC, OK), ("假件.py", "见 §2.1 那一节\n")),
-         argv=("--docs", f"{SANDBOX}/{DOC}", "--refs", f"{SANDBOX}/假件.py"),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/假件.py"),
          has=["引用：比了 1 处 —— 出自 1 份件，其中", "假件.py 1",
               "断链 0 处 —— 一处都没断"]),
     Cell("G6_结论那句带分母", "selfcheck 只印最后一行 —— 「比了几处」不挂到结论句上就等于没挂",
          0, files=((DOC, OK), ("假件.py", "见 §2.1\n§2.1 也提一次\n")),
-         argv=("--docs", f"{SANDBOX}/{DOC}", "--refs", f"{SANDBOX}/假件.py"),
-         has=["扫了 1 篇文档、5 条标题、比了 2 处引用：结构毛病 0 处、引用断链 0 处"]),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/假件.py"),
+         has=["扫了 1 篇文档、5 条标题、比了 2 处引用：结构毛病 0 处、引用断链 0 处、"
+              "靶子 2 条编号小节"]),
     Cell("G7_几份件各几处", "引用层的分母要拆得开：哪一份件里写了几句（2.66/2.67 那个形状）",
          0, files=((DOC, OK), ("甲件.py", "见 §2.1\n§2.1 也提一次\n"),
                    ("乙件.py", "只有这里提了一次 §2.1\n")),
-         argv=("--docs", f"{SANDBOX}/{DOC}", "--refs", f"{SANDBOX}/甲件.py,{SANDBOX}/乙件.py"),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/甲件.py,{SANDBOX}/乙件.py"),
          has=["比了 3 处 —— 出自 2 份件，其中", "甲件.py 2", "乙件.py 1",
               "断链 0 处 —— 一处都没断"]),
+    Cell("G8_靶子与被查分开", "**11:09:42 那一遍的形状**：被查那篇一条编号小节都没有，靶子另有其人 —— 引用层照判，退 0",
+         0, files=((DOC, OK), ("无编号.md", NO_NUM), ("假件.py", "见 §2.1 那一节\n")),
+         argv=("--docs", f"{SANDBOX}/无编号.md", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/假件.py"),
+         has=["靶子 ", "与被查那几篇不重叠", "引用层读了 1 份件",
+              "断链 0 处 —— 一处都没断", "引用断链 0 处、靶子 2 条编号小节"]),
+    Cell("G9_整篇没编号章", "真机验收单那种版式：`## 1.`、`## 2.` 全落「认不出」，一条都不许判成毛病",
+         0, files=((DOC, NO_NUM), ("靶子.md", OK)),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/靶子.md",
+               "--refs", f"{SANDBOX}/靶子.md"),
+         has=["章 `## <中文数字>、`：照见 0 条 · 编号认不出 2 条",
+              "结构毛病 0 处、引用断链 0 处、靶子 2 条编号小节"],
+         lacks=["✗"]),
+
     # —— 以下每一格钉一条「今天的文档里 0 实例」的判据：没有这些格子，那几条判据等于没测 ——
     Cell("B1_章断号_真事故重放", "**上一节那次提交的样子**：`## 三、总体架构` 整行没了",
          1, files=((DOC, "# 题\n" + CH1 + CH2 + CH3.replace("三、丙", "四、丁")),),
@@ -831,25 +996,30 @@ BASELINE: tuple[Cell, ...] = (
          lacks=["### P7"]),
     Cell("B13_引用断链", "**本节第一遍真量到的那一种**：指着一个文档里没有的节号（那句原话由 `DEAD` 拼）",
          1, files=((DOC, "# 题\n" + CH1 + S1), ("假件.py", f"见 {DEAD} 的第三级\n")),
-         argv=("--docs", f"{SANDBOX}/{DOC}", "--refs", f"{SANDBOX}/假件.py"),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/假件.py"),
          has=["断链 1 处 ← 逐条点名", f"假件.py:1 写着「{DEAD}」",
               "文档里没有 `### 5.3`（第五章一条编号小节都没有）",
               "结构毛病 0 处、引用断链 1 处"],
          lacks=["该只有一条"]),
     Cell("B14_引用件不在", "点名的引用件读不到：结构那一层照样量到了，退 1 且那句分母要说",
          1, files=((DOC, OK),),
-         argv=("--docs", f"{SANDBOX}/{DOC}", "--refs", f"{SANDBOX}/不在.py"),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/不在.py"),
          has=["引用层有 1 份没读到", "文件不在", "1 份引用件没读到"]),
     Cell("B15_引用层空名单", "`--refs` 给空串：那一层一个字都没读，不许读成「比了 0 处」那种绿",
-         2, files=((DOC, "# 题\n" + CH1),), argv=("--docs", f"{SANDBOX}/{DOC}", "--refs", ""),
+         2, files=((DOC, OK),), argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+                                      "--refs", ""),
          has=["`--refs` 给了空名单 —— 这一层今天一个字都没比（不是「都对」）"]),
     Cell("B16_比了个空", "给了件、可里面一处带前缀的引用都没有：退 0，但那句话要说清",
-         0, files=((DOC, "# 题\n" + CH1), ("假件.py", "这里谁都没引用\n")),
-         argv=("--docs", f"{SANDBOX}/{DOC}", "--refs", f"{SANDBOX}/假件.py"),
+         0, files=((DOC, OK), ("假件.py", "这里谁都没引用\n")),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/假件.py"),
          has=["一处带前缀的节号引用都没有 —— 这一层比了个空，但没有断链"]),
     Cell("B17_文档不在", "点名两篇、只读到一篇：退 1，且每一行数只覆盖读到的那一篇",
          1, files=((DOC, "# 题\n" + CH1),),
-         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/不在.md", "--refs", f"{SANDBOX}/{DOC}"),
+         argv=("--docs", f"{SANDBOX}/{DOC},{SANDBOX}/不在.md", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/{DOC}"),
          has=["点名的 2 篇里有 1 篇没读到", "1 篇没读到"]),
     Cell("B18_文档是目录", "2.36 那一族的第三种读法：不许裸崩",
          2, argv=("--docs", str(SANDBOX)), has=["那是个目录", "一篇都没读到标题"],
@@ -862,19 +1032,67 @@ BASELINE: tuple[Cell, ...] = (
          has=["读到了，可一条标题都没照见", "一篇都没读到标题"]),
     Cell("B21_docs给空串", "参数取坏值时不许去读仓库里那一篇",
          2, argv=("--docs", ""), has=["--docs 里一个名字都没给"]),
+    # ———— 靶子那一档：引用层的「存在」是谁说了算。上一组钉的是判据咬不咬，这一组钉的是它敢不敢咬 ————
+    Cell("B22_空靶子不敢判", "被查与靶子同一篇、里面一条编号小节都没有，可外面有引用：只数不判，退 2",
+         2, files=((DOC, NO_NUM), ("假件.py", "见 §2.1\n§2.2 也算一处\n")),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", f"{SANDBOX}/{DOC}",
+               "--refs", f"{SANDBOX}/假件.py"),
+         has=["引用：**这一层不敢判** —— 靶子那 1 篇里一条 `### N.M` 都没有，"
+              "那 2 处带前缀的引用无处可判",
+              "断链 未判 —— 这一格空着是**没判**，不是干净",
+              "结构毛病 0 处、引用断链 未判、靶子 0 条编号小节"],
+         lacks=["一处都没断"]),
+    Cell("B23_靶子给空串", "`--target` 给空串：`B15` 的姊妹格 —— 靶子这一侧也不许读成「比了 0 处」那种绿",
+         2, files=((DOC, OK), ("假件.py", "见 §2.1\n")),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target", "", "--refs", f"{SANDBOX}/假件.py"),
+         has=["`--target` 一个字都没给，靶子是空的", "那 1 处带前缀的引用无处可判",
+              "靶子 （`--target` 一个字都没给）"],
+         lacks=["一处都没断"]),
+    Cell("B24_靶子读不到", "点名的靶子有一篇读不到：判是照判了，可那句分母缺了一块 → 退 1",
+         1, files=((DOC, OK), ("假件.py", "见 §2.1 那一节\n")),
+         argv=("--docs", f"{SANDBOX}/{DOC}", "--target",
+               f"{SANDBOX}/{DOC},{SANDBOX}/不在.md", "--refs", f"{SANDBOX}/假件.py"),
+         has=["靶子有 1 篇没读到：", "文件不在", "1 篇靶子没读到"]),
 )
+
+
+def targetless(cells: Sequence[Cell]) -> list[str]:
+    """哪些格子把引用层的靶子留给了默认值 —— **跑任何一格之前先问这一条**。
+
+    为什么要有这一道：`--target` 的默认值是仓库里那一篇 `计划书.md`（1160 KB、85 条编号小节）。
+    沙盒里那篇三行的假文档要是靠它当靶子，格子量的就不再是判据，而是「今天仓库里有没有
+    `### 2.1`」—— 文档添一节、删一节，沙盒跟着红，而红的原因没人猜得到。这一道与
+    `ragged_cells`、`braced_cells` 同档：它咬的是基线自己写歪的地方，不是尺的判决。
+
+    没写参数的格子按 `DEFAULT_CELL_ARGV` 问 —— 否则把那条默认串里的 `--target` 删掉，
+    全仓库没有一格会红（沙盒里那些假文档没有一处带前缀的引用，空靶子因此一声不响）。
+
+    >>> targetless([Cell("A", "x", 0, argv=("--docs", "d", "--refs", "r"))])
+    ['A：这一格会让引用层去读仓库里那一篇（`--target` 没给）']
+    >>> targetless([Cell("B", "y", 0, argv=("--refs", "r", "--target", "t"))])
+    []
+    >>> targetless([Cell("C", "z", 0), Cell("D", "w", 0, argv=("--docs", "d"))])
+    []
+    >>> targetless([Cell("E", "v", 0, argv=("--docs", "d", "--target", ""))])
+    []
+    """
+    return [c.who + "：这一格会让引用层去读仓库里那一篇（`--target` 没给）"
+            for c in cells
+            if "--refs" in (c.argv or DEFAULT_CELL_ARGV)
+            and "--target" not in (c.argv or DEFAULT_CELL_ARGV)]
 
 
 def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     """跑一格：返回 `(判决, 为什么, 那一遍的原文)`。判决是 `ok`／`bad`／`崩`。
 
-    默认那一串参数里带着 `--refs <沙盒>/<假文档>`，不是随手加的：**这一把尺读两层**，
-    少给一半它就去读仓库里那 150 份真件 —— 沙盒里那篇三行的假文档随即被真文档的
-    「§2.71」判成一堆断链，`G1` 那种「该退 0」的格子全红，而红的原因跟判据一个字无关。
-    前那八档基线没有这一格（它们的尺只有一层靶子），所以这一条只能在这里说明白。
+    默认那一串参数里带着 `--docs`／`--refs`／`--target` 三个沙盒路径，不是随手加的：**这一把尺读
+    三层、有两份名单**，少给一半它就去读仓库里那 150 份真件 —— 前一种后果 §2.72 记过（沙盒里那篇
+    三行的假文档被真文档的引用判成一堆断链，`G1` 那种「该退 0」的格子全红）；本节添的是后一种：
+    `--target` 不给，默认值就是仓库里的 `计划书.md`，于是每一格都在偷偷问「今天仓库里有没有
+    `### 2.1`」，那已经不是判据的回归测试了。这一条由 `targetless` 在跑之前闸住。
     """
     d = build_cell(cell, base, {})
-    argv = list(cell.argv) or ["--docs", f"{d}/{DOC}", "--refs", f"{d}/{DOC}"]
+    argv = list(cell.argv) or [a.replace(SANDBOX, str(d)) for a in DEFAULT_CELL_ARGV]
     argv = [a.replace(SANDBOX, str(d)) for a in argv]
     out, err = io.StringIO(), io.StringIO()
     try:
@@ -921,6 +1139,11 @@ def self_test() -> int:
     if holes:
         print("基线要点名却点不到的键（这一把尺不读表，出现这一句就是格子写歪了）："
               + "、".join(holes))
+        return 2
+    leaky = targetless(BASELINE)
+    if leaky:
+        print("有格子把引用层的靶子留给了仓库里那一篇，改的是基线、不是判据：\n  "
+              + "\n  ".join(leaky))
         return 2
     ran = bad = 0
     fails: list[tuple[Cell, str, str]] = []
