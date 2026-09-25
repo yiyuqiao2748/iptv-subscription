@@ -2066,6 +2066,52 @@ BASELINE: tuple[Cell, ...] = (
          has=("✗ scripts/占位.py 读不到（IsADirectoryError）", "跨件判决普查（2 件",
               "合计 2 件里读到 1 件：判决 2 句、钉住 1、缺口 1"),
          lacks=("读不通", "上面 2 件一件都没读到", "一件都没读到（过滤器")),
+    # ———— T1…T5：字递在一扇薄门旁边（2.77），外加一格钉界线 ————
+    # 这几格钉的不是措辞，是「递了没人答的那个字有没有到屏幕上」。18 个组合同一张表跑过三棵
+    # 树：改前那一棵（`/tmp/prefix277`＝HEAD，表在 `/tmp/probe277e.log`）**10 个静默**退 0
+    # （6 个两扇一起递、4 个薄门旁边跟了字）；本节最后一版（`/tmp/final277`，表在
+    # `/tmp/probe277f.log`）静默 **0** 个 —— 10 行走门口这一句、6 行走登记处、2 行是
+    # `--each`／`--across` 换树那两正当退 0 且带 `scope_note`。那 10 个里最贵的一支是
+    # `--doctest --root=<树>` —— 屏幕上给的是**仓库**那一棵，且没有 `scope_note` 来报这一句。
+    # `T5` 是这一族里唯一不归门口管的一格：它钉的是「薄门之外那一头走登记处」这条界线。
+    # 除 `T2` 之外都在门口就退了（`T5` 连门口都没进），一扇门的体内都没到，所以
+    # in-process 就够；`T2` 为什么非得 `spawn`，见它自己那条注释（19:4x 那台变异台拿命换来的）。
+    Cell("T1_两扇门一起递", "`--doctest` 与 `--across` 一起递：答一扇，另一扇要点名，且一扇都不许跑",
+         2, argv=(DOCTEST_FLAG, ACROSS_FLAG),
+         has=("一屏只答一扇门", "答的是 '--doctest'", "'--across' 没答",
+              "整册的判决面积：`--across`（只数不判）"),
+         lacks=("跨件判决普查（", "个用例", "我不收这个旗标")),
+    Cell("T2_薄门前面那扇也不答", "`--self-test` 在前、`--doctest` 在后：答的是 argv[0] 那一扇，基线一格都不跑",
+         2, argv=(SELF_TEST_FLAG, DOCTEST_FLAG), spawn=CELL_SELF,
+         # 这一格必须 `spawn`，不能 in-process —— 19:4x 现量：把门口那句拆掉（变异台 K1）
+         # 之后，in-process 的那一遍会去调 `self_test()`，而 `self_test()` 里又有这一格，
+         # 于是基线套着基线一层层往下种，本节那台跑到第六分钟才掐掉。走 `spawn` 就有一道
+         # 2.75 装好的安全带接着：副本里的这一格看到 `DEPTH_ENV` 直接报不符，不再往下种。
+         files=((CELL_SELF, self_copy()),
+                ("scripts/baseline_guard.py", neighbor("scripts/baseline_guard.py")),
+                ("scripts/work_guard.py", neighbor("scripts/work_guard.py"))),
+         has=("一屏只答一扇门", "答的是 '--self-test'", "每件一个子进程，读的就是那棵树"),
+         lacks=("扫了基线", "个用例", "Traceback")),
+    Cell("T3_换树那一旗在薄门旁边", "`--doctest --root=<树>`：那一旗在这一档不起作用，屏幕上不许读成「量的是那棵树」",
+         2, argv=(DOCTEST_FLAG, "--root={T}"),
+         has=("这一扇的体内不收任何参数", "递在它旁边的 '--root=", "没人答",
+              "这一遍量的还是本件自己"),
+         lacks=("个用例", "在册范围不是本仓库", "合计")),
+    Cell("T4_过滤器递在薄门旁边", "位置参数递到 `--doctest` 旁边：它不是这一档的过滤器，要说没人答",
+         2, argv=("prober", DOCTEST_FLAG),
+         has=("这一扇的体内不收任何参数", "'prober' 没人答"),
+         lacks=("个用例", "我不收这个旗标")),
+    Cell("T5_那条界线归登记处", "`--across` 在前、`--doctest` 在后：答的那扇自己收旗，那个字归登记处点名，不归门口那一句",
+         2, argv=(ACROSS_FLAG, DOCTEST_FLAG),
+         files=((CELL_SRC, across_src(1, 1)),),
+         # 这一格钉的是**两条出口之间那条界线**：`door_clash` 只接管薄门那一头，所以递在
+         # `--across` 旁边的陌生旗走的是它自己的 parser（`R8` 那条通路、登记处那一句）。
+         # `has` 里那三截都出自登记处，`lacks` 里那两截出自门口那一句 —— 两句在屏幕上换过来
+         # 这一格就红。为什么不用「屏幕上出现过 `--across` 四个字」当证据，见 `R8` 上面那段。
+         has=("我不收这个旗标", "给的是 '--doctest'",
+              "`--across`（跨件判决普查，只数不判）"),
+         lacks=("一屏只答一扇门（答的是", "这一扇的体内不收任何参数",
+                "跨件判决普查（", "合计")),
 )
 
 
@@ -2596,7 +2642,7 @@ def coverage_gaps(cells: tuple[Cell, ...] = BASELINE,
     >>> 缺口 = {s[1] for s in 判决 if not _pins(s, 钉住的句面)}
     >>> 豁免 = set(exempt_map(判决))
     >>> (len(判决), len(缺口), len(豁免), 缺口 == 豁免)
-    (49, 7, 7, True)
+    (51, 7, 7, True)
     """
     sites = own_sites() if sites is None else sites
     phrases = [h for c in cells for h in c.has]
@@ -3138,6 +3184,124 @@ def run_across(pattern: str = "", root: pathlib.Path = ROOT) -> int:
     return 1 if len(read) < len(rows) else 0
 
 
+# ————————————————————————————————————————————————————————————————
+# 四扇门：一屏只答一扇。2.76 之前「递两扇」与「薄门旁边跟了字」这两种都是**安静**的
+# —— 退 0、屏幕上读的是其中一扇，另一扇一个字不提。同一张 18 行的组合表跑过三棵树：
+# 改前那一棵（HEAD，`/tmp/probe277e.log`）里 **10 个静默**（6 个两扇一起递、
+# 4 个薄门旁边跟了字）；本节最后一版（`/tmp/probe277f.log`）静默 **0** 个 —— 10 行走
+# 门口这一句、6 行走登记处（答的那扇自己收词）、2 行正当退 0 且带 `scope_note`。
+# 那 10 个里最贵的一支是 `--doctest --root=<树>` —— 用户要量那棵树，屏幕上给他的是
+# **仓库**那一棵，且没有 `scope_note` 来报这一句（2.75 换树那一位从此处走的正是那个环境变量）。
+# 这一位不收 argv 的任何形态，只做一件事：把「有人递了、这一遍没答」说出口。
+DOORS: tuple[str, ...] = (SELF_TEST_FLAG, EACH_FLAG, ACROSS_FLAG, DOCTEST_FLAG)
+
+# 「薄」的是那两扇的**体内不收任何参数**：`self_test()` 与 `run_own(本件)` 都不看 argv，
+# 所以递在它们旁边的任何一个字，既没人答、也没人说不答。`--each`／`--across` 不在这一列，
+# 也**不归这一位管** —— 它们自己收 `--root=`／`--timeout=`／过滤器，认不出的字早有出口
+# （`午`／`未`／`R8` 三格钉着 `refusal` 那一句）。20:12 现量：`--across --doctest` 在本节动手
+# **之前**就退 2、点的正是 `'--doctest'` 那三个字，所以这一位只管薄门那一头 ——
+# 一条界线一个出口（§2.58），界线本身由 `T5` 钉着。
+THIN_DOORS: frozenset[str] = frozenset({SELF_TEST_FLAG, DOCTEST_FLAG})
+
+
+def door_answered(argv: list[str]) -> str:
+    """按 `main` 那一串分发顺序，这一遍真正答的是哪一扇；一扇都不答时回空串。
+
+    为什么要有这一句而不直接在 `main` 里判断：`main` 里那四句 `if` 是**跑法**，
+    「哪一扇答」是它的一个读数。两处各写一遍是 §2.58 那一族，所以这一位是唯一的
+    读法出口。而它与 `main` 那一串是否真的同口径，今天只有**一格**钉得住 —— 21:01 现量
+    （变异台 K9：把 `--doctest` 那一支挪到四句最前，这一位一个字不动）：
+    `--across --doctest`／`--each --doctest` 两支回到静默退 0，满册 43 格里只红
+    `T5_那条界线归登记处` 一格、面 A 309 条全绿；`T1`—`T4` 仍绿，因为它们在门口就被
+    拦下、走不到那四句。这一位自己的 6 条用例钉的是**这一位的读数**，钉不住这一句配对。
+    顺序也与 2.69 那条老账有关：其余九把尺里 `--doctest` 排在 `--self-test` 之前（同一棵
+    树上 21:00 现量 27 次探测：两扇一起递的 18 次全静默，且 18 次答的都是 doctest，
+    逐条见 `/tmp/probe277nine.log`），本件是反过来的 —— 本件这一句读的是 argv[0] 那一扇，
+    只有它不是那三扇之一时才轮到 `--doctest`。那一处口径不同本节不在这段里统一，
+    连同上面那条配对欠账一起记在 2.77 的边界里。
+
+    >>> door_answered(["--doctest"])
+    '--doctest'
+    >>> door_answered(["--self-test", "--doctest"])
+    '--self-test'
+    >>> door_answered(["--doctest", "--self-test"])
+    '--doctest'
+    >>> door_answered(["prober", "--doctest"])
+    '--doctest'
+    >>> door_answered(["--each", "--across"])
+    '--each'
+    >>> door_answered(["--root=/tmp/x"])
+    ''
+    """
+    if argv and argv[0] in (SELF_TEST_FLAG, EACH_FLAG, ACROSS_FLAG):
+        return argv[0]
+    if DOCTEST_FLAG in argv:
+        return DOCTEST_FLAG
+    return ""
+
+
+def door_clash(argv: list[str]) -> tuple[str, tuple[str, ...]] | None:
+    """这一遍有没有字递了没人答？有就回（答的那扇, 被丢下的字），没有回 `None`。
+
+    **只管薄门**（`THIN_DOORS` 的注释里记了为什么）：答的是 `--each`／`--across` 时，
+    递在它旁边的陌生旗由它自己的 parser 送去登记处点名，这一位一句都不抢 ——
+    20:12 现量：那两扇在本节动手之前就会退 2，抢过来只会把一句带名单的话换成一句短的。
+
+    薄门这一头有两种坏法要分开说，因为它们要说的话不一样：
+    （一）**两扇门一起递** —— `--doctest --across`：答 doctest，`--across` 没答。
+    （二）**薄门旁边跟了字** —— `--doctest --root=<树>`：那一旗在这一档根本不起作用，
+      而屏幕上那一遍读的是本件自己，看不出被换过。今天最贵的一种。
+
+    >>> door_clash(["--doctest"]) is None
+    True
+    >>> door_clash(["--each", "--root=/tmp/x", "--timeout=2"]) is None
+    True
+    >>> door_clash(["--across", "--rooot=/tmp/x"]) is None   # 打错的旗：那一档自己会点名
+    True
+    >>> door_clash(["--each", "--across"]) is None           # 两扇一起递，可答的那扇收旗：归登记处
+    True
+    >>> door_clash([]) is None
+    True
+    >>> door_clash(["--doctest", "--across"])
+    ('--doctest', ('--across',))
+    >>> door_clash(["--self-test", "--doctest"])
+    ('--self-test', ('--doctest',))
+    >>> door_clash(["--doctest", "--root=/tmp/x"])[1]        # 最贵那一支：换树没换
+    ('--root=/tmp/x',)
+    >>> door_clash(["prober", "--doctest"])
+    ('--doctest', ('prober',))
+    """
+    answered = door_answered(argv)
+    if answered not in THIN_DOORS:
+        return None
+    dropped = tuple(a for a in argv if a != answered)
+    return (answered, dropped) if dropped else None
+
+
+def clash_line(answered: str, dropped: tuple[str, ...]) -> str:
+    """被丢下的那几个字怎么说 —— 与 `refusal` 并列的第二句登记话：那一句管「这旗我不收」，
+    这一句管「这旗我收了、可这一遍答的不是它」。
+
+    两条出口各自是屏幕上的一句判决：`T1`—`T4` 四格钉的是这一句（`--self-test`／`--doctest`
+    薄门旁边那一头），`T5` 钉的是那条界线本身 —— 同一句 `--doctest` 递在 `--across` 旁边
+    归登记处、递在 `--doctest` 自己旁边归这一句；
+    末尾那一句「想量什么用什么」跟着两条一起走（它自己不是单独一句，所以那道预跑闸看不见它 ——
+    §2.76 那条边界讲的正是这种「塞进变量再拼进去」的形状，本节选择让格子多钉一句而不是让闸多认一句）。
+
+    >>> print(clash_line("--doctest", ("--across",)).splitlines()[0])
+    ✗ 一屏只答一扇门（答的是 '--doctest'，递进来的 '--across' 没答）。
+    >>> print(clash_line("--doctest", ("--root=/tmp/x",)).splitlines()[0])
+    ✗ `--doctest` 这一扇的体内不收任何参数：递在它旁边的 '--root=/tmp/x' 没人答，这一遍量的还是本件自己。
+    """
+    names = "、".join(repr(a) for a in dropped)
+    guide = ("    要换一棵树量：`--each --root=<树>`（每件一个子进程，读的就是那棵树）；"
+             "整册的判决面积：`--across`（只数不判）。")
+    if any(a in DOORS for a in dropped):
+        return (f"✗ 一屏只答一扇门（答的是 {answered!r}，递进来的 {names} 没答）。\n" + guide)
+    return (f"✗ `{answered}` 这一扇的体内不收任何参数：递在它旁边的 {names} 没人答，"
+            "这一遍量的还是本件自己。\n" + guide)
+
+
 def refusal(given: str, bad: list[str] | None = None) -> str:
     """「这个旗标我不收」那一句 —— 本件唯一的旗标登记处。
 
@@ -3148,14 +3312,18 @@ def refusal(given: str, bad: list[str] | None = None) -> str:
     登记处塌缩成这一句之后，「添了旗标忘改这一句」就等于那一旗没人知道存在 ——
     所以 `午_不认的旗标` 那一格逐条钉着它，而不是钉一份 nobody 读的清单。
 
+    2.77 起这一句不再是唯一的登记话：门口那一句（`clash_line`）与它并列 —— 这一句管
+    「这个旗我不收」，那一句管「这个旗我收了、可这一遍答的不是它」。**能收的旗名只写在这里**，
+    那一句不列名单（它只点名被丢下的那几个字），所以添一扇门只改一处（§2.58）。
+
     `bad` 是 `--each` 后面那几个认不出的字（可以不止一个）；不递时就是开头那一个。
 
     >>> refusal("--nope").splitlines()[0]
-    "✗ 我不收这个旗标（给的是 '--nope'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
+    "✗ 我不收这个旗标（给的是 '--nope'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）；一屏只答一扇门：`--doctest`／`--self-test` 这一对薄门体内不收任何参数，把任何别的字递在它们旁边会退 2 点名（2.77）；`--each`／`--across` 自己收旗，它们那一头的陌生旗标由上面那半句点名。"
     >>> refusal("--each", ["--rooot=/tmp/x"]).splitlines()[0]
-    "✗ 我不收这个旗标（给的是 '--rooot=/tmp/x'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
+    "✗ 我不收这个旗标（给的是 '--rooot=/tmp/x'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）；一屏只答一扇门：`--doctest`／`--self-test` 这一对薄门体内不收任何参数，把任何别的字递在它们旁边会退 2 点名（2.77）；`--each`／`--across` 自己收旗，它们那一头的陌生旗标由上面那半句点名。"
     >>> refusal("--each", ["--a", "--b"]).splitlines()[0]      # 不止一个：全点出来
-    "✗ 我不收这个旗标（给的是 '--a'、'--b'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
+    "✗ 我不收这个旗标（给的是 '--a'、'--b'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）；一屏只答一扇门：`--doctest`／`--self-test` 这一对薄门体内不收任何参数，把任何别的字递在它们旁边会退 2 点名（2.77）；`--each`／`--across` 自己收旗，它们那一头的陌生旗标由上面那半句点名。"
     """
     names = [given] if bad is None else bad
     return ("✗ 我不收这个旗标（给的是 " + "、".join(repr(a) for a in names) + "）。"
@@ -3163,7 +3331,10 @@ def refusal(given: str, bad: list[str] | None = None) -> str:
             f"`{SELF_TEST_FLAG}`（跑本件的基线）、`{DOCTEST_FLAG}`（只跑本件那份用例）、"
             f"`{ACROSS_FLAG}`（跨件判决普查，只数不判）；"
             "`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`"
-            "（收集器不起子进程，没有一件的天花板可言）。\n"
+            "（收集器不起子进程，没有一件的天花板可言）；"
+            "一屏只答一扇门：`--doctest`／`--self-test` 这一对薄门体内不收任何参数，"
+            "把任何别的字递在它们旁边会退 2 点名（2.77）；"
+            "`--each`／`--across` 自己收旗，它们那一头的陌生旗标由上面那半句点名。\n"
             "位置参数不是旗标，是模块名里的一个子串：\n"
             "    .venv/bin/python scripts/run_doctests.py            # 全部\n"
             "    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的\n"
@@ -3182,6 +3353,15 @@ def main(argv: list[str]) -> int:
     # 递给它一个没收过的旗标，以前它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和
     # scripts/ 还在不在」—— 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己
     # 踩过一次，见 2.56。
+    # 2.77 在这四句之前先问一句 `door_clash`：把字递在一扇**薄门**旁边（`--self-test`／
+    # `--doctest` 的体内不看 argv），以前是**安静**的（退 0、答那一扇、那些字一个字不提）。
+    # 这一句不许改变任何一扇单独递时的答法 —— 它只把「有人递了、这一遍没答」那一半接管过来；
+    # 另一半（答的那扇自己收旗、递进来一个它也不收的字）本来就归下面那三句
+    # `refusal(argv[0], bad)` 管，两条出口各自一条界线，见 `THIN_DOORS` 上面那段。
+    clash = door_clash(argv)
+    if clash:
+        print(clash_line(*clash), file=sys.stderr)
+        return 2
     if argv and argv[0] == SELF_TEST_FLAG:
         return self_test()
     if argv and argv[0] == EACH_FLAG:
