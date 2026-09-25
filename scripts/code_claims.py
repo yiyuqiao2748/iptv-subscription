@@ -12,7 +12,7 @@ r"""量一遍「写在代码里的话」—— docstring 里那些报数的句�
 「这一格」「每格」「一格都没跑起来」，它们不是数），函数 docstring 里大半是 `>>>` 示例（那是
 **读数**不是声明），和「同一句里点名两把尺」。所以这把尺只认两种**能当场算出真值**的形状：
 
-  甲 `N 格`（**只认阿拉伯数字**）—— 真值是五把带基线的尺各自 `len(BASELINE)`，现取。
+  甲 `N 格`（**只认阿拉伯数字**）—— 真值是 `ALIASES` 里每一位各自 `len(BASELINE)`，现取。
      这一句若用反引号点了主人（`doc-cmds`、`num-test` 那类别名也算），就必须等于**那一位**的格数；
      没点名则只要求它属于真值集合。只认阿拉伯数字这一刀顺带解决了冠词与历史复述：
      汉语写「那一格」「四条默认」从不用阿拉伯数字。
@@ -114,6 +114,10 @@ ALIASES: dict[str, tuple[str, ...]] = {
     # 中间那遍：「`selfcheck.py:steps` 说 格 28、真值是 没点名，只要求属于 9/12/14/15/23/26/30/35」），
     # 那 28 格正是刚装好那把尺的真实格数（2.64 那两把的来路一字不差）。
     "doc_headings": ("doc_headings", "heads", "heads-test"),
+    # 2.74 那一把：`doctests-test` 点的是 `run_doctests`。它守的与前面九位都不是一层 ——
+    # 不是「一把尺的读数」，是「逐件真跑那一档会不会说话」；别名这一层不区分这两件事，
+    # 而 `selfcheck` 的散文里写「那 18 格」时点的名字正是 `run_doctests`（2.64/2.72 同一族）。
+    "run_doctests": ("run_doctests", "doctests", "doctests-test"),
 }
 
 
@@ -246,7 +250,7 @@ class Claim(NamedTuple):
 
 
 def truth_of() -> tuple[dict[str, int], list[str]]:
-    """现取真值：七把带基线的尺各自 `len(BASELINE)`、selfcheck 的步数。
+    """现取真值：`ALIASES` 里每一位各自 `len(BASELINE)`、selfcheck 的步数。
 
     返回 `(值, 取不到的名字)`。取不到不当 0 —— 一个都不许糊，糊了就等于绿。
 

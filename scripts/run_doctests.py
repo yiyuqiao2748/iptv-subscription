@@ -13,6 +13,8 @@
     .venv/bin/python scripts/run_doctests.py prober   # 只跑名字里含 prober 的文件
     .venv/bin/python scripts/run_doctests.py --each   # 每件起一个子进程，真跑它自己的那一份
     .venv/bin/python scripts/run_doctests.py --doctest  # 只跑本件这一份用例
+    .venv/bin/python scripts/run_doctests.py --self-test  # 往沙盒里种假件，量 `--each` 这条跑法
+    .venv/bin/python scripts/run_doctests.py --each --root=/tmp/那棵树 --timeout=2
 
 2.68 起这里还多管一件事：**别的脚本自己那条 `--doctest` 支路怎么说结果**。那些支路以前
 一律写成 `raise SystemExit(doctest.testmod(verbose=False).failed)` —— 量到 31 条也好、
@@ -31,20 +33,41 @@
 「量的件」是不是它自己。每一件都挂在 `scripts/work_guard.py` 底下跑，于是
 「递 `--doctest` 给它会不会顺便去干自己的活」也成了一个读数而不是一段担心 ——
 那一族最坏的形状（§2.68 的 `M16`：字还在、路已死）由 `each_verdict` 点名。
+
+2.74 量的是这一档**自己的**那一句：`--each` 屏幕上那十几句话（「字还在、路已死」
+「它去干了自己的活」「那把尺判错了」……）今天一句都没有实例 —— 仓库里此刻没有一件那样歪的 .py，
+而「今天没有实例」与「判据整层不响」在同一屏上长得一模一样（§2.71 那笔账，这次轮到
+收集器自己欠）。所以 `--self-test` 那一档往临时目录里种假件、真起子进程、一格钉一句，
+再配一道预跑闸 `coverage_gaps`：一句判决没人钉了就红在**跑之前**（退 2、一句都没跑），
+而不是等到某一天那一句判决没字了才发现。这道闸量的是**句子**不是**格子**：一句被两格同时
+钉着的格子，删掉它不响（09-25 14:42 逐格删了一遍现数，一半响一半不响 —— 那个数不写在散文里，
+由 `gate_blindness` 算给屏幕；格子少没少另有 `claims` 拿 `selfcheck.py:steps` 那句话钉）。
+同一节把「册上共几件」那份写了三遍的账收成一遍
+（见 `each_file` 与 `survey_routes` 各自那条用例），并给 `--each` 添了 `--root=`／`--timeout=`
+两旗 —— 没有这两旗，「换一棵树来量」与「一件不返回」那两格就只能停在说明书里。
 """
 
 from __future__ import annotations
 
 import ast
+import contextlib
 import doctest
 import importlib
+import io
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
+from typing import NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# 在册范围：「哪几级目录里的 .py 算这一本册子」。写一份而不是五处，理由是 2.58 那条
+# （同一份规矩两个人各写一遍，迟早漂）—— 这一位以前在四个函数的默认值里各抄一次，
+# 而 `--each` 与 `survey_routes` 必须用**同一棵**树，否则静态普查跟实跑普查数的是两堆件。
+DEFAULT_DIRS: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")
 
 # `--each` 那一档里一件的天花板。为什么要有：递 `--doctest` 给一件「会起监听」的脚本，
 # 最坏的读法不是它报错，是它**不返回** —— 那一遍整屏就停在那一行上，
@@ -53,6 +76,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # 是 03:27 的 3.0 秒），所以 60 秒**不是**按比例放出来的余量 —— 它是
 # 「一件卡住 = 它在等一个永远不来的东西」（起监听、等 stdin）那一族的兜底：给到一分钟，
 # 让它自己超时、屏幕上那一行照样落下来，而不是整屏停在那一件上。
+# 那三个数是**那时候**的：2.74 在同一棵树上重量，本节 4.15／4.22／4.16、`git show HEAD`
+# 那一遍 4.53／4.51／4.45（14:51:49—14:52:15 交错三遍，六遍退码全 0）—— 同一时刻两棵树
+# 差不到 0.4 秒，而两棵都比上午那句慢 0.7—1.1 秒。也就是说「一天之内这一遍慢了三成」
+# 是真的，「本节把它跑慢了」不是（§2.50：屏幕上的数要说清是谁在什么时刻量的）。
+# 天花板跟着这个数放：0.15 秒一件的东西给 60 秒，是**形状**的兜底，不是比例的余量。
 EACH_TIMEOUT = 60
 
 
@@ -628,8 +656,7 @@ def _needs_positional(src: str) -> bool:
     return False
 
 
-def dead_flag_doors(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts",
-                                                       ROOT / "src")) -> list[str]:
+def dead_flag_doors(dirs: tuple[pathlib.Path, ...] = DEFAULT_DIRS) -> list[str]:
     """对 `--doctest` 作了承诺（写进用法、或挂进 parser）、可那一旗到不了应答的件 —— 应该是空表。
 
     为什么要有这一道：这一族的第一个实例不是假设，是本节当场撞出来的两件之一 ——
@@ -714,22 +741,24 @@ def route_shape(src: str) -> str:
     return ROUTE_AS_ARG if reads_argv(src) else ROUTE_NO_FLAG
 
 
-def survey_routes(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")) -> dict[str, list[str]]:
+def survey_routes(dirs: tuple[pathlib.Path, ...] = DEFAULT_DIRS,
+                  base: pathlib.Path = ROOT) -> dict[str, list[str]]:
     """整棵树按 `route_shape` 分档，键是那一档、值是 `相对路径 用例数` 的名单。
 
     在册的件由 `each_file` 那一层定（2.70 起它跟 `--each` 共用同一套取舍 —— 那两个数
     必须能对着读，不然静态普查和实跑普查就是在数两堆件）。
     用例数写在名单里而不是只报件数：这一档真正要说的是「多少个用例只有收集器跑得动」。
 
+    **这一处不再钉「一共几件」**：那个数是 `each_file` 的格子（本节之前它在下面两条例子里
+    又抄了一遍，于是 29 → 30 那一涨要改两处，而改漏的那一处不会红 —— 它只会红成
+    「这一档少了 1 件」，把人支到判据上去）。这一把只钉**形状**：哪几档有件、没有入口的
+    是谁、有几件白跑。
+
     >>> found = survey_routes()
-    >>> sum(len(v) for v in found.values())     # 每一档加起来 = 有用例的件数（2.72 起 30，上一节 29）
-    30
     >>> sorted(found)                                                      # 接线之后只剩两档有件
     ['没有入口', '走通']
     >>> [k for k in (ROUTE_ARGPARSE, ROUTE_NO_FLAG, ROUTE_AS_ARG) if k in found]
     []
-    >>> len(found[ROUTE_RUNS]) + len(found[ROUTE_NO_DOOR])                 # 30 = 接了门 + 纯库
-    30
     >>> all(s.startswith("src/") for s in found[ROUTE_NO_DOOR])            # 没有入口的全是库
     True
     >>> len(found[ROUTE_NO_DOOR])                                          # 11 件、只有收集器跑得动
@@ -748,7 +777,7 @@ def survey_routes(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "sr
     """
     by: dict[str, list[str]] = {}
     for path, n, route in each_file(dirs):
-        by.setdefault(route, []).append(f"{path.relative_to(ROOT)} {n}")
+        by.setdefault(route, []).append(f"{path.relative_to(base)} {n}")
     return {k: sorted(v) for k, v in by.items()}
 
 
@@ -815,7 +844,7 @@ GUARD_RE = re.compile(r"落在仓库里 (\d+) 条(?:：(.*?))?（被量件退")
 GUARD_DEAD_RE = re.compile("可被量件根本没跑起来")
 
 
-def each_file(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")
+def each_file(dirs: tuple[pathlib.Path, ...] = DEFAULT_DIRS
               ) -> list[tuple[pathlib.Path, int, str]]:
     """树上每一件「写了用例的 .py」：`(路径, 静态用例数, 静态那一档)`，按路径排序。
 
@@ -898,8 +927,8 @@ def parse_guard(text: str) -> tuple[int | None, str]:
     return int(m.group(1)), m.group(2) or ""
 
 
-def each_targets(pattern: str = "",
-                 dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")
+def each_targets(pattern: str = "", dirs: tuple[pathlib.Path, ...] = DEFAULT_DIRS,
+                 base: pathlib.Path = ROOT
                  ) -> list[tuple[pathlib.Path, int, str]]:
     """`--each` 要跑的那些件：`each_file` 那一堆里相对路径含 `pattern` 的（空串＝全部）。
 
@@ -909,11 +938,14 @@ def each_targets(pattern: str = "",
     ['scripts/work_guard.py']
     >>> each_targets("没有这样一个件")
     []
+    >>> each_targets("x", ())                       # 在册范围是空的：一件都没有（不替你编一个）
+    []
     """
-    return [row for row in each_file(dirs) if pattern in str(row[0].relative_to(ROOT))]
+    return [row for row in each_file(dirs) if pattern in str(row[0].relative_to(base))]
 
 
-def each_verdict(rel: str, want: int, route: str, rc: int, out: str) -> str:
+def each_verdict(rel: str, want: int, route: str, rc: int | None, out: str,
+                 cut: int | None = None) -> str:
     """一件跑完之后那一行话。纯函数：跑在 `spawn_each`，判在这里，判的部分全部能拿假输出喂。
 
     一行分两截，因为这一屏要同时说「读到了什么」和「哪里不对」：前面那一截把子进程那几样
@@ -926,6 +958,12 @@ def each_verdict(rel: str, want: int, route: str, rc: int, out: str) -> str:
       当时是 02:46:52 拿眼睛从屏幕上看出来的，今天由这一行说）。
     中间那一层是「答了，可答的不是它自己那份」：条数对不上静态、或者「量的件」报的不是这个
     路径（2.68 那句「`testmod()` 不点名就量了调用方」在这一层的形状）。
+
+    多出来的那一位 `cut` 说的是天花板：递了秒数，就是这一遍自己把那件掐了 —— 那两句
+    「它为什么没说话」的猜想在这一档都得闭嘴（护栏那一句和本来的回答**注定**拿不到）。
+    这一位是本节头一遍跑基线跑出来的：那一屏把一件卡住的脚本读成了
+    「子进程连 work_guard 都没跑起来？」，可它跑起来了、只是没跑完；而 `spawn_each`
+    本来就拼了一句「超过 N 秒没回来」，那一句在 `out` 里待着、**从没上过屏幕**。
 
     >>> GOOD = "合计 12 个用例，0 个失败（量的件：scripts/x.py）\\n" \\
     ...        "护栏：一条这类动作都没看见、落在仓库里 0 条（被量件退 0）"
@@ -957,20 +995,29 @@ def each_verdict(rel: str, want: int, route: str, rc: int, out: str) -> str:
     '✗ scripts/x.py                       答 12／静态 12、量的件=scripts/x.py、护栏 2 条 —— 它去干了自己的活：写 data/x、写 config/y'
     >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, 2, "")    # 子进程压根没说话
     '✗ scripts/x.py                       没答（静态：走通，退 2） —— 护栏那一句没到屏幕上（子进程连 work_guard 都没跑起来？）；字还在、路已死：静态说「走通」，它一个字都没答'
+    >>> each_verdict("scripts/x.py", 12, ROUTE_RUNS, None, "", cut=3)   # 被天花板掐掉
+    '✗ scripts/x.py                       没答（静态：走通，被 3 秒的天花板掐掉） —— 超过 3 秒没回来，是这一遍自己掐的：那一个「没答」不是它没答'
     """
     got = parse_own_line(out)
     guard_n, guard_detail = parse_guard(out)
     problems: list[str] = []
-    if guard_n is None and not GUARD_DEAD_RE.search(out):
+    if cut is not None:
+        # 天花板那一档：护栏那一句和本来的回答**都注定拿不到**，所以两句猜想在这一档都是假话
+        # —— 「子进程连 work_guard 都没跑起来」与「字还在、路已死」都不许说。
+        problems.append(f"超过 {cut} 秒没回来，是这一遍自己掐的：那一个「没答」不是它没答")
+    elif guard_n is None and not GUARD_DEAD_RE.search(out):
         problems.append("护栏那一句没到屏幕上（子进程连 work_guard 都没跑起来？）")
     elif guard_n:
         problems.append(f"它去干了自己的活：{(guard_detail or f'{guard_n} 条')[:120]}")
     if got is None:
-        note = f"没答（静态：{route}，退 {rc}）"
-        if route == ROUTE_RUNS:
-            problems.append(f"字还在、路已死：静态说「{ROUTE_RUNS}」，它一个字都没答")
+        if cut is None:
+            note = f"没答（静态：{route}，退 {rc}）"
+            if route == ROUTE_RUNS:
+                problems.append(f"字还在、路已死：静态说「{ROUTE_RUNS}」，它一个字都没答")
+            else:
+                note += "、只有收集器跑得动它"
         else:
-            note += "、只有收集器跑得动它"
+            note = f"没答（静态：{route}，被 {cut} 秒的天花板掐掉）"
     else:
         label, attempted, failed = got
         note = (f"答 {attempted}／静态 {want}、量的件={label}、"
@@ -995,10 +1042,11 @@ def each_verdict(rel: str, want: int, route: str, rc: int, out: str) -> str:
 def each_tally(total: int, answered: int, silent: int, bad: int, guarded: int) -> str:
     """那一屏收尾的一句合计。
 
-    「没答」单独报数而不是混在「有毛病」里：那 11 件纯库**本来就不该答**（§2.69 的
+    「没答」单独报数而不是混在「有毛病」里：那批纯库**本来就不该答**（§2.69 的
     「没有入口」那一档），把它们算成毛病就等于把上一节的读数又判红一遍；
-    可它们必须写在屏幕上，因为「今天有 30 件在跑、其中 11 件是白跑」这件事
-    只有那一句能说出来。
+    可它们必须写在屏幕上，因为「册上几件、其中几件这一遍是白跑」只有那一句能说出来。
+    这一句里五个数全部来自递进来的参数（没有一个是从说明书里抄的），所以
+    「在册件数」这件事在本件里只写在一处：`each_file` 的那条用例。
 
     >>> each_tally(29, 18, 11, 0, 0)
     '合计 29 件：答 18 件、没答 11 件；用例数与静态全对上、护栏一件都没拦下'
@@ -1012,52 +1060,119 @@ def each_tally(total: int, answered: int, silent: int, bad: int, guarded: int) -
     return f"合计 {total} 件：答 {answered} 件、没答 {silent} 件；{bad} 件有毛病{tail}"
 
 
-def spawn_each(path: pathlib.Path, argv: tuple[str, ...] = (DOCTEST_FLAG,)
-               ) -> tuple[int, str, str]:
+def spawn_each(path: pathlib.Path, argv: tuple[str, ...] = (DOCTEST_FLAG,),
+               base: pathlib.Path = ROOT, timeout: int = EACH_TIMEOUT
+               ) -> tuple[int | None, str, str]:
     """在护栏底下起一个子进程真跑这一件，返回（它的退码，它的 stdout，它的 stderr）。
 
     没有 doctest：这一句要起进程。判据全部在上面那三层（`parse_own_line`／`parse_guard`／
     `each_verdict`），它们都能拿一段假输出喂 —— 这一句只负责「真跑」。
+    盯着这一句的是下面 `BASELINE` 那一串格子（2.74 起）：它们是真的往临时目录里种假件、
+    真的起子进程，量的就是「这一句递出去的东西到不到得了屏幕上」。
+
+    `base` 是「哪一棵树」：`path` 的相对名字按它算、子进程的 `cwd` 设成它、
+    而护栏护的也是它（`--root=` 那一位）。递本仓库时三者与 2.74 之前逐字相同。
+    换一棵树时**护栏不换**：仍然用 `ROOT/scripts/work_guard.py` 那一柄 —— 护哪棵树与
+    用哪一柄是两件事，而基线要的就是「拿仓库里这一柄真护栏去量沙盒里那一件」。
 
     两个细节是有原因的：
     * `PYTHONDONTWRITEBYTECODE=1` —— 不递的话子进程往 `.venv` 掉 `.pyc`，
       `names` 那把尺当场涨（2.56 记过的那一格：871 与 891 的差就是这么来的）。
     * `-X utf8` —— 跟这个仓库里每一条写进文档的命令一致；不带的话在
       `LANG` 不是 UTF-8 的 shell 里，那些中文说明书会变成 `UnicodeDecodeError`。
+
+    退码那一位**只有天花板这一档会是 `None`**（真进程被信号打死时 `subprocess` 给的是
+    负数，拿 `-1` 当哨兵会跟 SIGHUP 撞车 —— 本节头一版就是这么写的）。
+    「超过 N 秒没回来」那一句话在这里一个字都不拼：它归 `each_verdict` 说（2.58
+    「一条规矩两个人各写一遍」——上一版在这里拼好了塞进 `out`，于是它永远到不了屏幕）。
     """
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     cmd = [sys.executable, "-X", "utf8", str(ROOT / "scripts" / "work_guard.py"),
-           str(path.relative_to(ROOT)), *argv]
+           f"--root={base}", str(path.relative_to(base)), *argv]
     try:
-        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                           timeout=EACH_TIMEOUT, env=env)
+        p = subprocess.run(cmd, cwd=base, capture_output=True, text=True,
+                           timeout=timeout, env=env)
     except subprocess.TimeoutExpired as e:
-        out = e.stdout if isinstance(e.stdout, str) else (e.stdout or b"").decode("utf-8", "replace")
-        return -1, out + f"\n✗ 超过 {EACH_TIMEOUT} 秒没回来（它多半在干自己的活）", ""
+        def txt(v: str | bytes | None) -> str:
+            return v if isinstance(v, str) else (v or b"").decode("utf-8", "replace")
+        return None, txt(e.stdout), txt(e.stderr)      # 掐掉之前已经印出来的那些字要留着
     return p.returncode, p.stdout, p.stderr
 
 
-def run_each(pattern: str = "") -> int:
+def roster_dirs(root: pathlib.Path = ROOT) -> tuple[pathlib.Path, ...]:
+    """`root` 那棵树里「哪几级算在册范围」：`scripts/` 与 `src/`，不存在的那一级不递。
+
+    为什么不递一份不存在的目录：`each_file` 对空目录回空表，于是「这棵树里根本没有
+    `scripts/`」与「有，可里面一件写了用例的都没有」会同形。拿掉不存在的那一级之后，
+    两种都会走到「一件都没挑出来」那一句，而**那一句自己把在册范围摊出来**（见 `run_each`）。
+
+    >>> roster_dirs(ROOT) == DEFAULT_DIRS
+    True
+    >>> roster_dirs(pathlib.Path("/tmp/没有这样一棵树"))
+    ()
+    """
+    return tuple(d for d in (root / "scripts", root / "src") if d.is_dir())
+
+
+def scope_note(root: pathlib.Path) -> str:
+    """换了一棵树来量时，那一屏收尾必须自己说一句「这不是本仓库」。
+
+    为什么要它：`--each` 那一屏每一行都印 `scripts/x.py` 这种相对名字，而沙盒里种的假件
+    **也叫** `scripts/x.py` —— 少了这一句，一份沙盒读数能被当成仓库读数抄进履历
+    （§2.61 那条「截断要自报」换到「名单出自哪棵树」这一维上的第一次用）。
+
+    >>> scope_note(ROOT)                                       # 默认那一遍：一个字都不许多说
+    ''
+    >>> scope_note(pathlib.Path("/tmp/沙盒"))
+    '在册范围不是本仓库，是 /tmp/沙盒 —— 上面那两行的「N 件」说的都是这一棵，不是仓库'
+    """
+    if root == ROOT:
+        return ""
+    return f"在册范围不是本仓库，是 {root} —— 上面那两行的「N 件」说的都是这一棵，不是仓库"
+
+
+def scope_names(dirs: tuple[pathlib.Path, ...], root: pathlib.Path) -> str:
+    """「一件都没挑出来」那一句里的在册范围：给了路径就摊，一级都没有就说人话。
+
+    >>> scope_names(DEFAULT_DIRS, ROOT)
+    'scripts/、src/'
+    >>> scope_names((), pathlib.Path("/tmp/沙盒"))               # 那两棵子目录都不在
+    '/tmp/沙盒 里没有 scripts/ 或 src/'
+    """
+    if dirs:
+        return "、".join(f"{d.relative_to(root)}/" for d in dirs)
+    return f"{root} 里没有 scripts/ 或 src/"
+
+
+def run_each(pattern: str = "", root: pathlib.Path = ROOT, timeout: int = EACH_TIMEOUT) -> int:
     """`--each` 那一档：逐件真跑，屏幕上那一屏就是本件的产物。
 
-    为什么这一档不进 `selfcheck.py`：它要起 30 个进程（09-25 10:43 实测四遍 3.43—3.55 秒），而自检那一屏
-    的规矩是「14 条、每一秒都要有理由」；更要紧的是它会把每一件自己的 stdout 再过一遍 ——
-    中性那一遍就不中性了。它是**手跑的**：改完一批门之后自己去看一眼。
+    为什么这一档不进 `selfcheck.py`：它要为册上每一件起一个进程（整册一遍的实耗时抄在
+    `EACH_TIMEOUT` 那一段注释里，两棵树的对照也在 —— 那里有一份就够，2.58），而自检那一屏
+    的规矩是「每一条都要有理由」；更要紧的是
+    它会把每一件自己的 stdout 再过一遍 —— 中性那一遍就不中性了。它是**手跑的**：
+    改完一批门之后自己去看一眼。（下面 `self_test` 那一串格子走的是同一扇门，只是每格一件假件。）
+
+    `root` 换的是量哪一棵树（`--root=`），`timeout` 换的是一件的天花板（`--timeout=`）：
+    两个都是**为了能被量**才递出来的 —— 沙盒里那一格「它不返回」若要钉住，
+    没有 `timeout` 就得让基线真等一分钟。
 
     退码按 2.62 那三档：**2** = 护栏那一句一件都没读到（什么都没量到，包括「护栏没意见」
-    这一条都没读到）；**1** = 有毛病；**0** = 全对且全读到。
+    这一条都没读到）、或一件都没挑出来；**1** = 有毛病；**0** = 全对且全读到。
     """
-    rows = each_targets(pattern)
+    dirs = roster_dirs(root)
+    rows = each_targets(pattern, dirs, root)
     if not rows:
-        print(f"✗ 一件都没挑出来（过滤器 {pattern!r}）—— 这一遍什么都没量到", file=sys.stderr)
+        print(f"✗ 一件都没挑出来（过滤器 {pattern!r}、在册范围 {scope_names(dirs, root)}）"
+              "—— 这一遍什么都没量到", file=sys.stderr)
         return 2
     print(f"逐件真跑 `{DOCTEST_FLAG}`（{len(rows)} 件，每件一个子进程、"
           f"都挂在 scripts/work_guard.py 底下）")
     bad = answered = silent = guarded_files = no_guard = 0
     for path, want, route in rows:
-        rel = str(path.relative_to(ROOT))
-        rc, out, err = spawn_each(path)
-        line = each_verdict(rel, want, route, rc, out)
+        rel = str(path.relative_to(root))
+        rc, out, err = spawn_each(path, base=root, timeout=timeout)
+        line = each_verdict(rel, want, route, rc, out, cut=timeout if rc is None else None)
         print(line)
         if parse_own_line(out) is None:
             silent += 1
@@ -1074,10 +1189,540 @@ def run_each(pattern: str = "") -> int:
         if line.startswith("✗"):
             bad += 1
     print(each_tally(len(rows), answered, silent, bad, guarded_files))
+    note = scope_note(root)
+    if note:
+        print(note)
     if no_guard == len(rows):
         print("✗ 护栏那一句一件都没读到 —— 这一遍什么都没量到，不算「全过」")
         return 2
     return 1 if bad else 0
+
+
+SELF_TEST_FLAG = "--self-test"
+
+
+def each_options(raw: list[str]) -> tuple[dict, list[str], list[str]]:
+    """认 `--each` 后面那几个字：返回（递进 `run_each` 的 kwargs, 位置参数, 认不出的那些）。
+
+    只认 `--root=<路径>` 与 `--timeout=<秒>` 两式，而且**只认带 `=` 的那一种**。不给空格那一式
+    留位置的理由和 `work_guard.split_at_target` 是同一条：这一档剩下的字要当过滤器用，
+    而 `--root /tmp/x` 里那个路径「不像旗」，它会当场变成过滤器 —— 屏幕上出来一句
+    「一件都没挑出来（过滤器 '/tmp/x'）」，把人支到过滤器上去，真正没接上的是我的参数。
+
+    认不出的那一半是这一句最要紧的产物。改之前 `--each` 后面凡是带 `-` 的字都被**丢掉**，
+    于是 `--each --rooot=/tmp/沙盒`（打错一个字母）会被当成「没给过滤器」，
+    安安稳稳去跑**本仓库那一整册** —— 一句打错的旗标换来一屏看着像沙盒、其实是仓库的读数。
+    现在那种字一律退 2 并点名（下面 `未_打错的旗标` 那一格钉的就是它不许跑起来）。
+
+    >>> each_options(["abc"])
+    ({}, ['abc'], [])
+    >>> each_options(["--root=/tmp/x", "guard"])
+    ({'root': PosixPath('/tmp/x')}, ['guard'], [])
+    >>> each_options(["--timeout=2"])
+    ({'timeout': 2}, [], [])
+    >>> each_options(["--rooot=/tmp/x"])                     # 打错：不丢、不当过滤器
+    ({}, [], ['--rooot=/tmp/x'])
+    >>> each_options(["--timeout=abc"])                      # 秒数不是一个数：也点名
+    ({}, [], ['--timeout=abc'])
+    >>> each_options(["--root="])                            # 空路径：不许退化成「用默认」
+    ({}, [], ['--root='])
+    >>> each_options([])
+    ({}, [], [])
+    """
+    opts: dict = {}
+    rest: list[str] = []
+    bad: list[str] = []
+    for a in raw:
+        if not a.startswith("-"):
+            rest.append(a)
+            continue
+        key, eq, val = a.partition("=")
+        if not eq:
+            bad.append(a)
+        elif key == "--root" and val:
+            opts["root"] = pathlib.Path(val)
+        elif key == "--timeout" and val.isdigit():
+            opts["timeout"] = int(val)
+        else:
+            bad.append(a)
+    return opts, rest, bad
+
+
+# ———— 沙盒里那几份假件的收尾 ————
+# 每段只写「跑起来做什么」，说明书和那道门由下面的 `fake()` 统一拼上。
+# 为什么门要自带一份（而不是 `from run_doctests import run_own`）：护栏特意把仓库那两级
+# 从 `sys.path` 里拿掉（`work_guard.run` 的第二条规矩），沙盒里的假件 import 不到本件 ——
+# 那正是它该有的样子：一件被量脚本能看见哪些路，由它自己的位置决定，不由我的基线替它铺平。
+RUNS_TAIL = 'if __name__ == "__main__":\n' \
+            '    raise SystemExit(run_own(sys.modules["__main__"], here()))\n'
+DEAD_TAIL = 'WANTS = False                # 变异机 M16 那一刀的形状：门还在、路被按住了\n' \
+            'if __name__ == "__main__":\n' \
+            '    if WANTS:\n' \
+            '        raise SystemExit(run_own(sys.modules["__main__"], here()))\n'
+SILENT_TAIL = 'if __name__ == "__main__":\n' \
+              '    os._exit(0)            # 整个进程当场没了：连护栏那一句都来不及印\n' \
+              '    raise SystemExit(run_own(sys.modules["__main__"], here()))\n'
+SLEEP_TAIL = 'if __name__ == "__main__":\n' \
+             '    import time\n' \
+             '    time.sleep(60)\n' \
+             '    raise SystemExit(run_own(sys.modules["__main__"], here()))\n'
+WRITE_TAIL = 'if __name__ == "__main__":\n' \
+             '    open("touched.txt", "w").write("x")\n' \
+             '    raise SystemExit(run_own(sys.modules["__main__"], here()))\n'
+EXIT3_TAIL = 'if __name__ == "__main__":\n' \
+             '    run_own(sys.modules["__main__"], here())\n' \
+             '    raise SystemExit(3)\n'
+ZERO_TAIL = 'import types\n' \
+            'if __name__ == "__main__":\n' \
+            '    raise SystemExit(run_own(types.ModuleType("一份用例都没有的假件"), here()))\n'
+LIB_TAIL = ''                                      # 纯库：没有入口，跑它 = 静默退 0
+ANSWER_NO_MAIN = 'run_own(sys.modules["__main__"], here())\n'   # 静态说没入口、它却答了
+
+DOOR = '''import doctest, os, sys
+
+
+def run_own(mod, label):
+    res = doctest.testmod(mod)
+    print(f"合计 {res.attempted} 个用例，{res.failed} 个失败（量的件：{label}）")
+    return 1 if res.failed else (2 if not res.attempted else 0)
+
+
+def here():
+    return os.path.relpath(os.path.abspath(__file__))
+'''
+
+
+def fake(examples: int, tail: str, more_doc: str = "") -> str:
+    r"""拼一份沙盒里的假件：`examples` 句**真会过**的用例 + 那道会答的门 + 递进来的收尾。
+
+    为什么要拼、不逐格手写整份源：格子之间的差别只在收尾那几行（答不答、答的数对不对、
+    动没动盘），说明书和那道门每一格都一样 —— 写一遍就少一处抄错（2.58 那一族）。
+
+    `examples` 那几句子是 `1 + 1` 配 `2` 这种真会过的，所以「跑到的条数」与
+    「静态数出来的条数」天生相等；要造「少 N 条」「多 N 条」那两格，改的是收尾里印出去的
+    那个数，不是说明书。这一点要紧：那两格钉的是**两个数不一致**，若让说明书跟着一起改，
+    静态那一层也动了，量的就不再是同一件事。
+
+    上面这些源全部待在**普通字符串**里，一句都不写进任何 docstring —— 写进去就会被
+    `example_count` 数成本件的用例、被 doctest 当成本件的例子跑一遍（§2.67 那一族：
+    举例的字面量会被自己的尺读到，这次读的是自己）。
+
+    >>> example_count(fake(3, ""))                          # 静态那把尺看见几条，就是几条
+    3
+    >>> has_main_block(fake(1, RUNS_TAIL))                   # 递了收尾：有入口
+    True
+    >>> has_main_block(fake(1, LIB_TAIL))                    # 什么都没递：纯库
+    False
+    >>> route_shape(fake(1, RUNS_TAIL))
+    '走通'
+    >>> route_shape(fake(1, DEAD_TAIL))                      # 门被按住那一格：静态照样认「走通」
+    '走通'
+    >>> route_shape(fake(1, LIB_TAIL))
+    '没有入口'
+    >>> route_shape(fake(1, ANSWER_NO_MAIN))                 # 答了、可静态看不见入口
+    '没有入口'
+    """
+    body = "".join(f">>> {i} + 1\n{i + 1}\n" for i in range(1, examples + 1))
+    return f'"""{examples} 句用例：\n{body}{more_doc}"""\n{DOOR}{tail}'
+
+
+def liar(count: int) -> str:
+    """收尾里印一个**凭空的**条数、量的件报得对：造「少 N 条」「多 N 条」那一族。
+
+    >>> example_count(fake(2, liar(9)))                     # 静态 2 条，屏幕上报 9
+    2
+    """
+    return ('if __name__ == "__main__":\n'
+            f'    print("合计 {count} 个用例，0 个失败（量的件：%s）" % here())\n')
+
+
+def wrong_label(count: int = 1) -> str:
+    """条数对、可「量的件」报的不是它自己：2.68 那句「不点名就量了调用方」在这一层的形状。
+
+    >>> example_count(fake(1, wrong_label(1)))
+    1
+    """
+    return ('if __name__ == "__main__":\n'
+            f'    print("合计 {count} 个用例，0 个失败（量的件：不是它自己）")\n')
+
+
+def hide_tmp(text: str, base: pathlib.Path) -> str:
+    """把沙盒那一路径换成 `<T>`，让格子的期望不随临时目录变。
+
+    两种写法都换：`/var/…` 与它 `realpath` 之后的 `/private/var/…` —— macOS 的
+    `tempfile` 给前者、`os.getcwd()` 报后者，只换一种会让同一格在两种读数下各红一次。
+
+    >>> hide_tmp("写 /var/x/touched.txt", pathlib.Path("/var/x"))
+    '写 <T>/touched.txt'
+    """
+    for form in {str(base), str(pathlib.Path(base).resolve())}:
+        text = text.replace(form, "<T>")
+    return text
+
+
+class Cell(NamedTuple):
+    """一格：往沙盒里种哪几份假件、怎么问它、屏幕上该有什么、不该有什么。
+
+    与 `table_drift.Cell`／`lean_playlist.Cell` 同一族（**不在这里 import 它们**：
+    `doc_num` 在顶上 import 本件，本件回头 import `doc_num` 就是绕环 —— 那两把也各自
+    带了一份，2.65 立过这个先例）。形状只多一位 `files`：这一把种的假件是 .py 源码，
+    每一格要的差别全在那几行上。
+    """
+
+    who: str                                  # 格子名（顿号那道闸在 `self_test` 里问）
+    what: str                                 # 给人看的那一句：这一格量的是哪件事
+    rc: int                                   # 期望退码（2.62 那三档）
+    files: tuple[tuple[str, str], ...] = ()   # (相对沙盒的路径, 源码)
+    argv: tuple[str, ...] = ("--each", "--root={T}")
+    has: tuple[str, ...] = ()
+    lacks: tuple[str, ...] = ()
+
+
+CELL_SRC = "scripts/good.py"                  # 绝大多数格子里那一件假件待的地方
+CELL_LIB = "scripts/lib.py"                   # 纯库那一件：同一棵沙盒，另一档
+
+
+BASELINE: tuple[Cell, ...] = (
+    # ———— 甲／乙／丙：三档「都对」，先钉住那一屏在无事可报时长什么样 ————
+    Cell("甲_答了且全对上", "常态：一件答了自己的条数、静态跟它一样、护栏没意见 → 退 0",
+         0, files=((CELL_SRC, fake(2, RUNS_TAIL)),),
+         has=("逐件真跑", "（1 件", "· scripts/good.py", "答 2／静态 2",
+              "合计 1 件：答 1 件、没答 0 件；用例数与静态全对上、护栏一件都没拦下"),
+         lacks=("✗", "有毛病", "不是本仓库的")),
+    Cell("乙_两件一答一没答", "册上几件由那一遍自己数：一件走通、一件纯库，两个数各归各",
+         0, files=((CELL_SRC, fake(1, RUNS_TAIL)), (CELL_LIB, fake(3, LIB_TAIL))),
+         has=("（2 件", "合计 2 件：答 1 件、没答 1 件", "只有收集器跑得动它",
+              "在册范围不是本仓库"),
+         lacks=("✗", "有毛病")),
+    Cell("丙_整册都是白跑", "答 0 件、却仍退 0：护栏那一句读到了，这一遍量到的是「它没答」",
+         0, files=((CELL_LIB, fake(3, LIB_TAIL)),),
+         has=("合计 1 件：答 0 件、没答 1 件", "只有收集器跑得动它"),
+         lacks=("✗", "一件都没读到", "有毛病")),
+    # ———— 丁／戊：两头都判 —— 静态说它答而它不答，与静态说它不答而它答了 ————
+    Cell("丁_字还在路已死", "M16 那一刀的实物：静态认「走通」、跑起来一个字都不答",
+         1, files=((CELL_SRC, fake(2, DEAD_TAIL)),),
+         has=("✗ scripts/good.py", "字还在、路已死", "1 件有毛病"),
+         lacks=("只有收集器跑得动它", "一件都没读到")),
+    Cell("戊_静态那把尺判错", "反方向：静态说「没有入口」，可它答了 —— 那是那把尺错了",
+         1, files=((CELL_SRC, fake(1, ANSWER_NO_MAIN)),),
+         has=("那把尺判错了", "1 件有毛病"),
+         lacks=("字还在、路已死",)),
+    # ———— 己／庚／辛／壬／癸：答了，可答的不是「它自己那一份全对的用例」 ————
+    Cell("己_跑到比写的少", "跑到的条数比静态数出来的少 3 条（新增的例子没接进自己那条路）",
+         1, files=((CELL_SRC, fake(5, liar(2))),),
+         has=("少 3 条", "跑到的跟静态那把尺数出来的不是同一份"), lacks=("多 3 条",)),
+    Cell("庚_跑到比写的多", "反方向：屏幕上比静态多 7 条 —— 静态那把尺漏看了东西",
+         1, files=((CELL_SRC, fake(2, liar(9))),),
+         has=("多 7 条",), lacks=("少 7 条",)),
+    Cell("辛_量的不是自己", "条数全对、可「量的件」报的是别人：2.68 那句「量了调用方」",
+         1, files=((CELL_SRC, fake(1, wrong_label(1))),),
+         has=("答 1／静态 1", "量的不是自己：它报 不是它自己"),
+         lacks=("少 1 条", "多 1 条")),
+    Cell("壬_用例里有失败", "一件自己的用例红了：那一行要说得出失败几条，不许读成「没答」",
+         1, files=((CELL_SRC, fake(1, RUNS_TAIL, ">>> 6 + 1\n8\n")),),
+         has=("用例里有 1 个失败", "答 2／静态 2"),
+         lacks=("没答（静态", "少 1 条")),
+    # 本格种的假件自己 `raise SystemExit(3)`，屏幕上却读成「退 1」——那不是格子写错：
+    # 护栏那一柄按 §2.62 把退码归了档（`verdict_code`：任何非 0 → 1，只有「根本没跑起来」→ 2），
+    # 而 `--each` 那一层拿到的正是归过档的那一个。被量件原本那个数在护栏自己那一行里
+    # （`…（被量件退 3）`），本件的屏幕不摊它。钉「1」钉的是**这一屏实际说出口的话**；
+    # 若要钉 3，得让护栏放行原码或让 `parse_guard` 把那个数摊上来 —— 那是另一件事，本节不做。
+    Cell("癸_退码与屏幕对不上", "屏幕上一切全对、被量件却退非 0：那是两本账，得有一行说这事",
+         1, files=((CELL_SRC, fake(1, EXIT3_TAIL)),),
+         has=("子进程退 1，可它报的用例全过、护栏也没意见：这一档对不上",),
+         lacks=("用例里有 1 个失败",)),
+    Cell("子_零条不等于没答", "它答了一句「一条用例都没收到」：那是带着名字的 0，不是没开口",
+         1, files=((CELL_SRC, fake(1, ZERO_TAIL)),),
+         has=("答 0／静态 1", "少 1 条", "跑到的跟静态那把尺数出来的不是同一份"),
+         lacks=("只有收集器跑得动它", "没答（静态")),
+    # ———— 丑：护栏那一头 —— 它动了盘，屏幕上那一句必须把它读成毛病 ————
+    Cell("丑_它去干了自己的活", "递 `--doctest` 给它、它顺手往被护的那棵树里写了个文件",
+         1, files=((CELL_SRC, fake(1, WRITE_TAIL)),),
+         has=("护栏 1 条", "它去干了自己的活：写 touched.txt", "其中 1 件是护栏拦下来的"),
+         lacks=("护栏一件都没拦下",)),
+    # ———— 寅／卯：两种「子进程没把话说完」，一档退 2、一档退 1 ————
+    Cell("寅_护栏那句没到屏幕上", "整件进程当场没了：护栏、用例一句都没印 → 这一遍什么都没量到，退 2",
+         2, files=((CELL_SRC, fake(1, SILENT_TAIL)),),
+         has=("护栏那一句没到屏幕上", "字还在、路已死", "护栏那一句一件都没读到"),
+         lacks=("用例数与静态全对上",)),
+    Cell("卯_一件不返回", "天花板那一档：一件卡住不许拖着整屏 —— 掐掉它、那一行照样落下来",
+         1, files=((CELL_SRC, fake(1, RUNS_TAIL)), ("scripts/sleeper.py", fake(1, SLEEP_TAIL))),
+         argv=("--each", "--root={T}", "--timeout=1"),
+         has=("超过 1 秒没回来", "被 1 秒的天花板掐掉", "合计 2 件：答 1 件、没答 1 件",
+              "1 件有毛病"),
+         lacks=("一件都没读到", "子进程连 work_guard 都没跑起来", "字还在、路已死")),
+    # ———— 辰／巳：两种「什么都没量到」的 2，差别在范围不在过滤器 ————
+    Cell("辰_过滤器没挑中", "过滤器给得太严：一句都没量到，那一句要说出用的哪个过滤器",
+         2, files=((CELL_SRC, fake(1, RUNS_TAIL)),),
+         argv=("--each", "--root={T}", "没有这样一个件"),
+         has=("一件都没挑出来", "过滤器 '没有这样一个件'", "这一遍什么都没量到"),
+         lacks=("逐件真跑",)),
+    Cell("巳_那棵树没有在册范围", "换了一棵根本没有 `scripts/` 的树：范围要说出来，不甩给过滤器",
+         2, argv=("--each", "--root={T}"),
+         has=("一件都没挑出来", "里没有 scripts/ 或 src/"),
+         lacks=("逐件真跑", "Traceback")),
+    # ———— 午／未：旗标那一层 —— 这一屏是本件唯一的「旗标登记处」 ————
+    Cell("午_不认的旗标", "递一个没收过的旗标：要说清收哪几个，那一句就是本件的登记处",
+         2, argv=("--nope",),
+         has=("我不收这个旗标", "--each", "--self-test", "--root=", "--timeout="),
+         lacks=("Traceback", "一件都没找到")),
+    Cell("未_打错的旗标", "`--each` 后面打错一个字母：不许当成没给过滤器去跑仓库那一整册",
+         2, argv=("--each", "--rooot={T}"),
+         has=("我不收这个旗标", "--rooot"), lacks=("逐件真跑", "合计")),
+)
+
+
+# 那一屏能说的每一句话 —— 每一句都得有至少一格钉着。
+# 为什么把名单写下来单独问一句：本节装基线要办的就是 §2.71 那笔账（一条判决今天没有实例
+# ＝ 等同没测）。格子写全了没有？光靠一句「我把每一句都钉上了」的人话查不动，
+# 而数格子数也查不动（格子多一格、判决少一句，两边照样对得上）。
+# 配上下面这道预跑闸，一句判决没人钉了就当场红在**预跑**那一步（退 2、一句都没跑），
+# 而不是等到某一天那一句判决没字了才发现。
+# 这道闸的**范围**本节先量过再写：它看的是句子，不是格子 —— 删掉一格而那句话别处还有格钉着，
+# 它不响（下面 `gate_blindness` 逐格删一遍现数，屏幕上自己报）。本节头一版把这道闸写成
+# 「删掉任何一格都会红」，14:42 那一遍探针（删 `丁`）两面全绿，就是这么把它推翻的。
+VERDICT_LINES: tuple[str, ...] = (
+    "字还在、路已死", "只有收集器跑得动它", "那把尺判错了",
+    "跑到的跟静态那把尺数出来的不是同一份", "量的不是自己", "用例里有",
+    "可它报的用例全过、护栏也没意见", "它去干了自己的活", "护栏那一句没到屏幕上",
+    "一件都没挑出来", "护栏那一句一件都没读到", "用例数与静态全对上、护栏一件都没拦下",
+    "是护栏拦下来的", "没回来", "我不收这个旗标", "在册范围不是本仓库",
+)
+
+
+def coverage_gaps(cells: tuple[Cell, ...],
+                  lines: tuple[str, ...] = VERDICT_LINES) -> list[str]:
+    """那些句话里，没有任何一格在 `has` 里钉过的 —— 应该是空表。
+
+    只往 `has` 里找，不往 `lacks` 里找：`lacks` 钉的是「这句不许出现」，一句从没出现过
+    的判决不算有实例。
+
+    >>> coverage_gaps((Cell("好", "x", 0, has=("字还在、路已死", "其余那句")),),
+    ...               ("字还在、路已死",))
+    []
+    >>> coverage_gaps((), ("字还在、路已死",))
+    ['字还在、路已死']
+    >>> coverage_gaps(BASELINE)                                   # 本件的基线：一句都不许漏
+    []
+    """
+    pinned = "".join("".join(c.has) for c in cells)
+    return [line for line in lines if line not in pinned]
+
+
+def gate_blindness(cells: tuple[Cell, ...],
+                   lines: tuple[str, ...] = VERDICT_LINES) -> list[str]:
+    """逐格删一遍：删掉哪一格，`coverage_gaps` 不响。返回那些格子的名字。
+
+    为什么量这个：上一节（2.73）记过「两个方向都会漏，而漏的方向不一样」，本节是同一族 ——
+    一道「每句判决都有格钉着」的闸，天然看不见**冗余**那一头的格子。它不是毛病：
+    同一句判决可以由两格钉（`丁` 量那句话怎么说、`寅` 量它到不到屏幕上），
+    所以要钉住的是**这一格独占的东西**。本节把这件事从「闸能不能替我兜住」改成
+    「闸自己说它兜住了几格」（下面 `self_test` 结论那一句），漏的那一头交给
+    `claims`：它拿 `selfcheck.py:steps` 里「种 N 格」那句对 `len(BASELINE)`，格子一少就红。
+
+    与 `coverage_gaps` 一样是纯内存的算法：每删一格重问一遍那道闸，不起子进程。
+
+    >>> two = (Cell("甲", "x", 0, has=("那把尺判错了",)),
+    ...        Cell("乙", "y", 0, has=("那把尺判错了", "只有乙钉着的那句")))
+    >>> gate_blindness(two, ("那把尺判错了",))     # 这一句两格都钉：删谁都不响
+    ['甲', '乙']
+    >>> gate_blindness(two, ("只有乙钉着的那句",))  # 只问那一句：删甲不响，删乙会响
+    ['甲']
+    >>> gate_blindness((), VERDICT_LINES)          # 一格都没有：没有格子可谈可见不可见
+    []
+    """
+    return [c.who for c in cells
+            if not coverage_gaps(tuple(d for d in cells if d is not c), lines)]
+
+
+def sloppy_cells(cells: tuple[Cell, ...]) -> list[str]:
+    """格子自己写歪的地方：占位符串错位、同一句又 `has` 又 `lacks`、一句都没钉、
+    种的假件根本不入册。
+
+    最后那一条是本件特有的一族：`each_file` 只认「写了用例、文件名像模块名」的 .py，
+    所以一格若种了一份零用例的假件，它会**整格空转** —— 一件都没挑出来、退 2、
+    而那句 2 看着像判据在响。跑之前先按同一把尺（`example_count`）量一遍种下去的东西。
+
+    第一条（形状）不是防别人：本节头一版十八格里有**六格**把 `lacks=("一句")` 写掉了逗号，
+    而那不是「少一个元组」那么轻 —— 字符串是可迭代的，于是那一格逐**字**去比，
+    `lacks=("字还在、路已死",)` 变成「这一屏不许出现『字』这个字符」。写掉逗号的那一版
+    在 14:2x 那一遍直接崩在 `TypeError` 上（算它运气好）；把形状写成一条闸之后，
+    它连崩都不会崩、只会红得莫名其妙。
+
+    >>> sloppy_cells((Cell("好", "x", 0, files=((CELL_SRC, fake(1, RUNS_TAIL)),),
+    ...                    has=("答 1／静态 1",)),))
+    []
+    >>> for why in sloppy_cells((Cell("坏", "x", 0, has=("{T}/a",), lacks=("没有",)),)):
+    ...     print(why)
+    坏：`has` 里写了 `{T}`，argv 才用这个占位符，屏幕上的路径要写 `<T>`
+    >>> for why in sloppy_cells((Cell("撞", "x", 0, has=("一句",), lacks=("一句",)),)):
+    ...     print(why)
+    撞：同一句既是 `has` 又是 `lacks`，这一格永远不可能过
+    >>> for why in sloppy_cells((Cell("空", "x", 0),)):            # 只比退码：不算量过一件事
+    ...     print(why)
+    空：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」
+    >>> for why in sloppy_cells((Cell("散", "x", 0, lacks=("一句")),)):
+    ...     print(why)
+    散：`lacks` 写的是一句**字符串**而不是一句的元组（少一个逗号）—— 它会逐字去比
+    >>> for why in sloppy_cells((Cell("哑", "x", 0, files=((CELL_SRC, "print(1)"),),
+    ...                             has=("答",)),)):
+    ...     print(why)
+    哑：种的假件 scripts/good.py 一条用例都没写 —— 它不入册，这一格会整格空转
+    """
+    out: list[str] = []
+    for c in cells:
+        for field in ("has", "lacks"):
+            if isinstance(getattr(c, field), str):
+                out.append(f"{c.who}：`{field}` 写的是一句**字符串**而不是一句的元组"
+                           "（少一个逗号）—— 它会逐字去比")
+        if any("{T}" in s for s in tuple(c.has) + tuple(c.lacks)):
+            out.append(f"{c.who}：`has` 里写了 `{{T}}`，argv 才用这个占位符，"
+                       "屏幕上的路径要写 `<T>`")
+        both = set(c.has) & set(c.lacks)
+        if both:
+            out.append(f"{c.who}：同一句既是 `has` 又是 `lacks`，这一格永远不可能过")
+        if not (c.has or c.lacks):
+            out.append(f"{c.who}：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」")
+        for rel, src in c.files:
+            if not example_count(src):
+                out.append(f"{c.who}：种的假件 {rel} 一条用例都没写 —— 它不入册，这一格会整格空转")
+    return out
+
+
+def run_cell(cell: Cell, base: pathlib.Path) -> tuple[str, str, str]:
+    """跑一格：`(判定, 给人看的那句, 抹过沙盒路径的原文)`，判定是 `ok` / `bad`。
+
+    走的是真的 `main()` 而不是 `run_each`：`--each` 那一档怎么被认、`--root=` 怎么递下去、
+    那句合计排在哪儿，全是这一格要看的东西（2.56 起的同一取舍）。
+    stdout 与 stderr 收进**同一个**缓冲区：那两「件都没挑出来」的句子在 stderr 上。
+    """
+    for rel, body in cell.files:
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+    argv = [a.replace("{T}", str(base)) for a in cell.argv]
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = main(argv)
+    except Exception as e:                        # 尺自己炸了不许读成「这格没过」以外的任何东西
+        return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
+    text = hide_tmp(buf.getvalue(), base)
+    good, why = check_cell(cell, rc, text)
+    return ("ok", "", text) if good else ("bad", why, text)
+
+
+def check_cell(cell: Cell, rc: int, text: str) -> tuple[bool, str]:
+    """这一格对上了没有：退码、该出现的句子、不该出现的句子。
+
+    `lacks` 与 `has` 一样重要：`丑` 那一格若只钉「护栏 1 条」，而不钉「护栏一件都没拦下」
+    那句不许出现，那它在护栏压根没意见的一遍里也会过 —— 而那正是本节要拦的形状。
+    """
+    if rc != cell.rc:
+        return False, f"退码：期望 {cell.rc}，实际 {rc}"
+    for s in cell.has:
+        if s not in text:
+            return False, f"屏幕上没有那句：{s}"
+    for s in cell.lacks:
+        if s in text:
+            return False, f"多说了那句：{s} —— 误伤"
+    return True, ""
+
+
+def self_test(cells: tuple[Cell, ...] | None = None) -> int:
+    """`--self-test`：往临时目录里种假件，把 `--each` 那一整条路**真跑一遍**。
+
+    与其余那九把基线同一笔账（§2.71）：`--each` 那一屏收尾那句「合计 N 件：答 N 件、没答 N 件；
+    用例数与静态全对上」有两种读法 —— 那一屏里每一句判决都句句在响、或者一条都不咬。
+    （那句读数里的数**不写在这里**：它是那一遍数出来的，写进说明书就变成一处没人查的化石 ——
+    本节的在册件数只钉在 `each_file` 那一条用例里。）
+    钉它的不是本件那 100 多条 doctest（它们喂的是**假输出**，跳过了起进程、递旗标、
+    读护栏、数合计那四层），是下面这些格子：每格一个新沙盒、种一份假件、起一个真子进程。
+
+    每格单独一个临时目录是 2.63 踩的第 5 条换来的（同一秒、同字节数的两份改动会互相拿到）。
+
+    跑之前三道预跑闸，任何一种都退 2 且**一格都不跑**：格子名带顿号（那一行「不符的格」
+    分不开，2.58）、格子自己写歪（`sloppy_cells`）、判决名单里有哪一句没人钉
+    （`coverage_gaps`）—— 第三道是本节新添的那一位，理由写在它自己的说明里。
+
+    退码：0 = 每格都符合期望；1 = 有格子不符（逐格点名）；2 = 一格都没跑，或基线自己写歪了。
+    """
+    from baseline_guard import guard as guard_names   # 在函数里 import：理由见 `Cell` 那段
+
+    cells = BASELINE if cells is None else cells
+    bad_names = guard_names([c.who for c in cells])
+    if bad_names:
+        print(bad_names)
+        return 2
+    sloppy = sloppy_cells(cells)
+    if sloppy:
+        print("基线自己有格子写歪了，改的是基线、不是判据：\n  " + "\n  ".join(sloppy))
+        return 2
+    gaps = coverage_gaps(cells)
+    if gaps:
+        print("有判决一句都没格钉着（§2.71：今天没有实例的判决等同没测）：\n  "
+              + "\n  ".join(gaps))
+        return 2
+    blind = len(gate_blindness(cells))      # 那道闸自己说不响的那一头，跟着真基线现算
+    ran = bad = 0
+    fails: list[tuple[Cell, str, str]] = []
+    for cell in cells:
+        with tempfile.TemporaryDirectory(prefix="run-doctests-selftest-") as td:
+            verdict, why, text = run_cell(cell, pathlib.Path(td))
+        ran += 1
+        if verdict != "ok":
+            bad += 1
+            fails.append((cell, why, text))
+            continue
+        print(f"  ✓ {cell.who:<22} {cell.what}")
+    if fails:
+        print(f"\n—— 以下 {len(fails)} 格不符期望（每格把自己那一遍的原文摊出来）——")
+        for cell, why, text in fails:
+            print(f"  ✗ {cell.who:<22} {cell.what}\n      {why}")
+            for line in text.strip().splitlines():
+                print(f"      | {line}")
+    print(f"\n扫了基线 {len(cells)} 格：{bad} 格不符期望"
+          + (f" —— {len(VERDICT_LINES)} 句判决各有格子钉着；"
+             f"那道预跑闸看的是句子，逐格删一遍它响 {len(cells) - blind} 次、不响 {blind} 次"
+             if ran and not bad else " —— 上面逐格点名了"))
+    if bad:
+        print("不符的格：" + "、".join(c.who for c, _, _ in fails))
+    if not ran:
+        print("一格都没跑起来：临时目录建不起来。这不算过")
+        return 2
+    return 1 if bad else 0
+
+
+def refusal(given: str, bad: list[str] | None = None) -> str:
+    """「这个旗标我不收」那一句 —— 本件唯一的旗标登记处。
+
+    为什么单独抽成一个函数：这一句就是本件的 `--help`。2.69 记过那条理由（命令尺拿文档里
+    每一条长参数去问 `--help`，所以「只写在收尾、`--help` 里没有」会被读成「照抄会失败」），
+    而本件**故意没有 argparse** —— 它收一个位置参数当过滤器，挂一把握关就得为了两个旗
+    重写整个入口（`check_doc_cmds` 里那句「目标脚本没建关」的豁免认的就是这件事）。
+    登记处塌缩成这一句之后，「添了旗标忘改这一句」就等于那一旗没人知道存在 ——
+    所以 `午_不认的旗标` 那一格逐条钉着它，而不是钉一份 nobody 读的清单。
+
+    `bad` 是 `--each` 后面那几个认不出的字（可以不止一个）；不递时就是开头那一个。
+
+    >>> refusal("--nope").splitlines()[0]
+    "✗ 我不收这个旗标（给的是 '--nope'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 `--timeout=<秒>`（一件的天花板）。"
+    >>> refusal("--each", ["--rooot=/tmp/x"]).splitlines()[0]
+    "✗ 我不收这个旗标（给的是 '--rooot=/tmp/x'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 `--timeout=<秒>`（一件的天花板）。"
+    >>> refusal("--each", ["--a", "--b"]).splitlines()[0]      # 不止一个：全点出来
+    "✗ 我不收这个旗标（给的是 '--a'、'--b'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 `--timeout=<秒>`（一件的天花板）。"
+    """
+    names = [given] if bad is None else bad
+    return ("✗ 我不收这个旗标（给的是 " + "、".join(repr(a) for a in names) + "）。"
+            "收的只有这几个：`--each`（每件一个子进程真跑）、"
+            f"`{SELF_TEST_FLAG}`（跑本件的基线）、`{DOCTEST_FLAG}`（只跑本件那份用例）；"
+            "`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 "
+            "`--timeout=<秒>`（一件的天花板）。\n"
+            "位置参数不是旗标，是模块名里的一个子串：\n"
+            "    .venv/bin/python scripts/run_doctests.py            # 全部\n"
+            "    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的\n"
+            "    .venv/bin/python scripts/run_doctests.py --each     # 每件一个子进程，真跑\n"
+            "    .venv/bin/python scripts/run_doctests.py --self-test  # 往沙盒种假件，量这条跑法")
 
 
 def main(argv: list[str]) -> int:
@@ -1085,19 +1730,19 @@ def main(argv: list[str]) -> int:
         if p not in sys.path:
             sys.path.insert(0, p)
 
-    # 这支脚本只收一个位置参数（模块名的子串），加上 2.70 那一档 `--each`。递给它一个别的
-    # 旗标，它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和 scripts/ 还在不在」——
-    # 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己踩过一次，见 2.56。
+    # 这支脚本只收一个位置参数（模块名的子串），加上 2.70 那一档 `--each`、2.74 那两旗。
+    # 递给它一个别的旗标，它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和 scripts/
+    # 还在不在」—— 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己踩过一次，见 2.56。
+    if argv and argv[0] == SELF_TEST_FLAG:
+        return self_test()
     if argv and argv[0] == EACH_FLAG:
-        rest = [a for a in argv[1:] if not a.startswith("-")]
-        return run_each(rest[0] if rest else "")
+        opts, rest, bad = each_options(argv[1:])
+        if bad:
+            print(refusal(argv[0], bad), file=sys.stderr)
+            return 2
+        return run_each(rest[0] if rest else "", **opts)
     if argv and argv[0].startswith("-"):
-        print(f"✗ 我不收这个旗标（给的是 {argv[0]!r}）。旗标只有 `--each` 一个"
-              f"（{DOCTEST_FLAG} 除外，那是跑本件这一份用例的）；位置参数是模块名里的一个子串：\n"
-              f"    .venv/bin/python scripts/run_doctests.py            # 全部\n"
-              f"    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的\n"
-              f"    .venv/bin/python scripts/run_doctests.py --each     # 每件一个子进程，真跑",
-              file=sys.stderr)
+        print(refusal(argv[0]), file=sys.stderr)
         return 2
 
     names = modules(argv[0] if argv else "")

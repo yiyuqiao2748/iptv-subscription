@@ -14,9 +14,13 @@
 
     .venv/bin/python scripts/work_guard.py scripts/probe_pack.py --doctest
     .venv/bin/python scripts/work_guard.py --doctest              # 只跑本件这一份用例
+    .venv/bin/python scripts/work_guard.py --root=/tmp/那棵树 那件.py --doctest
 
 * 本件自己的旗排在被量件**前面**；从第一个不像旗的字起，后面全部原样递给被量件。
   否则 `--doctest` 会被两层各认一次：本件跑了自己的用例，被量件反倒没收到旗。
+* `--root=` 换的是「护哪棵树」，只认带 `=` 的那一式（理由见 `parser`）。不递它时护的就是
+  本仓库，而本仓库这一位是写死的 —— 那意味着**在临时目录里跑一件假假的文件，护栏永远
+  报 0 条**，「它去干了自己的活」那一档于是没有任何一格能钉住它（见 `run_doctests` 的基线）。
 * 只记、不拦。这是设计，不是偷懒：拦下来之后「它没去干活」这句话就有两种读法
   ——「它本来不会」和「它本来会、被我按住了」，而本节要的恰恰是分清这两者。
   护栏因此**不改被量件的行为**，只把退码变成 1：按 2.62 那三档，那是「干成了、但结果有毛病」。
@@ -754,7 +758,8 @@ def brief_target(target: str) -> str:
         return str(target)
 
 
-def run(target: str, argv: tuple[str, ...] = ()) -> tuple[int | None, list[tuple[str, str]]]:
+def run(target: str, argv: tuple[str, ...] = (),
+        root: str = str(ROOT)) -> tuple[int | None, list[tuple[str, str]]]:
     """在护栏底下把 `target` 当 `__main__` 跑一遍，返回（它的退码，护栏那本账）。
 
     为什么是 `runpy.run_path` 而不是 `subprocess`：本节要的是**同一个进程里**的审计事件；
@@ -777,10 +782,18 @@ def run(target: str, argv: tuple[str, ...] = ()) -> tuple[int | None, list[tuple
     退码按 `SystemExit.code` 摊平：`None` 是「它说它不干了、算 0」，字符串是「它喊了一嗓子、
     算 1」；**跑之前就炸了**（导入失败、语法错）记成 `None` —— 交给 `main` 落到退 2 那一档。
 
+    `root` 是「这一遍护的是哪一棵树」。以前这一位没有：钩子写死护 `ROOT`，于是**本件的
+    「落在仓库里 N 条」那一档在沙盒里永远读不出实例** —— 一份假件往自己那棵 `/tmp` 树里写
+    文件，护栏看得见那条 `open`、却报 0 条，而屏幕上那一句跟「它真的什么都没动」是同一个形状
+    （§2.62 那一族的「两种 0 同形」，这次同形的是 0）。递出来之后同一格可以在临时树里
+    造出一个真动了东西的被量件，那一档才第一次有实例。递 `ROOT` 时行为与改前逐字节相同。
+    注意 `mine` 那一级**不跟着 `root` 走**：它拿掉的是本件为了 import 邻居而插进去的那两级
+    （见上面第二条），跟护哪棵树是两件事。
+
     这一句没法在这里给 doctest：它跑的是**真的另一件脚本**，要往屏幕上印东西。
     盯着它的是 `--each` 那一层（`run_doctests.each_verdict`）和 03:1x 那几遍实测。
     """
-    hits = install()
+    hits = install(root)
     path = pathlib.Path(target)
     saved = list(sys.path)
     sys.argv = [target, *argv]
@@ -871,19 +884,31 @@ def split_at_target(argv: list[str]) -> tuple[list[str], list[str]]:
 
 
 def parser() -> argparse.ArgumentParser:
-    """本件自己的把握关：只有 `--doctest` 一旗（挂进 parser 是 2.69 那条：文档尺会拿
+    """本件自己的把握关：`--doctest` 与 `--root=`（挂进 parser 是 2.69 那条：文档尺会拿
     `--help` 核对每一条写进文档的长参数）。
+
+    `--root` 只认 `=` 那一式。为什么不给空格那一式留位置：`split_at_target` 的规矩是
+    「第一个不像旗的字起，后面全部归被量件」，而 `--root /tmp/x` 里那个路径正是「不像旗的字」
+    —— 它会当场变成被量件的名字，屏幕上出来一句「被量件不存在」，而真正没接上的是我的参数。
+    少一式写法换掉一种错法，这一笔划算。
 
     >>> p = parser()
     >>> p.parse_args(["--doctest"]).doctest
     True
     >>> p.parse_args([]).doctest
     False
+    >>> p.parse_args([]).root == str(ROOT)
+    True
+    >>> p.parse_args(["--root=/tmp/elsewhere"]).root
+    '/tmp/elsewhere'
     """
     ap = argparse.ArgumentParser(
         prog="work_guard.py",
         description="在护栏底下跑一件脚本，报它有没有去干自己的活（本件的旗排在被量件前面）")
     add_doctest_flag(ap)
+    ap.add_argument("--root", default=str(ROOT), metavar="目录",
+                    help="护哪一棵树：只有落在这棵子里面的动作算「落在仓库里」"
+                         "（默认本仓库根；递一个临时目录就能在沙盒里量「它去干了自己的活」那一档）")
     return ap
 
 
@@ -905,7 +930,7 @@ def verdict_code(rc: int | None, found: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
-    """`--doctest` 在本件的旗位上就跑本件自己的用例，否则跑被量件。
+    """`--doctest` 在本件的旗位上就跑本件自己的用例，否则跑被量件（护 `--root` 那棵树）。
 
     这里故意不给 doctest：这一句是入口，要它说话得跑到屏幕上（`--each` 那一层量的就是屏幕）。
     """
@@ -921,7 +946,7 @@ def main(argv: list[str]) -> int:
     if not pathlib.Path(target).is_file():
         print(f"✗ 被量件不存在：{target} —— 这一遍什么都没量到", file=sys.stderr)
         return 2
-    rc, hits = run(target, tuple(tail[1:]))
+    rc, hits = run(target, tuple(tail[1:]), args.root)
     found = findings_of(hits)
     print(guard_line(hits, rc))
     return verdict_code(rc, found)

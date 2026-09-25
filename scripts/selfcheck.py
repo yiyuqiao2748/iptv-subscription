@@ -1,6 +1,6 @@
 """一条命令跑完这个项目的全部对账，包括「正在跑的那个页面有没有说谎」。
 
-    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认十七条
+    ./.venv/bin/python -X utf8 scripts/selfcheck.py                     # 默认十八条
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --against /tmp/r226 # 顺手问「报告说的是不是这张表」
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --epg               # 再挂上 EPG 那条（读本地缓存，实测 0.08 秒）
     ./.venv/bin/python -X utf8 scripts/selfcheck.py --port 8799 --skip page
@@ -12,8 +12,8 @@
 那几把尺各自都还新，串起来只是把四条命令变成一个黑盒。今天加它有一条新的理由：
 **有一类失效只有「问一眼正在跑的进程」才看得见**（2.29 那个「99 个台」），
 而我拿眼睛对了一次就不该再对第二次。所以这里真正的增量是 `page` 那一步，
-另外十八条（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`/`num-test`
-/`unmarked`/`um-test`/`claims`/`claims-test`/`drift-test`/`epg-test`/`lean-test`/`heads`/`heads-test` 十六条默认，
+另外十九条（`doctests`/`doctests-test`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`/`num-test`
+/`unmarked`/`um-test`/`claims`/`claims-test`/`drift-test`/`epg-test`/`lean-test`/`heads`/`heads-test` 十七条默认，
 `drift`/`epg` 两条要点名）只是被顺带串进来的。`selfcheck` 这个文件名在 2.27/2.28 里被刻意回避过
 （2.21 那把尺会把「文档里出现一个不存在的脚本名」判成漂移）—— 这一节里它是当场做出来的东西。
 **2.55 追记**：上面那句「四条默认」与第 3 行的「默认五条」都是加 `names` 之后的数，
@@ -237,12 +237,12 @@ def page_verdict(html: str, disk: dict[str, int], gone: list[str]) -> tuple[str,
 def check_page(port: int) -> tuple[str, str]:
     """问一眼正在跑的那个页面：它声称的台数对不对、它是不是 2.29 那一版。
 
-    这一条量的那一层，是那十六条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`
+    这一条量的那一层，是那十七条离线尺（`doctests`/`doctests-test`/`numbers`/`doc-cmds`/`names`/`self-test`
     /`doc-test`/`num-test`/`unmarked`/`um-test`/`claims`/`claims-test`
     /`drift-test`/`epg-test`/`lean-test`/`heads`/`heads-test`）加上两条要点名的（`drift`/`epg`）
     全都读不到的 ——
     它们量的是磁盘上躺着的东西（`self-test`、`doc-test`、`num-test`、`um-test`、`claims-test`、
-    `drift-test`、`epg-test`、`lean-test`、`heads-test` 量的是那九把尺自己，量的仍然是它们种进临时目录的那些格子，不是正在跑的进程）。
+    `drift-test`、`epg-test`、`lean-test`、`heads-test`、`doctests-test` 量的是那十把尺自己，量的仍然是它们种进临时目录的那些格子，不是正在跑的进程）。
     取页面必须绕过系统代理：TUN 开着时走代理去取 `127.0.0.1` 会拿到假答案。
     """
     try:
@@ -374,8 +374,8 @@ def run_script(argv: list[str], *, timeout: float = 900.0) -> tuple[str, str]:
 def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[str, str]]]]:
     """这一轮要跑哪些检查：(名字, 给人看的那句, 怎么跑)。
 
-    默认十七条 —— 十六条离线尺（`doctests`/`numbers`/`doc-cmds`/`names`/`self-test`/`doc-test`
-    /`num-test`/`unmarked`/`um-test`/`claims`/`claims-test`/`drift-test`/`epg-test`/`lean-test`
+    默认十八条 —— 十七条离线尺（`doctests`/`doctests-test`/`numbers`/`doc-cmds`/`names`/`self-test`
+    /`doc-test`/`num-test`/`unmarked`/`um-test`/`claims`/`claims-test`/`drift-test`/`epg-test`/`lean-test`
     /`heads`/`heads-test`）
     + 那条只有
     「问一眼正在跑的进程」才做得到的 `page`。`drift` 和 `epg` 要人点名，各有一条实在的理由：
@@ -448,27 +448,42 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     各跑 0.09 秒与 0.07 秒（11:28:53 那两批各三遍：正查 0.09／0.09／0.09、
     基线 0.07／0.07／0.07 —— 2.73 之后 `heads` 把 `计划书.md` 读两遍（一遍当被查、一遍当靶子），
     这两个数没动；10:30:38 那批第一遍的 0.18 是缓存冷的）。
+    `doctests-test`（2.74）是第十把配对尺，也是这一屏上**第一条量的不是「读数」而是「跑法」的**：
+    前九把各自守一层内容（文件名、挂了标记的数、没挂标记的数、文档里的命令、.py 的散文、
+    两张表、一支会写文件的生产件、文档的标题结构），这一把守的是 `run_doctests --each` 那一档
+    **自己会不会说话** —— 它那一屏说出口的十几句（「字还在、路已死」「它去干了自己的活」
+    「那把尺判错了」「这一档对不上」……）在今天的仓库里**一句都没有实例**，而 §2.71 那笔账
+    （一条判决今天没有实例 ＝ 等同没测）这一遍轮到收集器自己欠。
+    `run_doctests` 那一档种的是 18 格假件：每格一个新沙盒、每格真起子进程、真的挂在
+    `scripts/work_guard.py` 底下，跑完把整格回收。它比其余那九把都贵 —— 14:31—14:32 两批各三遍
+    1.85／1.81／1.80 与 2.66／2.07／2.03（头一遍缓存冷，里面约一秒是 `卯` 那一格真等天花板掐表），
+    换的是那一整条「起进程 → 递旗标 → 读护栏 → 数合计」的路从今天起改坏了会响：
+    本件此前那些用例喂给判据的全是**假输出**，那四层一次都没被量过（这一节第一遍跑基线时
+    量到的五处不符，全部出在那四层上，见 §2.74 正文）。
     `--skip` 与「跑不了」是两回事：前者是人不让跑（这一条直接不出现），
     后者会自己变成一条 `·` 判定出现在结果里（那个数要能对上）。
 
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=[])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', \
-'unmarked', 'um-test', 'claims', 'claims-test', 'drift-test', 'epg-test', 'lean-test', \
-'heads', 'heads-test', 'page']
+    ['doctests', 'doctests-test', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', \
+'num-test', 'unmarked', 'um-test', 'claims', 'claims-test', 'drift-test', 'epg-test', \
+'lean-test', 'heads', 'heads-test', 'page']
     >>> ns = argparse.Namespace(port=8787, against="/tmp/r226", epg=True, skip=["page"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', \
-'unmarked', 'um-test', 'claims', 'claims-test', 'drift-test', 'epg-test', 'lean-test', \
-'heads', 'heads-test', 'drift', 'epg']
+    ['doctests', 'doctests-test', 'numbers', 'doc-cmds', 'names', 'self-test', 'doc-test', \
+'num-test', 'unmarked', 'um-test', 'claims', 'claims-test', 'drift-test', 'epg-test', \
+'lean-test', 'heads', 'heads-test', 'drift', 'epg']
     >>> ns = argparse.Namespace(port=8787, against="", epg=False, skip=["page", "numbers"])
     >>> [n for n, _, _ in steps(ns)]
-    ['doctests', 'doc-cmds', 'names', 'self-test', 'doc-test', 'num-test', 'unmarked', \
-'um-test', 'claims', 'claims-test', 'drift-test', 'epg-test', 'lean-test', 'heads', 'heads-test']
+    ['doctests', 'doctests-test', 'doc-cmds', 'names', 'self-test', 'doc-test', \
+'num-test', 'unmarked', 'um-test', 'claims', 'claims-test', 'drift-test', 'epg-test', \
+'lean-test', 'heads', 'heads-test']
     """
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
          lambda: run_script(["scripts/run_doctests.py"])),
+        ("doctests-test", "收集器那条逐件真跑自己还咬得动吗（往临时沙盒里种 18 格假件）",
+         lambda: run_script(["scripts/run_doctests.py", "--self-test"])),
         ("numbers", "文档里抄来的那些数还算不算数",
          lambda: run_script(["scripts/doc_num.py"])),
         ("doc-cmds", "文档里的命令还能不能照抄",
@@ -577,11 +592,16 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
     ['heads-test', 'heads-test/heads-green']
     >>> [k for k, _ in dispositions(["heads", "heads-test"])]    # 两红：各一句，只少配对那句
     ['heads', 'heads-test']
+    >>> # 2.74 那一条：收集器那一档的配对，`doctests` 在默认屏上，所以 `*-green` 那句配得上
+    >>> [k for k, _ in dispositions(["doctests-test"])]
+    ['doctests-test', 'doctests-test/doctests-green']
+    >>> [k for k, _ in dispositions(["doctests", "doctests-test"])]   # 两红：只少配对那句
+    ['doctests-test']
     >>> # 一句都不许是空的：钥匙配上就得真有字要印
     >>> all(t.strip() for _, t in dispositions(
     ...     ["page", "names", "self-test", "num-test", "doc-test", "unmarked", "um-test",
     ...      "drift", "drift-test", "epg-test", "claims-test", "lean-test",
-    ...      "heads", "heads-test"]))
+    ...      "heads", "heads-test", "doctests-test"]))
     True
     >>> [k for k, _ in dispositions(["page", "names", "self-test", "num-test", "doc-test"])]
     ['page', 'names', 'self-test', 'num-test', 'num-test/numbers-green', 'doc-test', \
@@ -693,6 +713,18 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
                         "`heads` 绿、`heads-test` 红 —— 这个组合只有一种意思：**那句「结构毛病 0 处、引用断链 0 处」"
                         "\n           这一轮不能读**。它可能是文档真连着排，也可能是那几条判据整层不咬 —— "
                         "\n           2.72 那十一格结构判据在今天的文档里一处实例都没有，这一屏上它们唯一的证据就是这一条。"))
+    if "doctests-test" in f:
+        out.append(("doctests-test",
+                    "`doctests-test` 那条红**不是说仓库里哪件脚本的用例跑不起来**：那十八格是它自己种在"
+                    "\n           临时沙盒里的假件，仓库里那些件它一件都没起。它说的是收集器那一档"
+                    "\n           （逐件真跑 + 护栏 + 数合计）的判据或措辞变了 —— "
+                    "\n           红了先 `git log -p scripts/run_doctests.py`（2.74）。"))
+        if "doctests" not in f:
+            out.append(("doctests-test/doctests-green",
+                        "`doctests` 绿、`doctests-test` 红 —— 这个组合只有一种意思：**手跑那一遍 `--each` 的读数"
+                        "\n           这一轮不能读**。那一屏每一行是一句判决（「字还在、路已死」「它去干了自己的活」"
+                        "\n           「那把尺判错了」……），而今天的仓库里那几句一句都没有实例 —— "
+                        "\n           这一条是它们在这棵树里唯一的证据（2.71 那笔账，2.74 收到收集器自己头上）。"))
     return out
 
 
@@ -702,8 +734,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--against", default="", help="顺手跑 table_drift：那份表所在的目录")
     ap.add_argument("--epg", action="store_true", help="把 EPG 那条也挂上（只读本地缓存）")
     ap.add_argument("--skip", action="append", default=[],
-                    help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / names / "
-                         "self-test / doc-test / num-test / unmarked / um-test / claims / claims-test / "
+                    help="跳过某一步，可重复：page / numbers / doc-cmds / doctests / doctests-test / "
+                         "names / self-test / doc-test / num-test / unmarked / um-test / claims / claims-test / "
                          "drift-test / epg-test / lean-test / heads / heads-test / drift / epg")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
