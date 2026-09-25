@@ -454,7 +454,7 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     **自己会不会说话** —— 它那一屏说出口的十几句（「字还在、路已死」「它去干了自己的活」
     「那把尺判错了」「这一档对不上」……）在今天的仓库里**一句都没有实例**，而 §2.71 那笔账
     （一条判决今天没有实例 ＝ 等同没测）这一遍轮到收集器自己欠。
-    `run_doctests` 那一档种的是 18 格假件：每格一个新沙盒、每格真起子进程、真的挂在
+    `run_doctests` 那一档种的是 29 格假件：每格一个新沙盒、每格真起子进程、真的挂在
     `scripts/work_guard.py` 底下，跑完把整格回收。它比其余那九把都贵 —— 14:31—14:32 两批各三遍
     1.85／1.81／1.80 与 2.66／2.07／2.03（头一遍缓存冷，里面约一秒是 `卯` 那一格真等天花板掐表），
     换的是那一整条「起进程 → 递旗标 → 读护栏 → 数合计」的路从今天起改坏了会响：
@@ -482,7 +482,7 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
          lambda: run_script(["scripts/run_doctests.py"])),
-        ("doctests-test", "收集器那条逐件真跑自己还咬得动吗（往临时沙盒里种 18 格假件）",
+        ("doctests-test", "收集器那条逐件真跑自己还咬得动吗（往临时沙盒里种 29 格假件）",
          lambda: run_script(["scripts/run_doctests.py", "--self-test"])),
         ("numbers", "文档里抄来的那些数还算不算数",
          lambda: run_script(["scripts/doc_num.py"])),
@@ -715,7 +715,7 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
                         "\n           2.72 那十一格结构判据在今天的文档里一处实例都没有，这一屏上它们唯一的证据就是这一条。"))
     if "doctests-test" in f:
         out.append(("doctests-test",
-                    "`doctests-test` 那条红**不是说仓库里哪件脚本的用例跑不起来**：那十八格是它自己种在"
+                    "`doctests-test` 那条红**不是说仓库里哪件脚本的用例跑不起来**：那二十九格是它自己种在"
                     "\n           临时沙盒里的假件，仓库里那些件它一件都没起。它说的是收集器那一档"
                     "\n           （逐件真跑 + 护栏 + 数合计）的判据或措辞变了 —— "
                     "\n           红了先 `git log -p scripts/run_doctests.py`（2.74）。"))

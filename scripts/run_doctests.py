@@ -15,6 +15,7 @@
     .venv/bin/python scripts/run_doctests.py --doctest  # 只跑本件这一份用例
     .venv/bin/python scripts/run_doctests.py --self-test  # 往沙盒里种假件，量 `--each` 这条跑法
     .venv/bin/python scripts/run_doctests.py --each --root=/tmp/那棵树 --timeout=2
+    .venv/bin/python scripts/run_doctests.py --root=/tmp/那棵树   # 收集器也换一棵树量（2.75）
 
 2.68 起这里还多管一件事：**别的脚本自己那条 `--doctest` 支路怎么说结果**。那些支路以前
 一律写成 `raise SystemExit(doctest.testmod(verbose=False).failed)` —— 量到 31 条也好、
@@ -52,17 +53,25 @@ from __future__ import annotations
 import ast
 import contextlib
 import doctest
-import importlib
+import importlib.util
 import io
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import types
 from typing import NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# 「这一遍量的是哪一棵」递给被量件的那一位。为什么走环境变量而不是命令行旗标：
+# 收这个旗标的是每一件自己的收尾（`run_own(sys.modules["__main__"])`），递参数就得让
+# 30 件各自接一位「我在哪棵树上」—— 那是把一份规矩抄 30 遍（§2.58），抄漏的那一件不会红，
+# 只会静默报一个错名字。换树的读数和它自己那一句判决在 `label_of` 上面那段。
+MEASURED_ROOT_ENV = "RUN_DOCTESTS_ROOT"
 
 # 在册范围：「哪几级目录里的 .py 算这一本册子」。写一份而不是五处，理由是 2.58 那条
 # （同一份规矩两个人各写一遍，迟早漂）—— 这一位以前在四个函数的默认值里各抄一次，
@@ -84,8 +93,40 @@ DEFAULT_DIRS: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")
 EACH_TIMEOUT = 60
 
 
-def modules(pattern: str = "") -> list[str]:
-    """src/ 和 scripts/ 下的可导入模块名。
+def module_paths(root: pathlib.Path = ROOT) -> list[pathlib.Path]:
+    """`root` 那棵树里参与收集的每一个 .py：排好序、去掉包标记。
+
+    2.75 起「哪几级算在册」这一位可以换一棵树（收集器也接 `--root=`），所以遍历和
+    「给人看的名字」分成两件事：换树时**有什么文件**按那棵树算、**叫什么**按那棵树相对算，
+    两头都要拿到路径（`main` 要在沙盒里按路径导，见 `import_at`）。以前这两件事揉在
+    `modules` 一段里，换树就得从名字反推路径 —— 那是把「剥 `.py`、拼点号」那本账抄两遍
+    （2.58），而抄错的那一处不会红，只会静默量不到东西。
+
+    >>> len(module_paths()) > len(module_paths(ROOT / "src"))          # 整棵比单一级多
+    True
+    >>> module_paths(pathlib.Path("/tmp/没有这样一棵树"))               # 两棵子目录都不在
+    []
+    >>> [p.name for p in module_paths() if p.name == "__init__.py"]
+    []
+    """
+    return sorted(p for p in list((root / "src").rglob("*.py")) + list((root / "scripts").glob("*.py"))
+                  if p.name != "__init__.py")
+
+
+def module_name(path: pathlib.Path, root: pathlib.Path = ROOT) -> str:
+    """这一个文件在册子里的名字：`src/` 下给带包的点号名，`scripts/` 下给裸名。
+
+    >>> module_name(ROOT / "src" / "check" / "prober.py")
+    'src.check.prober'
+    >>> module_name(ROOT / "scripts" / "run_doctests.py")
+    'run_doctests'
+    """
+    dotted = str(path.relative_to(root)).removesuffix(".py").replace("/", ".")
+    return dotted if dotted.startswith("src.") else dotted.rsplit(".", 1)[-1]
+
+
+def modules(pattern: str = "", root: pathlib.Path = ROOT) -> list[str]:
+    """`root` 那棵树里 src/ 和 scripts/ 下的可导入模块名（名字按那一棵相对算）。
 
     scripts/ 里的文件按裸名导入（它们不是包，各自靠 `sys.path.insert(ROOT)` 找 src）。
 
@@ -95,17 +136,133 @@ def modules(pattern: str = "") -> list[str]:
     True
     >>> [m for m in modules() if m.endswith("__init__")]     # 包标记不参与
     []
+    >>> modules("good", pathlib.Path("/tmp/没有这样一棵树"))   # 换一棵不存在的树：一个名字都不给
+    []
     """
     out = []
-    for path in sorted(list((ROOT / "src").rglob("*.py")) + list((ROOT / "scripts").glob("*.py"))):
-        if path.name == "__init__.py":
-            continue
-        dotted = str(path.relative_to(ROOT)).removesuffix(".py").replace("/", ".")
-        name = dotted if dotted.startswith("src.") else dotted.rsplit(".", 1)[-1]
+    for path in module_paths(root):
+        name = module_name(path, root)
         if pattern and pattern not in name:
             continue
         out.append(name)
     return out
+
+
+def sandbox_tag(path: pathlib.Path) -> str:
+    """拿不到真名时，沙盒里那一份文件的临时模块名：由**路径**拼出来，每格、每遍都不一样。
+
+    为什么不给它一个裸文件名当模块名：见 `import_at` 那一段 —— 裸名会撞上仓库 `sys.path`
+    里那一级，也会撞上同一进程里上一格留下的缓存。这一位如今只服务「那一份根本不在被量的
+    树里」那一档（换一棵树的正路在 `host_tree`）。
+
+    >>> sandbox_tag(pathlib.Path("/tmp/一/scripts/good.py"))
+    '_沙盒__tmp_一_scripts_good_py'
+    >>> sandbox_tag(pathlib.Path("/tmp/x")).startswith("_沙盒_")
+    True
+    """
+    return "_沙盒_" + "".join(ch if ch.isalnum() else "_" for ch in str(path))
+
+
+HOST_SLOTS: list[str] = []      # 换树那一遍插进 `sys.path` 的那几级：换下一棵前先拔掉
+
+
+def host_tree(root: pathlib.Path, first: str) -> None:
+    """把「这一遍量的是哪一棵」变成**真的导入根**，并清掉缓存里那一名的旧货。
+
+    为什么光按路径读文件不够（2.75 第一次跑「面 A 进沙盒」量出来的）：按路径端上来只解决
+    「读的是哪一个文件」，没解决「它请的邻居是哪一个」。副本里那些件做的是**绝对导入**
+    （`src.check.prober` 里 `from src.check.scope import …`、`scripts/*.py` 收尾那句
+    `from run_doctests import run_own`、以及用例自己 `import src.check.prober as P`），
+    这些名字由 `sys.path` 与 `sys.modules` 决定 —— 于是文件体是副本的、邻居是仓库的，
+    那一遍量的是**两棵树拼起来的东西**（§2.55 那笔「用例数是从两份代码里凑的」换到导入这一层）。
+    同一处的现量：`src/check/prober.py` 那 23 条失败全部出自这里 —— 它的用例往 `P._get`
+    上装假答案，装进了仓库那一份，而被量的 `l3_roll` 在副本的全局里找 `_get`，
+    假答案一个字都没递进去，三条本该 `rolling`／`stuck` 的读数全成了 `dead`。
+
+    两件事按顺序做，缺一件都不算换根：
+    * 把那一棵和它的 `scripts/` 插到 `sys.path` 最前面（上一遍插的那几级先拔掉 ——
+      沙盒每格一个新目录，留着的话「这一棵里没有的名字」会去上一格那棵里找）；
+    * 把 `first` 那一名（含它的子模块）从 `sys.modules` 里清掉。不清这一步，插再多路径
+      也没用：`importlib` 先看缓存，命中的还是仓库那一份。
+
+    换根之后**不马上拔**：被量的那一件在自己的用例里还要晚一步 import（`own()` 那样的
+    函数体里的导入），拔早了那一记又回到仓库那一级去了。一整遍收完由 `unhost` 拔。
+    """
+    unhost()
+    for slot in (str(root), str(root / "scripts")):
+        if slot not in sys.path:
+            sys.path.insert(0, slot)
+            HOST_SLOTS.append(slot)
+    for key in [k for k in sys.modules if k.split(".")[0] == first]:
+        sys.modules.pop(key, None)
+
+
+def unhost() -> None:
+    """把换树那遍插进 `sys.path` 的那几级拔回去 —— 量完一棵，不该留下它的影子。
+
+    为什么要这一句而不是留着：这一位的对面是「同一进程里连着量好几棵」（`--self-test`
+    那几格 A1…A7 就是），留着的话下一格里「这一棵没有的名字」会去**上一格那棵**里找，
+    而那正是 §2.55 拦住的样子。缓存那一头（`sys.modules`）不归它管：清它是换根那一步的事。
+    """
+    for slot in HOST_SLOTS:
+        while slot in sys.path:
+            sys.path.remove(slot)
+    HOST_SLOTS.clear()
+
+
+def load_by_path(path: pathlib.Path):
+    """按路径硬读一份源码当模块 —— 只在它拿不到真名时走这一支。
+
+    `spec_from_file_location` 给不出 loader 时**抛**而不是静默回一个空模块：那一档的意思是
+    「这个文件我读不出模块形状」，把它读成「这文件一条用例都没有」等于换了一种读法（2.50）。
+    抛出去的话由 `main` 那句「✗ 导入失败」摊到屏幕上。
+    """
+    spec = importlib.util.spec_from_file_location(sandbox_tag(path), path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"读不出这个文件的模块形状：{path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod                # 先登记再 exec：包里的循环导入才走得通
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def import_at(path: pathlib.Path, name: str, root: pathlib.Path = ROOT):
+    """把树上那一个文件变成一个能 `testmod` 的模块。
+
+    仓库那一棵按**模块名**导（`src.check.prober` 要靠包机制走通它的兄弟导入），这一位
+    与 2.75 之前逐字相同。
+
+    换一棵树时先问一句：**那一份文件在不在那一棵里面**。在 —— 那一棵就是导入根
+    （`host_tree`，理由全写在那一段里）。不在 —— 只能按路径端上来、模块名由路径拼
+    （`sandbox_tag`）：这一支今天只有一个实例，就是下面那条「拿仓库里的件配一棵不存在的树」
+    的用例，它要的是「读不出真名」那一档的行为，不是换树那一档的。
+
+    >>> import_at(ROOT / "scripts" / "baseline_guard.py", "baseline_guard").__name__
+    'baseline_guard'
+    >>> m = import_at(ROOT / "scripts" / "baseline_guard.py", "用不上", pathlib.Path("/tmp/那棵"))
+    >>> m.__name__.startswith("_沙盒_"), m.sep_names(["甲、乙"])
+    (True, ['甲、乙'])
+    >>> before = list(sys.path)
+    >>> with tempfile.TemporaryDirectory() as d:                       # 换根那支：自导入要命中副本
+    ...     t = pathlib.Path(d)
+    ...     (t / "scripts").mkdir()
+    ...     _ = (t / "scripts" / "selfname.py").write_text(
+    ...         "TOP = __file__\\n\\ndef own() -> str:\\n"
+    ...         "    import selfname                 # 用例里那种自导入：名字指向谁，这里量的就是谁\\n"
+    ...         "    return selfname.TOP\\n", encoding="utf-8")
+    ...     mod = import_at(t / "scripts" / "selfname.py", "selfname", t)
+    ...     mod.own() == str(t / "scripts" / "selfname.py")
+    True
+    >>> unhost()
+    >>> sys.path == before
+    True
+    """
+    if root == ROOT:
+        return importlib.import_module(name)
+    if not path.is_relative_to(root):
+        return load_by_path(path)
+    host_tree(root, name.split(".")[0])
+    return importlib.import_module(name)
 
 
 def strays(names: list[str]) -> list[str]:
@@ -146,26 +303,74 @@ def flag_of(attempted: int, failed: int) -> str:
 
 
 def label_of(mod) -> str:
-    """这一件给人看的名字：能给仓库内的相对路径就给，给不了退到模块名。
+    """这一件给人看的名字：能给**被量那棵树**内的相对路径就给，给不了退到模块名。
 
     为什么要绕这两层：那一句「合计」要是印成绝对路径，这一行就成了全屏最长的噪音；
     而 `__file__` 在 `-c`、在交互式解释器里根本没有，硬取会裸崩 —— 这一支是收尾时说话的，
     不该在收尾那一步把进程带走。
 
+    「相对**哪**一棵」由 `RUN_DOCTESTS_ROOT` 说（下面那一支），不写死本仓库：换一棵树量时
+    被量的文件不在本仓库里，`relative_to(ROOT)` 必然 `ValueError`，退到模块名就只剩
+    `analyze_upstream.py` 这种裸名 —— 而收集器比的是它自己那本册子里的 `scripts/…` 全名，
+    于是 18 件好好的东西全被读成「量的不是自己：它报 analyze_upstream.py」
+    （17:0x 现量：`--each --root=/tmp/clean275` 那一遍 30 件、18 件有毛病，全部出自这一处）。
+    这一位不是新发明：`--root=` 早就有，只是从来没有传到**被量件**那一头去。
+
     >>> import types
     >>> m = types.ModuleType("m"); m.__file__ = str(ROOT / "scripts/x.py")
-    >>> label_of(m)
+    >>> with measured_tree():                         # 谁都没递这一位：本仓库
+    ...     label_of(m)
     'scripts/x.py'
-    >>> label_of(types.ModuleType("__main__"))             # 没有 __file__：退到模块名
+    >>> with measured_tree():
+    ...     label_of(types.ModuleType("__main__"))    # 没有 __file__：退到模块名
     '__main__'
+    >>> with measured_tree("/tmp/那棵"):              # 换了根：那一份的相对名字按那一棵算
+    ...     label_of(types.SimpleNamespace(__file__="/tmp/那棵/scripts/x.py"))
+    'scripts/x.py'
+    >>> with measured_tree():                         # 没换根、那份又不在本仓库：裸名
+    ...     label_of(types.SimpleNamespace(__file__="/tmp/那棵/scripts/x.py"))
+    'x.py'
     """
     f = getattr(mod, "__file__", None)
     if f:
         try:
-            return str(pathlib.Path(f).resolve().relative_to(ROOT))
-        except ValueError:                          # 不在本仓库里（临时目录、别的树）
+            return str(pathlib.Path(f).resolve().relative_to(measured_root()))
+        except ValueError:                          # 不在被量那棵树里（临时目录、别人的树）
             return pathlib.Path(f).name
     return getattr(mod, "__name__", "<没有名字的件>")
+
+
+def measured_root() -> pathlib.Path:
+    """这一遍「量的是哪一棵」：`--root=` 由收这一位的人递进环境，没递就是本仓库。
+
+    为什么读环境变量而不是函数参数：调用方是**被量件自己**的收尾（每一件都写
+    `run_own(sys.modules["__main__"])`），要它们各自接一位「我在哪棵树上」，等于把同一份
+    规矩抄进 30 件里（§2.58），而抄漏的那一件只会静默报一个错名字、不会红。
+    `resolve()` 过一次：`/tmp` 在 macOS 上是 `/private/tmp` 的替身，两头都归一化才比得出。
+    """
+    got = os.environ.get(MEASURED_ROOT_ENV)
+    return pathlib.Path(got).resolve() if got else ROOT
+
+
+@contextlib.contextmanager
+def measured_tree(root: object = None):
+    """临时把「这一遍量的是哪一棵」立起来（不递＝立成「谁都没递」那一档），用完原样收回。
+
+    为什么本件的用例非得自己立一次，而不是直接假设环境是干净的：`--each` 那一遍里
+    被量件的用例**就是带着这一位跑的**（那正是这一位存在的理由），于是同一句
+    `label_of(m)` 在仓库那一遍和沙盒那一遍会读出两个答案 —— 例子不把条件钉住，
+    它就会在另一棵树上变成一条假失败（§2.67 那一族换了个载体又长出来一次：这次
+    读例子不是字面量，是**环境**）。
+    """
+    keep = os.environ.pop(MEASURED_ROOT_ENV, None)
+    if root is not None:
+        os.environ[MEASURED_ROOT_ENV] = str(root)
+    try:
+        yield
+    finally:
+        os.environ.pop(MEASURED_ROOT_ENV, None)
+        if keep is not None:
+            os.environ[MEASURED_ROOT_ENV] = keep
 
 
 def own_line(name: str, attempted: int, failed: int) -> str:
@@ -1080,13 +1285,15 @@ def spawn_each(path: pathlib.Path, argv: tuple[str, ...] = (DOCTEST_FLAG,),
       `names` 那把尺当场涨（2.56 记过的那一格：871 与 891 的差就是这么来的）。
     * `-X utf8` —— 跟这个仓库里每一条写进文档的命令一致；不带的话在
       `LANG` 不是 UTF-8 的 shell 里，那些中文说明书会变成 `UnicodeDecodeError`。
+    * `MEASURED_ROOT_ENV` —— 「这一遍量的是哪一棵」传到被量件那一头，它报自己名字时
+      才报得出**这一棵**的相对路径（规矩写在 `label_of` 上面那一段，这里只递不改写）。
 
     退码那一位**只有天花板这一档会是 `None`**（真进程被信号打死时 `subprocess` 给的是
     负数，拿 `-1` 当哨兵会跟 SIGHUP 撞车 —— 本节头一版就是这么写的）。
     「超过 N 秒没回来」那一句话在这里一个字都不拼：它归 `each_verdict` 说（2.58
     「一条规矩两个人各写一遍」——上一版在这里拼好了塞进 `out`，于是它永远到不了屏幕）。
     """
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", MEASURED_ROOT_ENV: str(base)}
     cmd = [sys.executable, "-X", "utf8", str(ROOT / "scripts" / "work_guard.py"),
            f"--root={base}", str(path.relative_to(base)), *argv]
     try:
@@ -1248,6 +1455,43 @@ def each_options(raw: list[str]) -> tuple[dict, list[str], list[str]]:
     return opts, rest, bad
 
 
+def own_options(raw: list[str]) -> tuple[pathlib.Path, str, list[str]]:
+    """认收集器那一档后面的字：`--root=<路径>` 换树、不像旗的字当过滤器、认不出的那些挑出来。
+
+    为什么不与 `each_options` 合成一份：那一句要把 `--timeout=` 递进 `run_each`，而收集器
+    **不起子进程** —— 「一件的天花板」在这一档没有意义。两半各认各的，好处是那一旗递到
+    这里就落进「认不出」那一堆、由登记处那句当场点名，而不是被安静地吃掉（2.74 给 `--each`
+    记过的那笔账：「一句打错的旗标换来一屏看着像沙盒、其实是仓库的读数」在这一档同样成立）。
+
+    这一句最要紧的产物和 `each_options` 一样是**认不出的那一半**：凡是带 `-` 又不认识的字，
+    既不丢、也不当成过滤器。
+
+    >>> root, pattern, bad = own_options([])
+    >>> (root == ROOT, pattern, bad)
+    (True, '', [])
+    >>> root, pattern, bad = own_options(["--root=/tmp/x", "prober"])
+    >>> (str(root), pattern, bad)
+    ('/tmp/x', 'prober', [])
+    >>> own_options(["--timeout=5"])[2]                    # 天花板只管 `--each` 那一档
+    ['--timeout=5']
+    >>> own_options(["--nope"])[2]
+    ['--nope']
+    >>> own_options(["--root="])[2]                        # 空路径：不许退化成「用默认」
+    ['--root=']
+    """
+    root, pattern, bad = ROOT, "", []
+    for a in raw:
+        if not a.startswith("-"):
+            pattern = a
+            continue
+        key, eq, val = a.partition("=")
+        if key == "--root" and eq and val:
+            root = pathlib.Path(val)
+        else:
+            bad.append(a)
+    return root, pattern, bad
+
+
 # ———— 沙盒里那几份假件的收尾 ————
 # 每段只写「跑起来做什么」，说明书和那道门由下面的 `fake()` 统一拼上。
 # 为什么门要自带一份（而不是 `from run_doctests import run_own`）：护栏特意把仓库那两级
@@ -1277,6 +1521,26 @@ ZERO_TAIL = 'import types\n' \
             '    raise SystemExit(run_own(types.ModuleType("一份用例都没有的假件"), here()))\n'
 LIB_TAIL = ''                                      # 纯库：没有入口，跑它 = 静默退 0
 ANSWER_NO_MAIN = 'run_own(sys.modules["__main__"], here())\n'   # 静态说没入口、它却答了
+
+# 被量件那一头问「这一遍量的是哪一棵」（2.75）：这一位**不许有兜底** —— 少了这一记，
+# 这一格就退化成「假件自己算自己的名字」，而那条算错的路（报裸名）恰好是它要拦的那一条。
+# 两头都 `realpath`：macOS 上 `/var` 是 `/private/var` 的替身，临时目录一边拿到带 `private`
+# 的、环境里那一位不带，`relpath` 就会拼出一长串 `../`（这一格头一遍红就红在这里，
+# 而真的 `label_of` 两边都 `resolve()` —— 同一条规矩在假件里再写一遍，第一次写漏的那一格
+# 就是它，§2.58 那笔账当场收回来自家身上）。
+ENV_TAIL = 'if __name__ == "__main__":\n' \
+           '    root = os.path.realpath(os.environ["RUN_DOCTESTS_ROOT"])   # 没收这一位就炸\n' \
+           '    raise SystemExit(run_own(sys.modules["__main__"],\n' \
+           '            os.path.relpath(os.path.realpath(__file__), root)))\n'
+
+# ———— 面 A（收集器自己那一档）在沙盒里要的三种件 ————
+# `--each` 那一档只收「写了用例的 .py」，而 面 A 按**文件**收：零用例的那一件在 面 A 这一档
+# 有实例（它要说「其中 N 个模块一条用例都没收到」），在 `--each` 那一档会整格空转 ——
+# 这一族区别写在 `sloppy_cells` 的那一条判据里（2.75 之前那条判据两边共用，会把 面 A 的格子
+# 当成写歪）。
+LIB_SRC = '"""这一件一句用例都没写：面 A 那一档要的正是这种 0。"""\n\nx = 1\n'
+BOOM_IMPORT = 'import 没有这样一件模块\n'            # 导入就炸：比 doctest 炸更该拦下来的一档
+BOOM_TAIL = 'raise ValueError("它跑到一半就炸了")    # 连那道门都没走到：只留 stderr 那一行\n'
 
 DOOR = '''import doctest, os, sys
 
@@ -1376,10 +1640,150 @@ class Cell(NamedTuple):
     argv: tuple[str, ...] = ("--each", "--root={T}")
     has: tuple[str, ...] = ()
     lacks: tuple[str, ...] = ()
+    spawn: str = ""                           # 非空 = 起子进程跑沙盒里这一份，而不是 in-process `main()`
 
 
 CELL_SRC = "scripts/good.py"                  # 绝大多数格子里那一件假件待的地方
 CELL_LIB = "scripts/lib.py"                   # 纯库那一件：同一棵沙盒，另一档
+CELL_SELF = "scripts/run_doctests.py"         # 「拿本件自己当被量件」那几格种的地方（2.75）
+
+# 跑一份沙盒里的本件副本（`Cell.spawn`）的天花板，和那道「不许往下套娃」的记号。
+# 正常那一遍在**一道预跑闸**前就退了，连格子都没开始跑（17:0x 现量：酉 0.13 秒、戌 0.15 秒）。
+# 天花板不是按比例放的余量，是留给「那一刀没种下去」这一种红法 —— 那种时候副本会去跑整条
+# 基线（每格真起子进程，17:0x 现量：整条 28 格 2.5 秒），而屏幕上要留下一行「超过了 N 秒没回来」，
+# 不是一格吊死在那儿。
+SPAWN_TIMEOUT = 30
+
+# 起副本时递进环境的一个记号：副本再跑到 `spawn` 那种格子时**直接报不符**，不再起下一层。
+# 为什么要有它：2.75 头一遍那一刀下在了说明书上（见 `cut_once`），闸当然不响，副本就自己去
+# 跑整条基线 —— 而那条基线里也有这两格 spawn，于是它起的副本又跑基线、又起副本。
+# 16:47 现量：机器上 964 个这种进程、load average 591，父进程被超时杀掉后它们没人收
+# （`communicate` 等的是管道，管道握在孙子手里），整台机器一起慢下来。
+DEPTH_ENV = "RUN_DOCTESTS_SPAWNED"
+
+
+def cut_once(src: str, old: str, new: str) -> str:
+    """下一刀，且只下在打算下的那一处：那一截在源码里必须**恰好出现一次**。
+
+    为什么要有这一道：2.75 头一遍种的那两刀都是「文本上的第一处」，两处都下歪了 ——
+    `self_copy` 找「没到屏幕上」，第一处命中在 `parse_guard` 的说明书里（那句判决在它的
+    代码之前先被说明文提了一次），源码里那句判决一个字没动，那道闸当然不响；
+    `silly_exemption` 要插的那张表的声明行，第一处命中是**它自己的函数体**（锚抄在了
+    下刀的那一句里），那条豁免从没进过表。两格各挂满一分钟才说一句「大概没种下去」。
+    格子内里是空的、却要点开才知道 —— 这一道就是让它**不开也响**。
+
+    >>> try:
+    ...     cut_once("一句话、两句话", "句话", "句话！")
+    ... except ValueError as e:
+    ...     print(str(e).split("：")[0])
+    这一截在源码里出现 2 次，刀不敢下
+    >>> cut_once("甲乙丙", "乙", "丁")
+    '甲丁丙'
+    >>> cut_once("这一刀已经下过了：丁", "乙", "丁")
+    '这一刀已经下过了：丁'
+    """
+    n = src.count(old)
+    if n == 1:
+        return src.replace(old, new)
+    if not n and new in src:
+        return src                       # 这就是那一刀种出来的那一棵副本：不再下第二刀
+    raise ValueError(f"这一截在源码里出现 {n} 次，刀不敢下：{old[:60]!r}"
+                     " —— 那一截要么改过名了，要么写在了说明书里")
+
+
+def copy_namespace(src: str):
+    """把一份源码副本 exec 成模块对象（不起子进程、不跑格子），让两道预跑闸先在内存里量一遍。
+
+    为什么要有它：`酉`／`戌` 量的是「副本里那道闸响不响」，可**刀有没有下在打算下的那一处**
+    不必等子进程 —— 现算一遍就有读数。上面那两处下歪的头一遍各挂了一分钟，量的那一层却
+    连「闸问过没有」都没走到。
+
+    >>> mod = copy_namespace(self_copy())
+    >>> len(mod.own_sites()) == len(own_sites())
+    True
+    >>> mod.CELL_SELF
+    'scripts/run_doctests.py'
+    """
+    mod = types.ModuleType("一份源码副本")
+    mod.__file__ = __file__
+    exec(compile(src, "<一份源码副本>", "exec"), mod.__dict__)
+    return mod
+
+
+# 那一刀种在哪一句上：`each_verdict` 里「护栏那一句没到屏幕上」那一句改一处 ——
+# 那句话今天还说得出口，可没有任何格子钉它。**认的是带 `problems.append(` 开头的整截**
+# （带缩进、不带说明书），因为那五个字在 `parse_guard` 的说明书里先出现过一次。
+# 锚是把两截**拼**出来的：整截抄在这里，这一行登记处自己就是第二处命中 ——
+# `cut_once` 当场不敢下刀（§2.67 那一族，这次长在了刀自己身上）。
+UNPIN_OLD = "        problems.append(" + '"护栏那一句没到屏幕上'
+UNPIN_CUT = (UNPIN_OLD, UNPIN_OLD.replace("幕上", "外了"))
+
+# 种进豁免表头上的那一条：线索词故意写成源码里没有一句判决认它。
+SILLY_ENTRY = ('    ("这一句谁都没写过：它不在源码里的任何一句判决上",\n'
+               '     "本格要的就是「豁免表自己有一条白登记」被读出来"),\n')
+
+
+def self_copy(old: str = "", new: str = "") -> str:
+    """本件源码的原文，或下一刀之后的那份**副本** —— 种进沙盒量那道「没格钉着」的闸。
+
+    为什么读文件而不是抄一份字符串：手抄的那份副本会在下一次改动之后变成旧内容，而这两格
+    量的是「源码里有一句判决没人钉」—— 它必须跟着源码走（正是 2.75 换掉手抄名单的那个理由
+    长在自己身上）。
+
+    为什么那一刀是「把一句判决改一处」而不是「删掉一格」：删一格要动 AST、要重排
+    `BASELINE`，而 §2.74 记下的病灶本来就不是「格子少了一格」，是**改动判决话的时候没人提醒**。
+    改一处造的就是那一刀：那句话今天还在源码里、说得出口，可没有任何格子钉它 ——
+    那道闸必须当场响、退 2、而且**一格都不跑**（`lacks` 里那句「扫了基线」钉的正是「没跑」）。
+    这一族和变异机 `M16`（字还在、路已死）同一个形状，只是这次咬的是**闸**。
+
+    >>> len(self_copy()) == len(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    True
+
+    不给刀时原样返回：种进沙盒的就是本件此刻的源码。下一条例子量的是**刀在内存里就先响一次**
+    —— 不必等子进程起起来，那道闸在源码副本上已经读出「那句判决没人钉」。
+
+    >>> coverage_gaps(BASELINE, own_sites())
+    []
+    >>> bool(coverage_gaps(BASELINE, verdict_sites(self_copy(*UNPIN_CUT))))
+    True
+    """
+    src = pathlib.Path(__file__).read_text(encoding="utf-8")
+    return cut_once(src, old, new) if old else src
+
+
+def silly_exemption(src: str) -> str:
+    """往一份源码的豁免表**头上**插一条谁都不认的：那一格量的是豁免闸读不读得出白登记。
+
+    两道闸得各有一格钉，不能拿「没格钉着」那一格当两件事的证据 —— 那正是 §2.58 那一族
+    （一条规矩两个人各写一遍）换到「两道闸共用一格」上的形状：豁免闸若哪天不响，
+    屏幕上没有一行会知道。
+
+    锚是把那张表的名字拼出来的：整截抄在这里，第一次命中的就是下面这一句本体（§2.67 那一族
+    —— 举例的字面量会被自己的尺读到），那条豁免就从没进过表。
+
+    下面两条一起才算这条例子说完了：那条豁免**真的进了表**（不是插进了某一段说明书），
+    而豁免闸在内存里就读得出它是白登记。
+
+    >>> silly = copy_namespace(silly_exemption(self_copy()))
+    >>> len(silly.NOT_PINNABLE) - len(NOT_PINNABLE)
+    1
+    >>> bool(exemption_audit(BASELINE, own_sites(), silly.NOT_PINNABLE))
+    True
+    """
+    head = "\n" + "NOT_PINNABLE" + ": tuple[tuple[str, str], ...] = (\n"
+    return cut_once(src, head, head + SILLY_ENTRY)
+
+
+def neighbor(rel: str) -> str:
+    """沙盒里要有的邻居：本件 import 谁，那一棵里就得有什么（否则副本连门都进不去）。
+
+    `--self-test` 第一行就是 `from baseline_guard import guard` —— 沙盒那一棵里没有它，
+    那一格量到的就不是「闸响不响」，是一次 `ModuleNotFoundError`。
+
+    >>> "def guard(" in neighbor("scripts/baseline_guard.py")
+    True
+    """
+    return (ROOT / rel).read_text(encoding="utf-8")
 
 
 BASELINE: tuple[Cell, ...] = (
@@ -1445,12 +1849,27 @@ BASELINE: tuple[Cell, ...] = (
          2, files=((CELL_SRC, fake(1, SILENT_TAIL)),),
          has=("护栏那一句没到屏幕上", "字还在、路已死", "护栏那一句一件都没读到"),
          lacks=("用例数与静态全对上",)),
+    Cell("申_它崩在护栏之前", "静态认它有入口、它却炸在门之前：护栏那句读不到、stderr 上有话",
+         1, files=((CELL_SRC, fake(1, RUNS_TAIL)), ("scripts/boom.py", fake(1, BOOM_TAIL + RUNS_TAIL))),
+         has=("✗ scripts/boom.py", "没答（静态：走通，退 2）", "字还在、路已死",
+              "它那边的 stderr 第一行：", "合计 2 件：答 1 件、没答 1 件", "1 件有毛病"),
+         lacks=("护栏那一句没到屏幕上", "护栏那一句一件都没读到", "只有收集器跑得动它")),
     Cell("卯_一件不返回", "天花板那一档：一件卡住不许拖着整屏 —— 掐掉它、那一行照样落下来",
          1, files=((CELL_SRC, fake(1, RUNS_TAIL)), ("scripts/sleeper.py", fake(1, SLEEP_TAIL))),
          argv=("--each", "--root={T}", "--timeout=1"),
          has=("超过 1 秒没回来", "被 1 秒的天花板掐掉", "合计 2 件：答 1 件、没答 1 件",
               "1 件有毛病"),
          lacks=("一件都没读到", "子进程连 work_guard 都没跑起来", "字还在、路已死")),
+    # ———— 亥：换一棵树量时，「量的是哪一棵」要传到**被量件**那一头 ————
+    # 这一格钉的不是措辞，是一条**递旗的路**：`--root=` 只走到收集器自己那一句「不是本仓库」
+    # 是不够的 —— 被量件收尾时也要能问出同一位，不然它报的「量的件」是按本仓库算的相对路径，
+    # 换树那一遍 30 件里 18 件会被读成「量的不是自己」（17:2x 现量，见 `label_of` 上面那段）。
+    # 假件里那一记 `os.environ[...]` **故意不给兜底**：路断了这一格就炸成「字还在、路已死」，
+    # 而不是安静地退回一个裸名。
+    Cell("亥_量的是哪一棵递下去了", "换一棵树量：那一位要传到被量件收尾，它才报得出这一棵的相对名字",
+         0, files=((CELL_SRC, fake(1, ENV_TAIL)),),
+         has=("答 1／静态 1", "量的件=scripts/good.py"),
+         lacks=("量的不是自己", "字还在、路已死", "护栏那一句没到屏幕上")),
     # ———— 辰／巳：两种「什么都没量到」的 2，差别在范围不在过滤器 ————
     Cell("辰_过滤器没挑中", "过滤器给得太严：一句都没量到，那一句要说出用的哪个过滤器",
          2, files=((CELL_SRC, fake(1, RUNS_TAIL)),),
@@ -1469,48 +1888,630 @@ BASELINE: tuple[Cell, ...] = (
     Cell("未_打错的旗标", "`--each` 后面打错一个字母：不许当成没给过滤器去跑仓库那一整册",
          2, argv=("--each", "--rooot={T}"),
          has=("我不收这个旗标", "--rooot"), lacks=("逐件真跑", "合计")),
+    # ———— A1…A6：收集器**自己那一面**（面 A）—— 2.75 起它也能换一棵树，于是那一面第一次有实例 ————
+    # 这一族以前一格都没有：`run_cell` 走的是 in-process `main()`，而 面 A 只认仓库那一棵，
+    # 所以「一格子要是钉住了它，别的格子全跟着红」。添了 `--root=` 之后，那六句判决
+    # （没找到／不是模块名／导入炸／逐件那一行／0 个用例／合计）句句能在沙盒里说出来。
+    Cell("A1_沙盒里正常收一棵", "面 A 换一棵树：逐件那一行、那句合计、那句形状，全对着沙盒说",
+         0, argv=("--root={T}",), files=((CELL_SRC, fake(2, RUNS_TAIL)),),
+         has=("· good", "合计 2 个用例，0 个失败（1 个模块）", "这条路的形状", "走通 1 件"),
+         lacks=("✗", "收集到 0 个用例", "一个模块都没找到")),
+    Cell("A2_其中一件白跑", "有一件一条用例都没收到：那句「全过不包括它们」必须点名是谁",
+         1, argv=("--root={T}",),
+         files=((CELL_SRC, fake(1, RUNS_TAIL)), ("scripts/lib.py", LIB_SRC)),
+         has=("✗ lib", "个模块一条用例都没收到", "合计 1 个用例，0 个失败（2 个模块）"),
+         lacks=("收集到 0 个用例",)),
+    Cell("A3_一件用例都没收到", "整棵一棵用例都没有：那是「什么都没量到」，不是「全过」→ 退 2",
+         2, argv=("--root={T}",), files=(("scripts/lib.py", LIB_SRC),),
+         has=("✗ 收集到 0 个用例 —— 这不算通过，八成是遍历写歪了。",),
+         lacks=("个模块一条用例都没收到", "合计 0 个用例")),
+    Cell("A4_那棵树里没有模块", "换了一棵空的：那一句要说**在册范围**，不能喊「检查本仓库的 src」",
+         2, argv=("--root={T}",),
+         has=("一个模块都没找到", "这一遍一个用例都收不到", "里没有 scripts/ 或 src/"),
+         lacks=("逐件真跑", "我不收这个旗标")),
+    Cell("A5_沙盒里也有冲突副本", "2.55 那道文件名闸在沙盒里同样响：用例数不许从两份代码里凑",
+         2, argv=("--root={T}",), files=(("scripts/good 2.py", fake(1, RUNS_TAIL)),),
+         has=("这个不是能导入的模块名", "同步盘的冲突副本", "'good 2'"),
+         lacks=("合计 1 个用例",)),
+    Cell("A6_导入就炸的那一件", "一件 import 就抛：那一行要报它是谁、炸在哪，且不许读成「0 个用例」",
+         1, argv=("--root={T}",),
+         files=((CELL_SRC, fake(1, RUNS_TAIL)), ("scripts/boom.py", BOOM_IMPORT)),
+         has=("✗ 导入失败 boom: ModuleNotFoundError", "合计 1 个用例，1 个失败（2 个模块）"),
+         lacks=("收集到 0 个用例",)),
+    Cell("A7_那一件的用例红了", "面 A 的「量到了、有毛病」那一档：逐件那一行要说得出失败几条（壬 的 面 A 版）",
+         1, argv=("--root={T}",),
+         files=((CELL_SRC, fake(1, RUNS_TAIL, ">>> 6 + 1\n8\n")),),
+         has=("✗ good", "个用例，失败", "合计 2 个用例，1 个失败（1 个模块）"),
+         lacks=("收集到 0 个用例", "个模块一条用例都没收到")),
+    # ———— 酉／戌：两道**预跑闸**自己咬得动吗 —— 拿本件源码的副本当被量件（`spawn` 那一位）————
+    # 沙盒里种的是本件自己（改过一处）＋它 import 的那两个邻居；那一遍在闸上就退了，
+    # 一格都不跑 —— `lacks` 里那句「扫了基线」钉的就是「一格都没跑」。
+    #
+    # 酉 那一截期望为什么带着报信自己的标点（「：「护栏那一句…」）：光写「没到屏外了」五个字，
+    # 这一格就**自己把那句判决钉回去了** —— 名单是本件的 `has` 摊出来的，副本里那句判决的字面
+    # 里正好含着这五个字，那道闸于是说「有格钉着」。（§2.67 那一族第三次长出来：这次长的
+    # 是「举例的字面量被自己的尺读到」，而读它的正是那把量字面量的尺。）
+    Cell("酉_改了一处没人钉", "§2.74 那一刀的实物：把一句判决改一处，那道闸当场响、且一格都不跑",
+         2, argv=("--self-test",), spawn=CELL_SELF,
+         files=((CELL_SELF, self_copy(*UNPIN_CUT)),
+                ("scripts/baseline_guard.py", neighbor("scripts/baseline_guard.py")),
+                ("scripts/work_guard.py", neighbor("scripts/work_guard.py"))),
+         has=("源码里有一句判决没格钉着", "：「护栏那一句没到屏外了",
+              "没有一格钉着它，也没有一条豁免认下它"),
+         lacks=("扫了基线", "逐件真跑")),
+    Cell("戌_豁免表白登记", "豁免表里多一条谁都不认的：那一头也要有一行读数，不能只靠上一条",
+         2, argv=("--self-test",), spawn=CELL_SELF,
+         files=((CELL_SELF, silly_exemption(self_copy())),
+                ("scripts/baseline_guard.py", neighbor("scripts/baseline_guard.py")),
+                ("scripts/work_guard.py", neighbor("scripts/work_guard.py"))),
+         has=("豁免表自己有毛病", "今天不认源码里任何一句判决"),
+         lacks=("源码里有一句判决没格钉着", "扫了基线")),
 )
 
 
-# 那一屏能说的每一句话 —— 每一句都得有至少一格钉着。
-# 为什么把名单写下来单独问一句：本节装基线要办的就是 §2.71 那笔账（一条判决今天没有实例
-# ＝ 等同没测）。格子写全了没有？光靠一句「我把每一句都钉上了」的人话查不动，
-# 而数格子数也查不动（格子多一格、判决少一句，两边照样对得上）。
-# 配上下面这道预跑闸，一句判决没人钉了就当场红在**预跑**那一步（退 2、一句都没跑），
-# 而不是等到某一天那一句判决没字了才发现。
-# 这道闸的**范围**本节先量过再写：它看的是句子，不是格子 —— 删掉一格而那句话别处还有格钉着，
-# 它不响（下面 `gate_blindness` 逐格删一遍现数，屏幕上自己报）。本节头一版把这道闸写成
-# 「删掉任何一格都会红」，14:42 那一遍探针（删 `丁`）两面全绿，就是这么把它推翻的。
-VERDICT_LINES: tuple[str, ...] = (
-    "字还在、路已死", "只有收集器跑得动它", "那把尺判错了",
-    "跑到的跟静态那把尺数出来的不是同一份", "量的不是自己", "用例里有",
-    "可它报的用例全过、护栏也没意见", "它去干了自己的活", "护栏那一句没到屏幕上",
-    "一件都没挑出来", "护栏那一句一件都没读到", "用例数与静态全对上、护栏一件都没拦下",
-    "是护栏拦下来的", "没回来", "我不收这个旗标", "在册范围不是本仓库",
-)
+# ————————————————————————————————————————————————————————————————
+# 那一屏能说的每一句话 —— **由本件源码自己认出来**，不再抄一份挂在代码旁边。
+#
+# 2.74 那份 `VERDICT_LINES` 是手抄的：同一份规矩在两个地方各写一遍（§2.58 那一族），而它坏的
+# 方向不是「会漂」那么轻 —— 往 `each_verdict` 里添一句新判决，名单不响、格子不响、那道预跑闸
+# 也不响，于是那句判决从那天起就是「今天没有实例的判决」（§2.71）。本节先量了这件事的面积：
+# 手抄那份 16 句，源码里说得出口的是 24 句（15:2x 现数，逐条见下面 `own_sites()` 跑出来的那一屏），
+# 差的那 8 句里有面 A 的「✗ 收集到 0 个用例」、有逐件那一行前半截「没答（静态：…」，
+# 全都是**今天没有任何一格钉着**的。所以这里删掉那份手抄名单，改成 AST 现认（`verdict_sites`）。
+#
+# 为什么用 AST 而不按行扫：本件的 docstring 里全是**举例用的假屏幕**（`each_verdict` 那一条就有
+# 十几行 `'✗ scripts/x.py …'`），按行扫会把它们一句句读成判决 —— §2.67／§2.73 那一族
+# 「举例的字面量会被自己的尺读到」换到这一把尺上是致命的：它会造出一批永远钉不上的判决，
+# 然后逼我把判据调松。
+MINPIN = 2                        # 字面块剃掉两头标点后至少这么长才算「一句话」
+PINCENTER = 4                     # 一截期望要从这句话的**字面**里摊出几个字，才算它钉的是这一句
+QUOTE_CUT = 60                    # 点名那一句判决时限到这么多字 —— 截了就在后面自报原句几字（2.61）
+CHUNK_TRIM = " \t（），、：；。「」『』`'\"·…|/\\<>="
+PUNCTUAL = re.compile(r"[\s—–·…、，。：；（）「」『』|/\\<>=+*—\-]*")
+
+Site = tuple[str, int, tuple[str, ...]]       # (种类, 源码行号, 剃过的字面块)
+
+SITE_WHERE = {                              # 四种位置：句子从哪四个地方出得去
+    "毛病": "`problems.append(...)`",
+    "读数": "`note =` 与 `note +=`",
+    "屏幕": "`print(...)`",
+    "收尾": "`return <一句拼好的屏幕话>`",
+}
 
 
-def coverage_gaps(cells: tuple[Cell, ...],
-                  lines: tuple[str, ...] = VERDICT_LINES) -> list[str]:
-    """那些句话里，没有任何一格在 `has` 里钉过的 —— 应该是空表。
+def trim_chunk(text: str) -> str:
+    """f-string 的字面块两头常挂着半个括号或一个空格 —— 那不是话，比之前先剃掉。
 
-    只往 `has` 里找，不往 `lacks` 里找：`lacks` 钉的是「这句不许出现」，一句从没出现过
-    的判决不算有实例。
+    >>> trim_chunk("、量的件=")
+    '量的件'
+    >>> trim_chunk(" 件；")
+    '件'
+    >>> trim_chunk("✗ 这个不是能导入的模块名：")
+    '✗ 这个不是能导入的模块名'
+    """
+    return text.strip().strip(CHUNK_TRIM)
 
-    >>> coverage_gaps((Cell("好", "x", 0, has=("字还在、路已死", "其余那句")),),
-    ...               ("字还在、路已死",))
-    []
-    >>> coverage_gaps((), ("字还在、路已死",))
-    ['字还在、路已死']
-    >>> coverage_gaps(BASELINE)                                   # 本件的基线：一句都不许漏
+
+def pin_cover(chunks: tuple[str, ...], phrase: str, need: int = 0) -> int:
+    r"""这一截期望是不是从这句话的字面里**按原顺序**摊出来的 —— 摊出来几个字（摊不出回 0）。
+
+    一句判决在源码里被插值切成几块（`f"没答（静态：{route}，退 {rc}）"` 是三块），屏幕上是
+    这几块中间填上东西之后的样子；格子里钉的那一截是那一行里的**任意一段** —— 可以从一块
+    字面的中间起、到另一块的中间止。所以「钉住了」的判据既不是「字面块像不像」，
+    也不是「那一截完不完整包含某一块」，而是：**存在一种填法，让屏幕上那一句包含这一截**。
+
+    本节一开始拿最长公共子串比，量出来的是一批假判决：逐件那一行的前半截切出来全是
+    「答 」「／静态 」 这种两三字的块，重叠永远到不了四个字，于是一句明明钉住了的话
+    被报成没实例（15:2x 现量）。第二版改成「连续几块拼一个正则窗口」，漏在另一头：
+    格子里钉的常常是一块字面的**前缀**（`"在册范围不是本仓库"` 对源码里的
+    「在册范围不是本仓库，是 」），窗口要求整块出现 —— 16:0x 那一遍报了 31 句「没归宿」，
+    其中一半是这一处。两头都不是判据太严或太松，是**问错了问题**。
+
+    为什么还要数「摊出几个字」：「合计 」 那种块在哪儿都可能出现，拿它当钉住等于什么都没钉
+    —— 门槛就是 `PINCENTER`；同一句里若有一种对齐摊得出更多字，取那一种（不是先找到的那种）。
+
+    两头都必须**站在字面上**，这一条是判据的要害：插值那头可以吞下任意字，
+    所以「一截期望只有一头挨着字面、另一头飘在插值里」的对齐一律不算钉住 ——
+    16:2x 那一遍就这么放过了一句假判决（`"用例里有 1 个失败"` 曾被当成钉住了
+    「合计 {a} 个用例，{b} 个失败（量的件：{n}）」，因为它以 「 个失败」 结尾，
+    而那句的头一块字面 「 个用例，」 根本没有出现在这一截里）。三式各钉一种写法：
+    **R1** 整截落在同一块字面里；**R2** 起点在一块字面里、终点在另一块字面里、
+    中间那几块整块按序出现；**R3** 从某块字面的**头**起、越过它（后面那截是插值）。
+
+    >>> pin_cover(("没答（静态：", "，退", "）"), "没答（静态：没有入口，退 2）")   # R2：头 6 ＋ 中 2 ＋ 尾 1
+    9
+    >>> pin_cover(("在册范围不是本仓库，是 ", " —— 上面那两行的「N 件」说的都是这一棵"),
+    ...           "在册范围不是本仓库")                     # R1：整截落在同一块字面里
+    9
+    >>> pin_cover(("答 ", "／静态 ", "、量的件=", "、护栏 ", " 条"),
+    ...           "答 2／静态 2、量的件=x、护栏 ")           # R2：中间那几块整块、按序出现
+    15
+
+    下面三条是**不算钉住**的那三种，各钉一条判据的反面：头站在字面上、尾飘在插值里，只数得
+    起头那一块；两头都不在字面上，一个子也数不进来；只有一块字面，R3 要的「越过它」没处越。
+    （第三例递成 `("…：", "", "…")` 才有的谈 —— 那个空块是 `_string_bits` 留的插值记号。）
+
+    >>> pin_cover(("答 ", "／静态 ", "、量的件=", "、护栏 ", " 条"), "答 2／静态 2")
+    2
+    >>> pin_cover(("合计 ", " 个用例，", " 个失败（量的件：", "）"), "用例里有 1 个失败")
+    0
+    >>> pin_cover(("它去干了自己的活：",), "它去干了自己的活：写 touched.txt")
+    0
+    >>> pin_cover(("它去干了自己的活：", "", "那一头"), "它去干了自己的活：写 touched.txt")
+    9
+    >>> pin_cover(("量的不是自己：它报 ", "（{x}）"), "量的不是自己：它报 不是它自己")
+    10
+    >>> pin_cover(("没答（静态：", "，退", "）"), "没答（静态：没有入口，退 2）", need=8)
+    9
+    >>> pin_cover(("没答（静态：", "，退", "）"), "答 2", need=8)      # 够不上门槛：立刻收工
+    0
+    """
+    if not phrase or not chunks:
+        return 0
+    last = len(chunks) - 1
+    best = 0
+
+    def stronger(cov: int) -> int:
+        nonlocal best
+        best = max(best, cov)
+        return best
+
+    for i, c in enumerate(chunks):
+        if not c:
+            continue                                      # 空块是「这里有个插值」的记号，不是字面
+        if phrase in c:                                   # R1
+            stronger(len(phrase))
+        if i < last and phrase.startswith(c) and len(phrase) > len(c):
+            stronger(len(c))                              # R3：整块开头 + 越进插值
+        if need and best >= need:                         # `need=0` 是「把三种对齐都摊一遍」
+            return best
+    for i in range(len(chunks)):
+        for j in range(i + 1, len(chunks)):                   # R2：两头都站在字面上
+            head, mid, tail = chunks[i], chunks[i + 1:j], chunks[j]
+            middle = sum(len(m) for m in mid)
+            for a in range(len(head)):                        # 起点在这块字面里
+                pre = head[a:]
+                if not phrase.startswith(pre):
+                    continue
+                for b in range(1, len(tail) + 1):             # 终点落在那块字面里
+                    suf = tail[:b]
+                    if not phrase.endswith(suf) or len(pre) + len(suf) > len(phrase):
+                        continue
+                    body = phrase[len(pre):len(phrase) - len(suf)]
+                    pos = 0
+                    for m in mid:                             # 中间那几块整块、按序
+                        idx = body.find(m, pos)
+                        if idx < 0:
+                            break
+                        pos = idx + len(m)
+                    else:
+                        stronger(len(pre) + middle + len(suf))
+                        if need and best >= need:
+                            return best
+    return best
+
+
+def _string_bits(node: ast.expr) -> list[str]:
+    """一个串表达式里的字面块，**按屏幕上的顺序**排；每个插值位留一个空串当记号。
+
+    为什么要留那个空块：`f"它去干了自己的活：{detail}"` 屏幕上那一截后面**还有字**，
+    而字面只有一块 —— 不留记号，「这一句到这儿就说完了」与「后面是插值」就分不开，
+    于是 `pin_cover` 的 R3 那一式没处站（16:2x 现量：丑 那一格明明钉得住，报成没归宿）。
+    拼接与三元都拆开，因为判决话常那么写；拆到一个不是串的表达式（`str(n)`、一个变量）
+    也留一个空块：那里屏幕上确实有字。
+
+    >>> _string_bits(ast.parse('f"合计 {n} 件"', mode="eval").body)
+    ['合计 ', '', ' 件']
+    >>> _string_bits(ast.parse('"前" + str(n) + "后"', mode="eval").body)
+    ['前', '', '后']
+    >>> _string_bits(ast.parse('0', mode="eval").body)
+    ['']
+    """
+    if isinstance(node, ast.Constant):
+        return [node.value] if isinstance(node.value, str) else [""]
+    if isinstance(node, ast.JoinedStr):
+        return [v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else ""
+                for v in node.values]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _string_bits(node.left) + _string_bits(node.right)
+    if isinstance(node, ast.IfExp):
+        return _string_bits(node.body) + _string_bits(node.orelse)
+    return [""]
+
+
+def _site_of(kind: str, node: ast.AST, bits: list[str]) -> Site | None:
+    """一处判决：留**没剃过的**字面块（钉的时候要比的是屏幕上的原话），
+    但「这一处算不算一句话」按剃过标点的版本问 —— 两头各用各的。
+    """
+    said = [trim_chunk(b) for b in bits if b]
+    if not any(len(c) >= MINPIN and not PUNCTUAL.fullmatch(c) for c in said):
+        return None                                   # 全是标点和空格：那不是一句话
+    return (kind, node.lineno, tuple(bits))
+
+
+def _template_builders(tree: ast.AST, parents: dict) -> set[str]:
+    """只作为「种下去的文件内容」出现过的那些函数 —— 它们造的是**源码**，不是屏幕话。
+
+    判据是形状而不是名单：一个函数如果在整份文件里的每一处调用都落在某层 `Cell(...)` 的参数里，
+    它造出来的串就只会落进沙盒那份假件里（`fake`／`liar`／`wrong_label` 三个都是这一族）。
+    不排掉它们，名单里就混进 「合计 {count} 个用例，0 个失败（量的件：%s）」 这种**给假件抄的**
+    模板 —— 那一句在本件的屏幕上永远不出现，于是这道闸会永远要求我钉一句钉不上的话。
+
+    「落在某层 `Cell` 里」问的是**整条往上之路**，不是最近那层调用：`liar(2)` 的最近调用是
+    `fake(…)`，按最近算它就不算「待在格子里」，于是 16:0x 那一遍仍把 `liar` 的 return 读成了
+    一句判决 —— 嵌套一层的造源件全在这一条上漏。
+
+    >>> src = ast.parse('print(scope_note(r))\\nCell(files=((P, fake(1, liar(2)))),)\\n')
+    >>> parents = {c: p for p in ast.walk(src) for c in ast.iter_child_nodes(p)}
+    >>> sorted(_template_builders(src, parents))
+    ['fake', 'liar']
+    """
+    callers: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            in_cell = any(isinstance(p, ast.Call) and isinstance(p.func, ast.Name)
+                          and p.func.id == "Cell" for p in _upward(node, parents))
+            callers.setdefault(node.func.id, set()).add("Cell" if in_cell else "别的")
+    return {name for name, kinds in callers.items() if kinds == {"Cell"}}
+
+
+def _upward(node: ast.AST, parents: dict):
+    """从这一个节点一路走到树根（`parents` 是本件自己算的那份 `{子: 父}`）。"""
+    while node in parents:
+        node = parents[node]
+        yield node
+
+
+def _enclosing_call_name(node: ast.AST, parents: dict) -> str | None:
+    """离这个节点最近的那层调用是谁（`Cell(...)` 里的那些串都归它）。"""
+    for p in _upward(node, parents):
+        if isinstance(p, ast.Call) and isinstance(p.func, ast.Name):
+            return p.func.id
+    return None
+
+
+def _enclosing_function(node: ast.AST, parents: dict) -> str | None:
+    for p in _upward(node, parents):
+        if isinstance(p, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return p.name
+    return None
+
+
+def _in_sink(node: ast.AST, sinks: set, parents: dict) -> bool:
+    """这一个节点（或它的任一祖先）在不在「上屏幕」的那几棵子树里。"""
+    return id(node) in sinks or any(id(p) in sinks for p in _upward(node, parents))
+
+
+def _screen_sinks(tree: ast.AST) -> set:
+    """屏幕的入口有哪几处：`print(...)`、`problems.append(...)`、`note =` 与 `note +=`。
+    入口的**整棵子树**都算 —— 判决话常是 `print(f"…{survey_line(by)}…")` 这种套了两层的写法。
+    """
+    sinks: set = set()
+    for node in ast.walk(tree):
+        into_screen = (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "print") or (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append" and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "problems") or (
+            isinstance(node, (ast.Assign, ast.AugAssign)) and _is_note(node))
+        if into_screen:
+            sinks.update(id(n) for n in ast.walk(node))
+    return sinks
+
+
+def _screen_mouths(tree: ast.AST, parents: dict) -> set[str]:
+    """返回值会**上屏幕**的那些函数名 —— 它们才是「这张嘴说得出口的话」真正的出口。
+
+    为什么要有这一条：`flag_answer` 那句 `return "没有应答"` 说的是**档名**，不是说出口的话
+    —— 它递出去的值只被 `how == "没有应答"` 这样拿去比，从没上过任何一屏。把它当判决，
+    就是要求一格去钉一句本件永远不会说出口的话；而那种要求只会把判据越调越松
+    （本节一开始就差点这么办：16:0x 那一遍里 `flag_answer` 一个人贡献了四句「没归宿」）。
+    认法跟着**数据**走、不跟名字走（本节不留一份函数名单，理由同上面删掉的那份手抄判决表）：
+    `print` / `problems.append` / `note` 那三处子树里出现的调用算出口，一层局部别名
+    （`line = survey_line(...)` 之后 `print(line)`）跟着算，出口函数自己 `return` 出去的调用也算。
+    三层各钉一类写法，少一层就有一类函数被认错。
+
+    递 `{}` 当父母表的那两例只量「调用」：`print` 自己也在嘴里，那是这一把尺的读法
+    —— 它认的是「这一处子树里有嘴」，不是「哪一个函数是嘴」。
+
+    >>> sorted(_screen_mouths(ast.parse('print(say())'), {}))
+    ['print', 'say']
+    >>> sorted(_screen_mouths(ast.parse('print(a)\\nproblems.append(b)\\nnote = c'), {}))
+    ['print']
+
+    别名那一层要有真的父母表才能顺着名字往上走（`_in_sink` 问的是祖先）：
+
+    >>> src = ast.parse('how = classify(s)\\nprint("x" if how else how)')
+    >>> parents = {c: p for p in ast.walk(src) for c in ast.iter_child_nodes(p)}
+    >>> sorted(_screen_mouths(src, parents))
+    ['classify', 'print']
+    >>> src = ast.parse('how = classify(s)\\nif how == "没有应答":\\n    pass')
+    >>> parents = {c: p for p in ast.walk(src) for c in ast.iter_child_nodes(p)}
+    >>> sorted(_screen_mouths(src, parents))     # 只拿去比：从不上屏幕
     []
     """
-    pinned = "".join("".join(c.has) for c in cells)
-    return [line for line in lines if line not in pinned]
+    sinks = _screen_sinks(tree)
+    mouths: set[str] = set()
+    alias: dict[str, set[str]] = {}               # 局部名 -> 它的值从哪个调用拿的
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and _in_sink(node, sinks, parents):
+            mouths.add(node.func.id)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name):
+            alias.setdefault(node.targets[0].id, set()).add(node.value.func.id)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) \
+                and node.id in alias and _in_sink(node, sinks, parents):
+            mouths |= alias[node.id]
+    for _ in range(len(alias) + 3):               # 「出口函数 return 出去的也算出口」套到不再涨
+        grew = set(mouths)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Return) and node.value is not None \
+                    and _enclosing_function(node, parents) in mouths:
+                grew.update(c.func.id for c in ast.walk(node.value)
+                            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name))
+        if grew == mouths:
+            break
+        mouths = grew
+    return mouths
 
 
-def gate_blindness(cells: tuple[Cell, ...],
-                   lines: tuple[str, ...] = VERDICT_LINES) -> list[str]:
+def verdict_sites(src: str) -> list[Site]:
+    """从一份源码认出「这张嘴说得出口的每一句」：四种位置、全靠 AST、不扫一行正文。
+
+    每一句带自己的行号，所以名单不是「我记得的那些话」而是**代码现在的形状**：添一句判决
+    就得当场多一个格子钉它（或登记一条豁免并写明为什么钉不了），删一句判决则那句豁免会
+    变成白登记（下面 `exemption_audit`）。两头都是本节要的读数。
+
+    >>> for kind, line, chunks in verdict_sites(
+    ...     'if x:\\n    problems.append(f"字还在、路已死：静态说「{r}」")\\n'):
+    ...     print(kind, line, chunks)
+    毛病 2 ('字还在、路已死：静态说「', '', '」')
+    >>> for kind, line, chunks in verdict_sites('print(f"扫了基线 {n} 格", file=sys.stderr)'):
+    ...     print(kind, line, chunks)
+    屏幕 1 ('扫了基线 ', '', ' 格')
+    >>> verdict_sites('def f():\\n    "假屏幕里写着 ✗ 举例"\\n    return "合计 {n} 件"')
+    [('收尾', 3, ('合计 {n} 件',))]
+    >>> verdict_sites("print('a')")            # 一个字的块不算一句话
+    []
+    >>> verdict_sites('print("合计 " + str(n) + " 件")')      # 那个空块记的是插值位
+    [('屏幕', 1, ('合计 ', '', ' 件'))]
+    >>> verdict_sites('def f():\\n    return "走通" if n else "没有入口"\\nf()')
+    []
+
+    最后那一条分两种情形，写在两行上：`return` 的值只被拿去比 → 名单里没有它；而**没人调用过**
+    的那一个 `return` 没有证据说它上不了屏幕 → 照样进名单（宁可多问一格，也不放过一句假判决）。
+
+    >>> verdict_sites('def f():\\n    return "这一句谁都没调用过"')
+    [('收尾', 2, ('这一句谁都没调用过',))]
+    """
+    tree = ast.parse(src)
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    templates = _template_builders(tree, parents)     # 造源码的那几个函数不算屏幕话
+    mouths = _screen_mouths(tree, parents)            # 值到不了屏幕的函数说的是档名，不是话
+    called = {node.func.id for node in ast.walk(tree)
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    docbits = set()                     # docstring 里那些「举例的假屏幕」不进名单
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(node, "body", [])
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                docbits.add(id(body[0].value))
+
+    found: dict[int, Site] = {}
+    def offer(site: Site | None) -> None:
+        if site is None:
+            return
+        seen = found.get(site[1])
+        if seen is None:
+            found[site[1]] = site
+        else:                           # 同一行两处（一条 print 跨几行拼接）：并成一句
+            found[site[1]] = (seen[0], seen[1], seen[2] + site[2])
+
+    for node in ast.walk(tree):
+        if id(node) in docbits:
+            continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "append" and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id == "problems" and node.args:
+            offer(_site_of("毛病", node, _string_bits(node.args[0])))
+        elif isinstance(node, (ast.Assign, ast.AugAssign)) and _is_note(node):
+            offer(_site_of("读数", node, _string_bits(node.value)))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == "print":
+            bits = [b for a in list(node.args) + [kw.value for kw in node.keywords
+                    if kw.arg not in ("sep", "end", "file")] for b in _string_bits(a)]
+            offer(_site_of("屏幕", node, bits))
+        elif isinstance(node, ast.Return) and node.value is not None:
+            who = _enclosing_function(node, parents)
+            if who is None or who in templates or (who in called and who not in mouths):
+                continue                # 造源码的模板、或只拿去比的档名：不是这一屏说的话
+            offer(_site_of("收尾", node, _string_bits(node.value)))
+    return [found[k] for k in sorted(found)]
+
+
+def _is_note(node: ast.Assign | ast.AugAssign) -> bool:
+    """`note =` / `note +=` 那一位 —— 逐件那一行「——」前面那半截（读数话）。"""
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    return any(isinstance(t, ast.Name) and t.id == "note" for t in targets)
+
+
+def own_sites() -> list[Site]:
+    """本件源码里现在说得出口的那些句子（读 `__file__`，不读任何抄本）。"""
+    return verdict_sites(pathlib.Path(__file__).read_text(encoding="utf-8"))
+
+
+# 源码里说得出口、而**这一把尺天生钉不了**的那几句 —— 每一句都得写明为什么。
+# 这一张表不是「漏网的口子」：它跟上面那道闸是一件事的两头，写在这里是为了让
+# 「钉不了」这件事自己留下一个读数。它若变成白登记（今天没有一句判决靠它），下面
+# `exemption_audit` 当场红 —— 一句豁免被格子钉上了，说明那一格能钉，这条豁免就该删。
+NOT_PINNABLE: tuple[tuple[str, str], ...] = (
+    ("扫了基线", "这一句由 `--self-test` 自己印，而本件没有一格跑 `--self-test`（拿自己当格子"
+                 "会绕环）——钉它的是 `selfcheck.py` 那一屏，和 `claims` 拿 `steps()` 那句"
+                 "「种 N 格」对 `len(BASELINE)`"),
+    ("基线自己有格子写歪了", "这是 `--self-test` 的**预跑闸**那一屏，同上一条：本件的格子跑不到自己"),
+    ("上面逐格点名了", "`--self-test` 那一屏的收尾，同「扫了基线」"),
+    ("不符的格", "`--self-test` 那一屏的收尾，同「扫了基线」"),
+    ("一格都没跑起来", "`--self-test` 那一屏：临时目录建不起来时才会走到，本件的格子没有一格跑自己"),
+    ("以下", "`—— 以下 N 格不符期望` 那一行，同「扫了基线」"),
+    ("每格把自己那一遍的原文摊出来", "同上"),
+    # 2.75 头一遍把名单换成源码现认之后，`own_line` 那两句是量出来**只剩**的两条豁免：
+    # 其余每一句要么有格子钉（面 A 那六格、`申`、`酉`、`戌`），要么本来就没有实例。
+    ("0 个用例和「全过」在这一屏上同形",
+     "`--doctest` 那一档收尾的一句（`own_line` 的 0 条那一支）。格子拿不到它：那一句只在"
+     "「跑本件自己那份用例」时说话，而 `--self-test` 的一格若这么跑，就是把 面 A 那一整遍"
+     "搬进 面 B —— 两面的红绿焊成一处之后，`selfcheck.py` 里「`doctests` 绿、`doctests-test` 红"
+     "只有一种意思」那条读法当场作废。今天真跑它的是 `run_own` 与 `doctest_gate` 那四条用例，"
+     "递的是真模块、真分支（0／1／2 三档各一），不是假输出"),
+    (" 个失败（量的件：",
+     "同上一条，是 `own_line` 的另一支（有失败／全过共用那一行）：`--doctest` 那一档的收尾。"
+     "它在别的件的屏幕上每一遍都说（那二十九件走的是同一个函数），但在本件的 `--self-test` "
+     "里一格都拿不到，理由与上一条逐字相同"),
+)
+
+
+def _pins(site: Site, phrases: list[str]) -> str:
+    """这一句被哪一截钉住了（返回那一截，钉不住回空串）。判据在 `pin_cover` 里，不在这里。"""
+    for h in phrases:
+        if pin_cover(site[2], h, PINCENTER) >= PINCENTER:
+            return h
+    return ""
+
+
+def _aims(fragment: str, site: Site) -> bool:
+    """一条豁免认的是**哪一句**：线索词必须是那句某个字面块里的一段连续字。
+    豁免与格子的判据故意不一样：格子要摊得出原文（钉一段真的话），豁免只是「这一句我认，理由是下面」，
+    让它抄一遍整句只会得到一份新的手抄名单 —— 那正是本节删掉的东西。
+
+    下面三条例子一起把「短线索词」那一档说清楚：`都没跑起来` 五个字同时落在两句不相干的话上
+    （第二、三条），那一档由 `exempt_map` 拒收、由 `exemption_audit` 点名；写成六个字的
+    `一格都没跑起来` 就吞不到护栏那一句了（第四条）—— 线索词写得越具体，含糊那一档越进不来。
+
+    >>> _aims("扫了基线", ("屏幕", 1, ("扫了基线", "格不符期望")))
+    True
+    >>> _aims("都没跑起来", ("毛病", 2, ("护栏那一句没到屏幕上（子进程连 work_guard 都没跑起来？",)))
+    True
+    >>> _aims("都没跑起来", ("屏幕", 3, ("一格都没跑起来：临时目录建不起来。这不算过",)))
+    True
+    >>> _aims("一格都没跑起来", ("毛病", 2, ("护栏那一句没到屏幕上（子进程连 work_guard 都没跑起来？",)))
+    False
+    """
+    return any(fragment in chunk for chunk in site[2])
+
+
+def exempt_map(sites: list[Site],
+               table: tuple[tuple[str, str], ...] = NOT_PINNABLE) -> dict[int, str]:
+    """每条豁免认到的那一行 —— 只有一条线索词**恰好认到一句**时才认。
+    认到两句的豁免在这里不生效（那句子照样进 `coverage_gaps` 被点名），
+    并由 `exemption_audit` 单独报「含糊」。
+
+    >>> exempt_map([("屏幕", 9, ("扫了基线",))])
+    {9: '扫了基线'}
+    >>> exempt_map([("屏幕", 9, ("扫了基线", "格不符期望")), ("毛病", 3, ("扫了基线 也在这儿",))])
+    {}
+
+    第二条才是「含糊」：那一条线索词认到两句，于是两句都拿不到豁免（它们照旧进
+    `coverage_gaps` 被点名），而 `exemption_audit` 另外报一句「同时认到 N 句」。
+
+    >>> exempt_map([("屏幕", 9, ("扫了基线",)), ("毛病", 3, ("一格都没跑起来",))])
+    {9: '扫了基线', 3: '一格都没跑起来'}
+    """
+    out = {}
+    for frag, _why in table:
+        hit = [s for s in sites if _aims(frag, s)]
+        if len(hit) == 1:
+            out[hit[0][1]] = frag
+    return out
+
+
+def coverage_gaps(cells: tuple[Cell, ...] = BASELINE,
+                  sites: list[Site] | None = None) -> list[str]:
+    """源码里说得出口、却没有任何一格钉住（也没有一条豁免认下）的那几句 —— 应该为空。
+
+    与 2.74 那一版的同名叫一件事，但判的方向换了：上一版问「名单里每句有没有格钉」，
+    名单是我手抄的，所以**问不出「源码里还有一句没人抄进名单」**；这一版问「源码里每句
+    有没有格钉」，那一头当场没了。
+
+    >>> coverage_gaps((Cell("好", "x", 0, has=("字还在、路已死：静态说「走通」，它一个字都没答",)),),
+    ...               [("毛病", 7, ("字还在、路已死：静态说", "，它一个字都没答"))])
+    []
+    >>> coverage_gaps((), [("毛病", 7, ("那把尺判错了",))])      # 一个格子都没有
+    ['第 7 行（毛病）：「那把尺判错了」 —— 没有一格钉着它，也没有一条豁免认下它']
+    >>> coverage_gaps(BASELINE, own_sites())        # 本件此刻：源码认出的判决全有归宿
+    []
+    """
+    sites = own_sites() if sites is None else sites
+    phrases = [h for c in cells for h in c.has]
+    allow = exempt_map(sites)
+    out = []
+    for site in sites:
+        if _pins(site, phrases) or site[1] in allow:
+            continue
+        said = "／".join(b for b in site[2] if b).replace("\n", "↵")
+        out.append(f"第 {site[1]} 行（{site[0]}）：「{said[:QUOTE_CUT]}"
+                   + (f"……（截到 {QUOTE_CUT} 字，原句 {len(said)} 字）" if len(said) > QUOTE_CUT
+                      else "」")
+                   + " —— 没有一格钉着它，也没有一条豁免认下它")
+    return out
+
+
+def exemption_audit(cells: tuple[Cell, ...] = BASELINE,
+                    sites: list[Site] | None = None,
+                    table: tuple[tuple[str, str], ...] = NOT_PINNABLE) -> list[str]:
+    """豁免表自己三种坏法，一种都不许留：白登记、含糊、已被格子钉住（豁免变成推托）。
+
+    为什么这一头也要查：豁免表是这道闸唯一的「允许没有实例」的口子。口子不开不行
+    （`--self-test` 那一屏天生没有格子），但**开着的口子必须自己报数**。
+
+    三种坏法对应三件事：
+    * **白登记** —— 那条线索词今天不认源码里任何一句（判决被删了，豁免留在那儿变成化石）；
+    * **含糊** —— 它同时认到两句以上，那这两句都得不到豁免（`coverage_gaps` 会点名它们）；
+    * **多余** —— 它认到的那一句已经有格子钉住了，豁免就该删。
+
+    今天这一张表里只有第一条有实例（`戌` 那一格拿一份多插了一条的表真跑过一遍），
+    后两条只有下面这些递进来的假名单当例子 —— 一句实话：那两条的**报法**有例子，
+    本件源码里现成的**犯法**没有。它不进名单要求，是因为这些话是 `return` 出去的字符串、
+    不是屏幕上的句子（`verdict_sites` 认的是嘴，不认返回值）。
+
+    >>> only = (("扫了基线", "自证"),)
+    >>> exemption_audit((), [("屏幕", 1, ("扫了基线", "格不符期望"))], only)   # 在起作用
+    []
+    >>> exemption_audit((Cell("好", "x", 0, has=("扫了基线 99 格：0 格不符期望",)),),
+    ...                 [("屏幕", 1, ("扫了基线", "格不符期望"))],
+    ...                 only)                             # 已被格子钉住，豁免多余
+    ['豁免「扫了基线」已经多余：第 1 行那一句有格子钉它了 —— 删掉这条豁免']
+    >>> exemption_audit((), [("屏幕", 1, ("别的句子",))], only)      # 源码里没这句话
+    ['豁免「扫了基线」今天不认源码里任何一句判决 —— 那句话没在源码里，或在格子里改过名了']
+    >>> two = (("一格都没跑起来", "自证"),)
+    >>> exemption_audit((), [("屏幕", 1, ("一格都没跑起来：临时目录建不起来",)),
+    ...                      ("毛病", 2, ("护栏没跑起来？一格都没跑起来",))], two)
+    ['豁免「一格都没跑起来」同时认到 2 句（第 1、2 行） —— 一条豁免只许认一句，写得更具体些']
+    >>> exemption_audit(BASELINE, own_sites())          # 本件此刻：每条豁免都在起作用
+    []
+    """
+    sites = own_sites() if sites is None else sites
+    phrases = [h for c in cells for h in c.has]
+    out = []
+    for frag, _why in table:
+        hit = [s for s in sites if _aims(frag, s)]
+        if not hit:
+            out.append(f"豁免「{frag}」今天不认源码里任何一句判决"
+                       " —— 那句话没在源码里，或在格子里改过名了")
+        elif len(hit) > 1:
+            out.append(f"豁免「{frag}」同时认到 {len(hit)} 句"
+                       f"（第 {'、'.join(str(s[1]) for s in hit)} 行）"
+                       " —— 一条豁免只许认一句，写得更具体些")
+        elif _pins(hit[0], phrases):
+            out.append(f"豁免「{frag}」已经多余：第 {hit[0][1]} 行那一句有格子钉它了"
+                       " —— 删掉这条豁免")
+    return out
+
+
+def gate_blindness(cells: tuple[Cell, ...] = BASELINE,
+                   sites: list[Site] | None = None) -> list[str]:
     """逐格删一遍：删掉哪一格，`coverage_gaps` 不响。返回那些格子的名字。
 
     为什么量这个：上一节（2.73）记过「两个方向都会漏，而漏的方向不一样」，本节是同一族 ——
@@ -1524,15 +2525,16 @@ def gate_blindness(cells: tuple[Cell, ...],
 
     >>> two = (Cell("甲", "x", 0, has=("那把尺判错了",)),
     ...        Cell("乙", "y", 0, has=("那把尺判错了", "只有乙钉着的那句")))
-    >>> gate_blindness(two, ("那把尺判错了",))     # 这一句两格都钉：删谁都不响
+    >>> gate_blindness(two, [("毛病", 3, ("那把尺判错了",))])   # 两句都靠这一句：删谁都不响
     ['甲', '乙']
-    >>> gate_blindness(two, ("只有乙钉着的那句",))  # 只问那一句：删甲不响，删乙会响
+    >>> gate_blindness(two, [("毛病", 3, ("那把尺判错了",)),
+    ...                       ("毛病", 4, ("只有乙钉着的那句",))])   # 后一句只有乙钉
     ['甲']
-    >>> gate_blindness((), VERDICT_LINES)          # 一格都没有：没有格子可谈可见不可见
+    >>> gate_blindness((), [("毛病", 3, ("那把尺判错了",))])    # 一格都没有：没有格子可谈
     []
     """
-    return [c.who for c in cells
-            if not coverage_gaps(tuple(d for d in cells if d is not c), lines)]
+    sites = own_sites() if sites is None else sites
+    return [c.who for c in cells if not coverage_gaps(tuple(d for d in cells if d is not c), sites)]
 
 
 def sloppy_cells(cells: tuple[Cell, ...]) -> list[str]:
@@ -1542,6 +2544,8 @@ def sloppy_cells(cells: tuple[Cell, ...]) -> list[str]:
     最后那一条是本件特有的一族：`each_file` 只认「写了用例、文件名像模块名」的 .py，
     所以一格若种了一份零用例的假件，它会**整格空转** —— 一件都没挑出来、退 2、
     而那句 2 看着像判据在响。跑之前先按同一把尺（`example_count`）量一遍种下去的东西。
+    那一条只问 `--each` 那一面的格子：面 A 按文件收，零用例的那一件正是它要说的一句话
+    （判据分开写在 `runs_each` 里，2.75）。
 
     第一条（形状）不是防别人：本节头一版十八格里有**六格**把 `lacks=("一句")` 写掉了逗号，
     而那不是「少一个元组」那么轻 —— 字符串是可迭代的，于是那一格逐**字**去比，
@@ -1584,9 +2588,30 @@ def sloppy_cells(cells: tuple[Cell, ...]) -> list[str]:
         if not (c.has or c.lacks):
             out.append(f"{c.who}：这一格一句都没钉，只比退码 —— 那是「跑过一遍」不是「量过一件事」")
         for rel, src in c.files:
-            if not example_count(src):
+            if not example_count(src) and runs_each(c):
                 out.append(f"{c.who}：种的假件 {rel} 一条用例都没写 —— 它不入册，这一格会整格空转")
     return out
+
+
+def runs_each(cell: Cell) -> bool:
+    """这一格跑的是 `--each` 那一面，还是收集器自己那一面（面 A）。
+
+    为什么「种的假件入不入册」要问这一位：`each_file` 只收「写了用例的 .py」，所以零用例的
+    假件在 `--each` 那一面会让整格空转；而 面 A 按**文件**收 —— 那正是它「其中 N 个模块一条
+    用例都没收到」那一档存在的理由，零用例的那一件在 面 A 这一面**有实例**。
+    2.75 之前这条判据两边共用一个形状，于是 `A2`／`A3` 两格一添上来就被这道闸当成写歪。
+
+    `spawn` 那一类（跑沙盒里的本件副本）天生不在 面 A 也不在 `--each` 那一屏上：它种的
+    是本件自己和它的邻居，那些文件都有用例，走不到这一条。
+
+    >>> runs_each(Cell("x", "y", 0, argv=("--each", "--root=某棵树")))
+    True
+    >>> runs_each(Cell("x", "y", 0, argv=("--root=某棵树",)))     # 面 A：收的是文件，不是用例数
+    False
+    >>> runs_each(Cell("x", "y", 0, argv=("--self-test",), spawn=CELL_SELF))
+    False
+    """
+    return bool(cell.argv) and cell.argv[0] == EACH_FLAG
 
 
 def run_cell(cell: Cell, base: pathlib.Path) -> tuple[str, str, str]:
@@ -1595,12 +2620,38 @@ def run_cell(cell: Cell, base: pathlib.Path) -> tuple[str, str, str]:
     走的是真的 `main()` 而不是 `run_each`：`--each` 那一档怎么被认、`--root=` 怎么递下去、
     那句合计排在哪儿，全是这一格要看的东西（2.56 起的同一取舍）。
     stdout 与 stderr 收进**同一个**缓冲区：那两「件都没挑出来」的句子在 stderr 上。
+
+    `cell.spawn` 非空时换一种跑法：起一个**子进程**去跑沙盒里那一份（`酉`／`戌` 那两格跑的是
+    本件自己的副本）。为什么不能 in-process：被量那一份要把 `ROOT` 认成沙盒、要在自己的
+    目录里 import 到 `baseline_guard`，而本进程的 `ROOT` 已经是仓库了 —— 换一棵树只能换一次
+    进程（`--each` 那一层量的本来就是同一件事）。
+
+    起副本有两道安全带，都是 2.75 头一遍那一分钟里换来的：`DEPTH_ENV` 让**被种出来的那一遍**
+    不再往下种，超时那一刀杀的是**整个进程组**（只杀父进程会留下一堆接班的副本，
+    2.75 头一遍刀下歪之后现量到的正是那个形状）。
     """
     for rel, body in cell.files:
         p = base / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body, encoding="utf-8")
     argv = [a.replace("{T}", str(base)) for a in cell.argv]
+    if cell.spawn:
+        if os.environ.get(DEPTH_ENV):
+            return "bad", "这一格跑在**被种出来的那一遍**里：副本不许再往下起副本", ""
+        cmd = [sys.executable, "-X", "utf8", str(base / cell.spawn), *argv]
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", DEPTH_ENV: "1"}
+        proc = subprocess.Popen(cmd, cwd=base, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=env, start_new_session=True)
+        try:
+            text = "".join(proc.communicate(timeout=SPAWN_TIMEOUT))
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.communicate()
+            return "bad", f"跑这一格超过了 {SPAWN_TIMEOUT} 秒没回来（那一刀大概没种下去）", ""
+        text = hide_tmp(text, base)
+        good, why = check_cell(cell, proc.returncode, text)
+        return ("ok", "", text) if good else ("bad", why, text)
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -1641,15 +2692,17 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
 
     每格单独一个临时目录是 2.63 踩的第 5 条换来的（同一秒、同字节数的两份改动会互相拿到）。
 
-    跑之前三道预跑闸，任何一种都退 2 且**一格都不跑**：格子名带顿号（那一行「不符的格」
-    分不开，2.58）、格子自己写歪（`sloppy_cells`）、判决名单里有哪一句没人钉
-    （`coverage_gaps`）—— 第三道是本节新添的那一位，理由写在它自己的说明里。
+    跑之前四道预跑闸，任何一种都退 2 且**一格都不跑**：格子名带顿号（那一行「不符的格」
+    分不开，2.58）、格子自己写歪（`sloppy_cells`）、源码里有一句判决没人钉
+    （`coverage_gaps`，名单由 `verdict_sites` 现认）、豁免表里有一条白登记
+    （`exemption_audit`）—— 后两道是本节换掉手抄名单之后新加的那一位，理由写在它们自己的说明里。
 
     退码：0 = 每格都符合期望；1 = 有格子不符（逐格点名）；2 = 一格都没跑，或基线自己写歪了。
     """
     from baseline_guard import guard as guard_names   # 在函数里 import：理由见 `Cell` 那段
 
     cells = BASELINE if cells is None else cells
+    sites = own_sites()                 # 源码里现在说得出口的那些句子：本节只数一遍
     bad_names = guard_names([c.who for c in cells])
     if bad_names:
         print(bad_names)
@@ -1658,12 +2711,20 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
     if sloppy:
         print("基线自己有格子写歪了，改的是基线、不是判据：\n  " + "\n  ".join(sloppy))
         return 2
-    gaps = coverage_gaps(cells)
+    gaps = coverage_gaps(cells, sites)
     if gaps:
-        print("有判决一句都没格钉着（§2.71：今天没有实例的判决等同没测）：\n  "
+        print("源码里有一句判决没格钉着（§2.71：今天没有实例的判决等同没测）：\n  "
               + "\n  ".join(gaps))
         return 2
-    blind = len(gate_blindness(cells))      # 那道闸自己说不响的那一头，跟着真基线现算
+    wasted = exemption_audit(cells, sites)
+    if wasted:
+        print("豁免表自己有毛病（改的是豁免表、不是判据）：\n  " + "\n  ".join(wasted))
+        return 2
+    blind = len(gate_blindness(cells, sites))   # 那道闸自己说不响的那一头，跟着真基线现算
+    phrases = [h for c in cells for h in c.has]
+    allow = exempt_map(sites)
+    pinned = sum(1 for s in sites if _pins(s, phrases))
+    exempt = sum(1 for s in sites if not _pins(s, phrases) and s[1] in allow)
     ran = bad = 0
     fails: list[tuple[Cell, str, str]] = []
     for cell in cells:
@@ -1682,7 +2743,7 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
             for line in text.strip().splitlines():
                 print(f"      | {line}")
     print(f"\n扫了基线 {len(cells)} 格：{bad} 格不符期望"
-          + (f" —— {len(VERDICT_LINES)} 句判决各有格子钉着；"
+          + (f" —— 源码认出 {len(sites)} 句判决，格子钉住 {pinned} 句、豁免 {exempt} 句；"
              f"那道预跑闸看的是句子，逐格删一遍它响 {len(cells) - blind} 次、不响 {blind} 次"
              if ran and not bad else " —— 上面逐格点名了"))
     if bad:
@@ -1706,18 +2767,18 @@ def refusal(given: str, bad: list[str] | None = None) -> str:
     `bad` 是 `--each` 后面那几个认不出的字（可以不止一个）；不递时就是开头那一个。
 
     >>> refusal("--nope").splitlines()[0]
-    "✗ 我不收这个旗标（给的是 '--nope'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 `--timeout=<秒>`（一件的天花板）。"
+    "✗ 我不收这个旗标（给的是 '--nope'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
     >>> refusal("--each", ["--rooot=/tmp/x"]).splitlines()[0]
-    "✗ 我不收这个旗标（给的是 '--rooot=/tmp/x'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 `--timeout=<秒>`（一件的天花板）。"
+    "✗ 我不收这个旗标（给的是 '--rooot=/tmp/x'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
     >>> refusal("--each", ["--a", "--b"]).splitlines()[0]      # 不止一个：全点出来
-    "✗ 我不收这个旗标（给的是 '--a'、'--b'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 `--timeout=<秒>`（一件的天花板）。"
+    "✗ 我不收这个旗标（给的是 '--a'、'--b'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
     """
     names = [given] if bad is None else bad
     return ("✗ 我不收这个旗标（给的是 " + "、".join(repr(a) for a in names) + "）。"
             "收的只有这几个：`--each`（每件一个子进程真跑）、"
             f"`{SELF_TEST_FLAG}`（跑本件的基线）、`{DOCTEST_FLAG}`（只跑本件那份用例）；"
-            "`--each` 后面还可以跟 `--root=<路径>`（量另一棵树）与 "
-            "`--timeout=<秒>`（一件的天花板）。\n"
+            "`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`"
+            "（收集器不起子进程，没有一件的天花板可言）。\n"
             "位置参数不是旗标，是模块名里的一个子串：\n"
             "    .venv/bin/python scripts/run_doctests.py            # 全部\n"
             "    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的\n"
@@ -1730,9 +2791,11 @@ def main(argv: list[str]) -> int:
         if p not in sys.path:
             sys.path.insert(0, p)
 
-    # 这支脚本只收一个位置参数（模块名的子串），加上 2.70 那一档 `--each`、2.74 那两旗。
-    # 递给它一个别的旗标，它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和 scripts/
-    # 还在不在」—— 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己踩过一次，见 2.56。
+    # 这支脚本收的旗全部登记在 `refusal` 那一句里：`--each`（2.70）、`--self-test`（2.74）、
+    # `--doctest`（2.69），加上 2.75 起两档都收的 `--root=`。
+    # 递给它一个没收过的旗标，以前它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和
+    # scripts/ 还在不在」—— 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己
+    # 踩过一次，见 2.56。
     if argv and argv[0] == SELF_TEST_FLAG:
         return self_test()
     if argv and argv[0] == EACH_FLAG:
@@ -1741,14 +2804,27 @@ def main(argv: list[str]) -> int:
             print(refusal(argv[0], bad), file=sys.stderr)
             return 2
         return run_each(rest[0] if rest else "", **opts)
-    if argv and argv[0].startswith("-"):
-        print(refusal(argv[0]), file=sys.stderr)
+    if DOCTEST_FLAG in argv:
+        # 这一旗以前只在收尾那一句 `doctest_gate(sys.argv[1:])` 里被认，于是「从别的件里调
+        # `main(['--doctest'])`」会一路走到下面的旗标登记处。搬进来之后**入口只有一处**
+        # （两扇门各认一次是 2.58 那一族），而量的永远是本件那一份用例 —— `run_own` 记过
+        # 「不点名就量了调用方」，这一位用 `sys.modules[__name__]` 而不是 `__main__`，
+        # 从沙盒里调与从命令行调读的是同一件。
+        return run_own(sys.modules[__name__])
+    root, pattern, bad = own_options(argv)
+    if bad:
+        print(refusal(bad[0], bad), file=sys.stderr)
         return 2
 
-    names = modules(argv[0] if argv else "")
+    rows = [(module_name(p, root), p) for p in module_paths(root)
+            if not pattern or pattern in module_name(p, root)]
+    names = [n for n, _ in rows]
     if not names:
-        print("一个模块都没找到，检查 src/ 和 scripts/ 还在不在。", file=sys.stderr)
-        return 1
+        # 那一档换成了「说在册范围」而不是「检查 src/ 和 scripts/」：2.75 起这一档能换一棵树，
+        # 而「检查本仓库那两个目录」在量沙盒的一遍里是一句**错诊断**（同一个病换了方向）。
+        print(f"✗ 一个模块都没找到（在册范围 {scope_names(roster_dirs(root), root)}）"
+              " —— 这一遍一个用例都收不到，不算「全过」", file=sys.stderr)
+        return 2
 
     odd = strays(names)
     if odd:
@@ -1756,13 +2832,13 @@ def main(argv: list[str]) -> int:
             print(f"✗ 这个不是能导入的模块名：{n!r}"
                   f" —— 同步盘的冲突副本？先把它弄出这两个目录（`src/` 与 `scripts/`，"
                   f"两边都扫），不然用例数是从两份代码里凑的")
-        return 1
+        return 2
 
     attempted = failed = 0
     quiet: list[str] = []
-    for name in names:
+    for name, path in rows:
         try:
-            mod = importlib.import_module(name)
+            mod = import_at(path, name, root)
         except Exception as e:  # 导入炸了比 doctest 炸了更该拦下来
             print(f"✗ 导入失败 {name}: {type(e).__name__}: {e}")
             failed += 1
@@ -1774,22 +2850,27 @@ def main(argv: list[str]) -> int:
             quiet.append(name)
         print(f"{flag_of(result.attempted, result.failed)} {name:<24} {result.attempted} 个用例"
               + (f"，失败 {result.failed}" if result.failed else ""))
+    unhost()      # 换树那遍插进去的导入根收到这里为止：后面的收尾话不再量 anybody
 
     if attempted == 0:
+        # 2.62 那一档：一个用例都没收到是「什么都没量到」，与「量到了、其中有几条不对」
+        # 不是一回事 —— 以前这一句退 1，于是「遍历写歪了」跟「有用例红了」在退码上同形。
         print("\n✗ 收集到 0 个用例 —— 这不算通过，八成是遍历写歪了。")
-        return 1
+        return 2
     print(f"\n合计 {attempted} 个用例，{failed} 个失败（{len(names)} 个模块）")
-    if not argv:
+    if not pattern:
         # 只在全量那一遍印：这一句说的是整棵树的形状，递了过滤器之后它就不成立了。
-        line = survey_line(survey_routes())
+        line = survey_line(survey_routes(roster_dirs(root), root))
         if line:
             print(line)
     note = zero_note(quiet)
+    if note:
+        print(note)
+    note = scope_note(root)
     if note:
         print(note)
     return 1 if (failed or quiet) else 0
 
 
 if __name__ == "__main__":
-    rc = doctest_gate(sys.argv[1:])       # 2.69：收集器自己也认这一旗（只跑本件那一份用例）
-    raise SystemExit(rc if rc is not None else main(sys.argv[1:]))
+    raise SystemExit(main(sys.argv[1:]))
