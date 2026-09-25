@@ -14,6 +14,7 @@
     .venv/bin/python scripts/run_doctests.py --each   # 每件起一个子进程，真跑它自己的那一份
     .venv/bin/python scripts/run_doctests.py --doctest  # 只跑本件这一份用例
     .venv/bin/python scripts/run_doctests.py --self-test  # 往沙盒里种假件，量 `--each` 这条跑法
+    .venv/bin/python scripts/run_doctests.py --across     # 整册判决面积：只数不判（2.76）
     .venv/bin/python scripts/run_doctests.py --each --root=/tmp/那棵树 --timeout=2
     .venv/bin/python scripts/run_doctests.py --root=/tmp/那棵树   # 收集器也换一棵树量（2.75）
 
@@ -46,6 +47,13 @@
 同一节把「册上共几件」那份写了三遍的账收成一遍
 （见 `each_file` 与 `survey_routes` 各自那条用例），并给 `--each` 添了 `--root=`／`--timeout=`
 两旗 —— 没有这两旗，「换一棵树来量」与「一件不返回」那两格就只能停在说明书里。
+
+2.76 把上面那道闸往外推到**整册**：`--across` 那一档逐件读源码原文（AST 摊 `Cell(has=…)` 里的
+字面截语，不导入、不跑、也**不认豁免表**），报「判决 N 句：钉住 M、缺口 K」。**只数不判** ——
+今天整册那 278 句缺口（09-25 18:2x 现量，见 `计划书.md` §2.76）一句都不判，判死它等于把这一屏每一遍变成噪音；退码只量「读没读到」
+（2.62 那三档：全读到 0、有件读不通 1、一件都没读到 2）。缺口要逐句点名得递一个文件名当过滤器，
+而没递时那一屏自己说一句「上面没有逐句点名」。同步盘的冲突副本在这一档是**跳过并自报**，
+与 面 A 那一档的**退 2** 是两种取舍，各自的原因写在 `across_rows` 上面。
 """
 
 from __future__ import annotations
@@ -1331,11 +1339,11 @@ def scope_note(root: pathlib.Path) -> str:
     >>> scope_note(ROOT)                                       # 默认那一遍：一个字都不许多说
     ''
     >>> scope_note(pathlib.Path("/tmp/沙盒"))
-    '在册范围不是本仓库，是 /tmp/沙盒 —— 上面那两行的「N 件」说的都是这一棵，不是仓库'
+    '在册范围不是本仓库，是 /tmp/沙盒 —— 上面那些行的「N 件」说的都是这一棵，不是仓库'
     """
     if root == ROOT:
         return ""
-    return f"在册范围不是本仓库，是 {root} —— 上面那两行的「N 件」说的都是这一棵，不是仓库"
+    return f"在册范围不是本仓库，是 {root} —— 上面那些行的「N 件」说的都是这一棵，不是仓库"
 
 
 def scope_names(dirs: tuple[pathlib.Path, ...], root: pathlib.Path) -> str:
@@ -1646,6 +1654,12 @@ class Cell(NamedTuple):
 CELL_SRC = "scripts/good.py"                  # 绝大多数格子里那一件假件待的地方
 CELL_LIB = "scripts/lib.py"                   # 纯库那一件：同一棵沙盒，另一档
 CELL_SELF = "scripts/run_doctests.py"         # 「拿本件自己当被量件」那几格种的地方（2.75）
+# `files` 里那一格不写源码、写这个记号：种成一个**目录**。2.76 之前 `files` 只能种文件，
+# 于是「在册清单里有一个目录顶着 .py 的名字」那一种坏法（同步盘的占位符长得就是这样）
+# 只有 `survey_file` 自己的用例量得到，`--across` 那一屏的「读不到」那一句没有实例。
+# 为什么不用断掉的软链：那要多一个 `os.symlink`、又在「不同步盘怎么摆」上多一个变量，
+# 而这一档要的就是「路径在、档不在」这一个形状。
+AS_DIR = "\x00目录"                           # 源码里不会出现这一串，所以它只能当记号用
 
 # 跑一份沙盒里的本件副本（`Cell.spawn`）的天花板，和那道「不许往下套娃」的记号。
 # 正常那一遍在**一道预跑闸**前就退了，连格子都没开始跑（17:0x 现量：酉 0.13 秒、戌 0.15 秒）。
@@ -1786,6 +1800,41 @@ def neighbor(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
+ACROSS_FLAG = "--across"       # 2.76：跨件判决普查。登记在 `refusal` 那一句里，定义在 `run_across`
+
+
+def across_src(pinned: int = 0, gaps: int = 0) -> str:
+    """`--across` 那几格的假件：一份「屏幕上会说话、自己带着格子」的 .py 源码。
+
+    为什么这一份可以这么随便（不写用例、也不定义 `Cell`）：这一档**读的是源码原文**，
+    它从不执行假件 —— 「写了用例才入册」是 `--each` 那一档的取舍（2.70），「import 得到」
+    是 面 A 的（2.75 之前 面 A 连换树都做不到）。这一档只要 AST 过得去。
+
+    `pinned` 那几句是「它自己某一格的 `has` 摊得出来」的；`gaps` 那几句故意换了措辞，
+    它自己那些格子里没有一截对得上。两组各写各的字面句，因为**摊得出其中一句就等于
+    摊得出同形的每一句** —— 拿同一句当两种情形，缺口那一列永远是 0（§2.67 那一族，
+    这次是「假件自己把要量的东西抹平」）。
+
+    >>> example_count(across_src(1, 1))                    # 一条用例都没写：这一档不看这个
+    0
+    >>> len(verdict_sites(across_src(1, 2)))               # 三句判决：一句钉得住、两句钉不住
+    3
+    >>> len(cell_phrases(across_src(1, 2)))                # 只有钉得住那一句留下的那一截
+    1
+    >>> cell_phrases(across_src(0, 1))                     # 一句都没钉的假件：连 `Cell` 都不种
+    []
+    """
+    body = "".join(f'print("甲{i} 那句判决在这一件自己的屏幕上说得出口")\n'
+                   for i in range(pinned))
+    body += "".join(f'print("乙{i} 那一句换了措辞，它自己那些格子对不上这句，所以它在屏幕上'
+                    f'说的这一句要一直说到 60 字开外才截得下来，而这一句要的就是那一种形状")\n'
+                    for i in range(gaps))
+    door = ('Cell("甲_钉得住上面那一句", "一句", 0,\n'
+            '     has=("那句判决在这一件自己的屏幕上",))\n') if pinned else ""
+    return ('"""给 `--across` 那几格种的假件：会说话，带着自己的格子。"""\n'
+            + body + door)
+
+
 BASELINE: tuple[Cell, ...] = (
     # ———— 甲／乙／丙：三档「都对」，先钉住那一屏在无事可报时长什么样 ————
     Cell("甲_答了且全对上", "常态：一件答了自己的条数、静态跟它一样、护栏没意见 → 退 0",
@@ -1883,7 +1932,8 @@ BASELINE: tuple[Cell, ...] = (
     # ———— 午／未：旗标那一层 —— 这一屏是本件唯一的「旗标登记处」 ————
     Cell("午_不认的旗标", "递一个没收过的旗标：要说清收哪几个，那一句就是本件的登记处",
          2, argv=("--nope",),
-         has=("我不收这个旗标", "--each", "--self-test", "--root=", "--timeout="),
+         has=("我不收这个旗标", "--each", "--self-test", "--doctest", "--across",
+              "--root=", "--timeout="),
          lacks=("Traceback", "一件都没找到")),
     Cell("未_打错的旗标", "`--each` 后面打错一个字母：不许当成没给过滤器去跑仓库那一整册",
          2, argv=("--each", "--rooot={T}"),
@@ -1946,6 +1996,76 @@ BASELINE: tuple[Cell, ...] = (
                 ("scripts/work_guard.py", neighbor("scripts/work_guard.py"))),
          has=("豁免表自己有毛病", "今天不认源码里任何一句判决"),
          lacks=("源码里有一句判决没格钉着", "扫了基线")),
+    # ———— R1…R8：`--across` 那一档（2.76）———— 把判决闸摊到整册上，只数不判。
+    #
+    # 这一族量的不是「缺口少不少」—— 那一头今天整册 278 句，判死它只会把每一遍都变成噪音。
+    # 这一族钉的是**那一屏自己会不会说谎**：三种「一件都没读到」的 2、读不通那一档的 1、
+    # 只数不判那句 0、跳过冲突副本要自报、点名要递过滤器才点名。
+    # 每一格都种在沙盒里，所以「30 件」那一整册在这一族里一格都不出现：这一族量的
+    # 是那一屏在**无事可报、有事不判、读不到**三种形状下各说哪一句。
+    Cell("R1_across只数不判", "两件、有缺口：那一屏要说三个数，还要自己说一句「缺口不是毛病」→ 退 0",
+         0, argv=(ACROSS_FLAG, "--root={T}"),
+         files=((CELL_SRC, across_src(1, 2)), ("scripts/lib.py", across_src(1, 0))),
+         has=("跨件判决普查", "· scripts/good.py 判决 3 句：钉住 1、缺口 2",
+              "· scripts/lib.py 判决 1 句：钉住 1、缺口 0", "句：钉住",
+              "合计 2 件里读到 2 件：判决 4 句、钉住 2、缺口 2", "只数不判",
+              "上面没有逐句点名", "在册范围不是本仓库"),
+         lacks=("✗", "逐句点了名", "同步盘的冲突副本", "一件都没读到")),
+    Cell("R2_across递过滤器才点名", "缺口要点名得递过滤器：那一屏要说「按过滤器 …」，还要自报截到几字",
+         0, argv=(ACROSS_FLAG, "--root={T}", "good"),
+         files=((CELL_SRC, across_src(1, 2)), ("scripts/lib.py", across_src(1, 0))),
+         has=("这一遍按过滤器 'good' 把 2 句缺口逐句点了名",
+              "第 3 行（屏幕）：「乙0 那一句换了措辞",
+              "它自己那些格子里没有一截摊得出这句", "截到 60 字，原句 67 字",
+              "字，原句", "· scripts/good.py 判决 3 句：钉住 1、缺口 2"),
+         lacks=("上面没有逐句点名", "· scripts/lib.py")),
+    Cell("R3_across一件读不通", "一件 AST 过不去、一件读到了：那是「有毛病」的 1，不是「什么都没量到」的 2",
+         1, argv=(ACROSS_FLAG, "--root={T}"),
+         files=((CELL_SRC, across_src(1, 0)), ("scripts/boom.py", "def f(:\n")),
+         has=("✗ scripts/boom.py 读不通（SyntaxError 第 1 行）",
+              "合计 2 件里读到 1 件：判决 1 句、钉住 1、缺口 0", "件里读到"),
+         lacks=("一件都没读到", "跨件判决普查（1 件")),
+    Cell("R4_across全都读不通", "在册的两件一件都没读到：那不许是 0，也不许是 1 —— 什么都没量到，退 2",
+         2, argv=(ACROSS_FLAG, "--root={T}"),
+         files=(("scripts/boom.py", "def f(:\n"), ("scripts/nul.py", "x = 1" + chr(0))),
+         has=("跨件判决普查（2 件", "✗ scripts/boom.py 读不通（SyntaxError 第 1 行）",
+              "✗ scripts/nul.py 读不通（SyntaxError）",
+              "上面 2 件一件都没读到", "件一件都没读到"),
+         lacks=("合计", "只数不判", "上面没有逐句点名")),
+    Cell("R5_across冲突副本跳过并自报", "2.55 那一族在 跨件普查 这一档的形状：跳过、但要在收尾说一句是谁",
+         0, argv=(ACROSS_FLAG, "--root={T}"),
+         files=((CELL_SRC, across_src(1, 1)), ("scripts/good 2.py", across_src(0, 9))),
+         has=("跳过 1 份文件名不是模块名的 .py（同步盘的冲突副本）：good 2",
+              "它们不进上面那些数", "合计 1 件里读到 1 件：判决 2 句、钉住 1、缺口 1"),
+         lacks=("读不通", "一件都没读到", "判决 11 句")),
+    Cell("R6_across那棵树里没有在册范围", "换了一棵根本没有 `scripts/` 的树：那一句要说范围，不甩给过滤器",
+         2, argv=(ACROSS_FLAG, "--root={T}"),
+         has=("一件都没读到", "里没有 scripts/ 或 src/", "这一遍什么都没量到"),
+         lacks=("跨件判决普查", "过滤器 'good'")),
+    Cell("R7_across过滤器没挑中", "过滤器给得太严：一件都没读到，那一句要说出用的是哪个过滤器、哪几级在册",
+         2, argv=(ACROSS_FLAG, "--root={T}", "没有这样一个件"),
+         files=((CELL_SRC, across_src(1, 0)), ("src/app.py", across_src(1, 0))),
+         has=("一件都没读到（过滤器 '没有这样一个件'", "在册范围 scripts/、src/",
+              "这一遍什么都没量到"),
+         lacks=("跨件判决普查", "合计")),
+    Cell("R8_across也认旗标登记处", "`--across` 后面打错一个字母：不许当成没给过滤器去跑整册",
+         2, argv=(ACROSS_FLAG, "--rooot={T}"),
+         files=((CELL_SRC, across_src(1, 0)),),
+         # 那一格下面钉的必须是**登记处那一句**，不是「屏幕上出现过 `--across` 这四个字」：
+         # 同一屏的示例行里也写着 `--across`，只钉那四个字的话，把登记处整句抹掉这一格照样绿
+         # （18:3x 那一刀现量：那时满册 37 格一格不红，只有 `refusal` 自己的三条用例咬得住）。
+         has=("我不收这个旗标", "--rooot", "`--across`（跨件判决普查，只数不判）"),
+         lacks=("跨件判决普查（", "合计")),
+    # 这一格是变异台量出来的：18:4x 那一遍把 `survey_file` 里「读不到（X）」那一句 `except`
+    # 拆掉（M5），那时满册 37 格全绿、只有 `survey_file` 自己那条用例红 —— 因为 `R3`／`R4` 种的都是
+    # 「档在、AST 过不去」，那走的是 `SyntaxError` 那一支，而「路径在册、档根本打不开」那一支
+    # 在格子里今天没有实例（§2.71）。种一个目录顶着 .py，走的就是那一支。
+    Cell("R9_across那份不是档", "在册清单里有一个目录顶着 .py 的名字：那一行要说「读不到」，且那是 1 不是 2",
+         1, argv=(ACROSS_FLAG, "--root={T}"),
+         files=((CELL_SRC, across_src(1, 1)), ("scripts/占位.py", AS_DIR)),
+         has=("✗ scripts/占位.py 读不到（IsADirectoryError）", "跨件判决普查（2 件",
+              "合计 2 件里读到 1 件：判决 2 句、钉住 1、缺口 1"),
+         lacks=("读不通", "上面 2 件一件都没读到", "一件都没读到（过滤器")),
 )
 
 
@@ -2427,6 +2547,28 @@ def exempt_map(sites: list[Site],
     return out
 
 
+def gap_line(site: Site) -> str:
+    """点名一句判决的那半截：`第 N 行（种类）：「……」`，截了要自报原句几字（2.61）。
+
+    从 `coverage_gaps` 里抽出来的，因为 2.76 的 `--across` 那一档要点名**别件**的同一批句子：
+    「截到 60 字、自报原句几字」这一条规矩写两遍迟早漂（§2.58）。两档各接自己的后半截
+    （本件说「没有一格钉着它」，跨件说「它自己那些格子里没有一截摊得出这句」），
+    因为那两句话的**主语不一样** —— 一个是「我的格子没钉住我的判决」，一个是「那件自己的
+    格子钉不住它自己的判决」。
+
+    >>> gap_line(("毛病", 7, ("那把尺判错了",)))
+    '第 7 行（毛病）：「那把尺判错了」'
+    >>> gap_line(("屏幕", 12, ("甲", "乙" * 70))).endswith("截到 60 字，原句 72 字）」")
+    True
+    >>> gap_line(("屏幕", 12, ("甲", "乙" * 70))).startswith("第 12 行（屏幕）：「甲／乙乙乙")
+    True
+    """
+    said = "／".join(b for b in site[2] if b).replace("\n", "↵")
+    return (f"第 {site[1]} 行（{site[0]}）：「{said[:QUOTE_CUT]}"
+            + (f"……（截到 {QUOTE_CUT} 字，原句 {len(said)} 字）」" if len(said) > QUOTE_CUT
+               else "」"))
+
+
 def coverage_gaps(cells: tuple[Cell, ...] = BASELINE,
                   sites: list[Site] | None = None) -> list[str]:
     """源码里说得出口、却没有任何一格钉住（也没有一条豁免认下）的那几句 —— 应该为空。
@@ -2442,20 +2584,26 @@ def coverage_gaps(cells: tuple[Cell, ...] = BASELINE,
     ['第 7 行（毛病）：「那把尺判错了」 —— 没有一格钉着它，也没有一条豁免认下它']
     >>> coverage_gaps(BASELINE, own_sites())        # 本件此刻：源码认出的判决全有归宿
     []
+
+    上面最后一条与 `exemption_audit` 末尾那条各自「应为空」，中间夹着一条恒等式，2.76 之前
+    **没有任何一把尺量它**：本件的缺口集合 == 本件的豁免集合。它今天成立，而且从这两句推得出来
+    （这一句空 ⇒ 每句要么有钉要么有豁免；那一句空 ⇒ 每条豁免认到的那句还没被钉住），
+    可「推得出来」和「量过」是两件事 —— 19:0x 那一遍就是靠现算才发现两边的行号名单逐字相同。
+    下面这一条把恒等式直接摆出来量，不再靠上面两句的语义：
+
+    >>> 判决 = own_sites()
+    >>> 钉住的句面 = [h for c in BASELINE for h in c.has]
+    >>> 缺口 = {s[1] for s in 判决 if not _pins(s, 钉住的句面)}
+    >>> 豁免 = set(exempt_map(判决))
+    >>> (len(判决), len(缺口), len(豁免), 缺口 == 豁免)
+    (49, 7, 7, True)
     """
     sites = own_sites() if sites is None else sites
     phrases = [h for c in cells for h in c.has]
     allow = exempt_map(sites)
-    out = []
-    for site in sites:
-        if _pins(site, phrases) or site[1] in allow:
-            continue
-        said = "／".join(b for b in site[2] if b).replace("\n", "↵")
-        out.append(f"第 {site[1]} 行（{site[0]}）：「{said[:QUOTE_CUT]}"
-                   + (f"……（截到 {QUOTE_CUT} 字，原句 {len(said)} 字）" if len(said) > QUOTE_CUT
-                      else "」")
-                   + " —— 没有一格钉着它，也没有一条豁免认下它")
-    return out
+    return [f"{gap_line(site)} —— 没有一格钉着它，也没有一条豁免认下它"
+            for site in sites
+            if not _pins(site, phrases) and site[1] not in allow]
 
 
 def exemption_audit(cells: tuple[Cell, ...] = BASELINE,
@@ -2633,6 +2781,9 @@ def run_cell(cell: Cell, base: pathlib.Path) -> tuple[str, str, str]:
     for rel, body in cell.files:
         p = base / rel
         p.parent.mkdir(parents=True, exist_ok=True)
+        if body == AS_DIR:                      # 那一格要的是一个顶着 .py 名的**目录**
+            p.mkdir()
+            continue
         p.write_text(body, encoding="utf-8")
     argv = [a.replace("{T}", str(base)) for a in cell.argv]
     if cell.spawn:
@@ -2754,6 +2905,239 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
     return 1 if bad else 0
 
 
+# ———— `--across`：把 2.75 那道判决闸摊到整册上（只数不判）————
+# `ACROSS_FLAG` 定义在上面 `across_src` 之前：`BASELINE` 里那九格要拿它拼 argv，而那是它之前的事。
+
+
+class Survey(NamedTuple):
+    """一件在 `--across` 那一屏上占的那一行。
+
+    `broken` 非空 = 这一件**没被读到**（档不在、不是 UTF-8 文本、AST 过不去），那一句人话
+    就是它那一行的全部内容。为什么把「没读到」并进同一行而不是另起一列：2.62 那一族的教训
+    —— 「什么都没量到」跟「量到了、里面有毛病」同形过一次，那一遍整屏读起来像「30 件全查过了」。
+    """
+
+    rel: str                       # 相对**被量那棵树**的路径
+    sites: list[Site]              # 这一件的屏幕上说得出口的每一句
+    gaps: list[Site]               # 其中「它自己的格子没有一截摊得出」的那几句
+    broken: str = ""               # 读不到／读不通时那一句人话；读到了是空串
+
+
+def cell_phrases(src: str) -> list[str]:
+    """AST 摊出一份源码里所有 `Cell(...)` 的 `has=` 字面截语 —— **不导入**那一份。
+
+    为什么不导入：这一档一遍要读 30 件，而「导入一件」在那一档里意味着起子进程、挂护栏、
+    给它超时（`--each` 为这三件事各写了一层，2.70）。这里要的只是**源码里的字面量**，
+    跑起来只会多出两种坏法（起监听的那一件不返回、会写文件的那一件动了盘）。
+    `verdict_sites` 量的也是文本，两头同一口径 —— 拿导入的句子去比对文本里认出的句子，
+    两本账永远对不平（2.58）。
+
+    `has=` 里递的是变量、生成式、函数调用（今天整册一件都没有）时，`_string_bits` 回一个
+    空块、被滤掉：**漏的方向是多报缺口，不是少报**。这一条要紧，所以不另立计数器。
+
+    >>> cell_phrases('Cell("甲", "x", 0, has=("一截", "另一截"), lacks=("不在此列",))')
+    ['一截', '另一截']
+    >>> cell_phrases('Cell("甲", "x", 0, has=("整截",))\\nCell("乙", "y", 0)')
+    ['整截']
+    >>> cell_phrases('print("那句 has= 不是格子里的")')         # 一句 `print` 里的字样：不算
+    []
+    >>> cell_phrases('Cell("甲", "x", 0, has=f"插值 {n} 之后还有字")')   # f-string 摊字面块
+    ['插值 ', ' 之后还有字']
+    >>> cell_phrases('Cell("甲", "x", 0, has=拼出来的那一句)')          # 摊不出：回空表
+    []
+    >>> cell_phrases('Celllet("甲", "x", 0, has=("名字不是 Cell 的那一位",))')   # 只认 `Cell`
+    []
+    """
+    out: list[str] = []
+    for node in ast.walk(ast.parse(src)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "Cell"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "has":
+                continue
+            elts = kw.value.elts if isinstance(kw.value, (ast.Tuple, ast.List)) else [kw.value]
+            for e in elts:
+                out += [b for b in _string_bits(e) if b]
+    return out
+
+
+def survey_file(path: pathlib.Path, root: pathlib.Path = ROOT) -> Survey:
+    """读一份源码原文，摊出它的判决与缺口；读不通时回一句人话，不抛。
+
+    五种「没读到」各有一句人话（语法过不去 / 源码里有空字节 / 不是 UTF-8 文本 / 是个目录 /
+    档读不开）。为什么这一档非要写这五支：它一遍读 30 件，而 2.36—2.63 那几节量到的同一件事是
+    **崩在量具里会被读成「这件没问题」** —— 一把尺在第三件上裸崩，屏幕上留下的只有前两件，
+    而收尾那句「合计 2 件」看着像「这一册就 2 件」。
+
+    那几句人话是**从数据那一头**走到屏幕上的（`Survey.broken` 是一个字段，`print` 的参数里
+    没有它们的字面量），所以 `verdict_sites` 认不到它们、那道预跑闸不会逼格子钉它们。
+    格子仍然钉着三条（`R3`／`R4`／`R9`），但那是我自己加的；这一条看不见的路记在 2.76 的边界里。
+
+    「不抛」这一句有范围：**`path` 得在 `root` 这棵范围里**。第一行 `path.relative_to(root)`
+    在范围外是抛 `ValueError` 的（19:03:35 现量：传相对路径 `scripts/good.py`、以及传另一棵树的
+    绝对路径 `/tmp/clean276/scripts/doc_num.py`，两支都抛 `'…' is not in the subpath of '…'`），
+    而它在 `try` 之前 —— 那一支不在上面五支里。
+    今天没有活体实例：唯一的 caller 是 `across_rows` 里那一行，它只递 `module_paths(root)`
+    长出来的路径，而那个清单本身就是从 `root` 走出来的。所以这一条是**边界**、不是 bug ——
+    要它变成判据，得先决定「递错了范围外的路径」该算谁的（报读不到？还是量具自己瞎了）。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     t = pathlib.Path(d)
+    ...     (t / "scripts").mkdir()
+    ...     _ = (t / "scripts" / "a.py").write_text(across_src(1, 2), encoding="utf-8")
+    ...     s = survey_file(t / "scripts" / "a.py", t)
+    ...     (s.rel, len(s.sites), len(s.gaps), s.broken)
+    ('scripts/a.py', 3, 2, '')
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     t = pathlib.Path(d)
+    ...     (t / "scripts").mkdir()
+    ...     _ = (t / "scripts" / "b.py").write_text("def f(:\\n", encoding="utf-8")
+    ...     _ = (t / "scripts" / "c.py").write_text("x = 1" + chr(0), encoding="utf-8")
+    ...     _ = (t / "scripts" / "d.py").write_bytes(b"\\xff\\xfe" + "不是 UTF-8".encode())
+    ...     (t / "scripts" / "e.py").mkdir()
+    ...     print("\\n".join(
+    ...         f"{n} → {survey_file(t / 'scripts' / n, t).broken}"
+    ...         for n in ("b.py", "c.py", "d.py", "e.py", "没有这个件.py")))
+    b.py → 读不通（SyntaxError 第 1 行）
+    c.py → 读不通（SyntaxError）
+    d.py → 它不是 UTF-8 文本（UnicodeDecodeError）
+    e.py → 读不到（IsADirectoryError）
+    没有这个件.py → 读不到（FileNotFoundError）
+    """
+    rel = str(path.relative_to(root))
+    try:
+        src = path.read_text(encoding="utf-8")
+    except OSError as e:                            # 是个目录、没权限、刚被搬走：都不是「它没话说」
+        return Survey(rel, [], [], f"读不到（{type(e).__name__}）")
+    except ValueError as e:                         # UnicodeDecodeError ⊂ ValueError
+        return Survey(rel, [], [], f"它不是 UTF-8 文本（{type(e).__name__}）")
+    try:
+        sites = verdict_sites(src)
+    except (SyntaxError, ValueError) as e:          # 语法过不去、源码里有空字节：摊不出句子
+        # 3.12 现量：空字节抛的是 `SyntaxError`（且 `lineno` 是 None，所以那一句不带「第 N 行」），
+        # 不是老版里的 `ValueError`。`ValueError` 这一支今天没有实例，留着的方向是「宁可把这一件
+        # 报成读不通，也不要静默少一句」—— 它漏的那一头看得见（屏幕上多一行 ✗），不漏的那一头看不见。
+        where = f" 第 {e.lineno} 行" if isinstance(e, SyntaxError) and e.lineno else ""
+        return Survey(rel, [], [], f"读不通（{type(e).__name__}{where}）")
+    phrases = cell_phrases(src)
+    return Survey(rel, sites, [s for s in sites if not _pins(s, phrases)])
+
+
+def across_rows(root: pathlib.Path = ROOT,
+                pattern: str = "") -> tuple[list[Survey], list[str]]:
+    """`--across` 要读的那些件，和**跳过并自报**的那几份同步盘冲突副本。
+
+    在册范围走 `module_paths`（跟 面 A 同一套，2.75 立的那条：口径只有一份）。为什么不复用
+    `each_file`：它筛的是「写了用例的 .py」，而这一档量的不是用例 —— 一件零用例的库照样在
+    屏幕上说话，它那几句判决全在缺口列里（跨件普查里最大的那一列就是 `src/cli.py`，
+    它一句格子都没有）。
+
+    冲突副本在这里是**跳过**，在 面 A 那一档是**退 2**（`strays` 那段理由）：那一档数的是
+    「用例总数」，掺一份旧代码会把数凑谎；这一档数的是「这一件的屏幕上有没有人钉过这句」，
+    旧副本只会多钉一句自己的话、不会把别的件的缺口藏起来 —— 所以它不进数、但也不必把整遍判死。
+    跳过必须自报，理由同 2.55：一份不该在那儿的源码会让后面所有读数都不能信。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     t = pathlib.Path(d)
+    ...     (t / "scripts").mkdir()
+    ...     _ = (t / "scripts" / "a.py").write_text(across_src(1, 1), encoding="utf-8")
+    ...     _ = (t / "scripts" / "a 2.py").write_text(across_src(0, 3), encoding="utf-8")
+    ...     rows, copies = across_rows(t)
+    ...     ([r.rel for r in rows], copies)
+    (['scripts/a.py'], ['a 2'])
+    >>> across_rows(pathlib.Path("/tmp/没有这样一棵树"))          # 那两棵子目录都不在
+    ([], [])
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     t = pathlib.Path(d)
+    ...     (t / "scripts").mkdir()
+    ...     _ = (t / "scripts" / "a.py").write_text(across_src(1, 1), encoding="utf-8")
+    ...     [r.rel for r in across_rows(t, "没有这样一个件")[0]]
+    []
+    """
+    rows: list[Survey] = []
+    copies: list[str] = []
+    for path in module_paths(root):
+        name = module_name(path, root)
+        if strays([name]):
+            copies.append(name)
+            continue
+        rel = str(path.relative_to(root))
+        if pattern and pattern not in rel:
+            continue
+        rows.append(survey_file(path, root))
+    return rows, copies
+
+
+def across_line(rows: list[Survey]) -> str:
+    """`--across` 收尾那一句：三个数各归各，外加「只数不判」这一条自己说一句人话。
+
+    「钉住」不另数：它就是 `判决 − 缺口`。写成第三个独立计数就会多出一种坏法 —— 两个数
+    加起来不等于第一个，而屏幕上看不出来（只有数会对不上，2.73 那一族）。
+    「N 件里读到 M 件」那两个数都要摊：只摊 M，则「30 件里读到 1 件」与「就 1 件在册」同形。
+
+    >>> one = ("屏幕", 1, ("甲乙丙丁",))
+    >>> across_line([Survey("a", [one, one, one], [one]), Survey("b", [], [], "读不到")])
+    '合计 2 件里读到 1 件：判决 3 句、钉住 2、缺口 1 —— 这一档只数不判：缺口不是毛病，它只说『今天没有一格量过这句』'
+    >>> across_line([Survey("a", [], [])])        # 读到了一件、一句判决都没有：三个 0，不是「没量到」
+    '合计 1 件里读到 1 件：判决 0 句、钉住 0、缺口 0 —— 这一档只数不判：缺口不是毛病，它只说『今天没有一格量过这句』'
+    """
+    read = [r for r in rows if not r.broken]
+    sites = sum(len(r.sites) for r in read)
+    gaps = sum(len(r.gaps) for r in read)
+    return (f"合计 {len(rows)} 件里读到 {len(read)} 件：判决 {sites} 句、钉住 {sites - gaps}、"
+            f"缺口 {gaps} —— 这一档只数不判：缺口不是毛病，它只说『今天没有一格量过这句』")
+
+
+def run_across(pattern: str = "", root: pathlib.Path = ROOT) -> int:
+    """`--across` 那一档：把 2.75 那道判决闸摊到整册上，**只数不判**。
+
+    为什么只数不判：2.75 那道闸管的是「本件的屏幕上每句判决有没有格子钉」，而其余那二十九件
+    的判决从来就没在这道闸下待过 —— 一判就是一片红（18:2x 现量、18:5x 复核同一组数：整册 380 句判决、102 句钉住、
+    278 句缺口；本件自己那一行是 49／42／7，跟 面 B 收尾那句逐字对得上）。一片红跟一句没量过
+    是同一件事的两种坏法：前者会把后面每一遍都变成噪音。
+    所以这一档先把**面积**摊出来，判据留着（下面 `--each` 那一档仍然一件一件真跑）。
+    「今天没有实例」那一头由 `selfcheck.py` 里新装的那一步看着：数在屏幕上，谁都能看见它涨。
+
+    退码按 2.62 那三档：**2** = 一件都没读到（包括「读得到的那些是 0 件」）；**1** = 有几件读不通；
+    **0** = 读到了 —— 缺口再多也是 0，那是这一档的取舍，不是它漏了。
+    """
+    rows, copies = across_rows(root, pattern)
+    if not rows:
+        print(f"✗ 一件都没读到（过滤器 {pattern!r}、在册范围 {scope_names(roster_dirs(root), root)}）"
+              " —— 这一遍什么都没量到", file=sys.stderr)
+        return 2
+    print(f"跨件判决普查（{len(rows)} 件，读的是源码原文：不导入、不跑、也不认豁免表）")
+    for row in rows:
+        if row.broken:
+            print(f"✗ {row.rel} {row.broken}")
+            continue
+        print(f"· {row.rel} 判决 {len(row.sites)} 句：钉住 {len(row.sites) - len(row.gaps)}、"
+              f"缺口 {len(row.gaps)}")
+        if pattern:
+            for site in row.gaps:
+                print(f"    {gap_line(site)} —— 它自己那些格子里没有一截摊得出这句")
+    read = [r for r in rows if not r.broken]
+    if not read:
+        print(f"✗ 上面 {len(rows)} 件一件都没读到 —— 这一遍什么都没量到，不算「全过」",
+              file=sys.stderr)
+        return 2
+    print(across_line(rows))
+    if pattern:
+        print(f"这一遍按过滤器 {pattern!r} 把 {sum(len(r.gaps) for r in read)} 句缺口逐句点了名")
+    else:
+        print("上面没有逐句点名：递一个文件名当过滤器（比如 `good`），那些缺口就逐句摊出来")
+    if copies:
+        print(f"跳过 {len(copies)} 份文件名不是模块名的 .py（同步盘的冲突副本）："
+              + "、".join(copies) + " —— 它们不进上面那些数")
+    note = scope_note(root)
+    if note:
+        print(note)
+    return 1 if len(read) < len(rows) else 0
+
+
 def refusal(given: str, bad: list[str] | None = None) -> str:
     """「这个旗标我不收」那一句 —— 本件唯一的旗标登记处。
 
@@ -2767,23 +3151,25 @@ def refusal(given: str, bad: list[str] | None = None) -> str:
     `bad` 是 `--each` 后面那几个认不出的字（可以不止一个）；不递时就是开头那一个。
 
     >>> refusal("--nope").splitlines()[0]
-    "✗ 我不收这个旗标（给的是 '--nope'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
+    "✗ 我不收这个旗标（给的是 '--nope'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
     >>> refusal("--each", ["--rooot=/tmp/x"]).splitlines()[0]
-    "✗ 我不收这个旗标（给的是 '--rooot=/tmp/x'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
+    "✗ 我不收这个旗标（给的是 '--rooot=/tmp/x'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
     >>> refusal("--each", ["--a", "--b"]).splitlines()[0]      # 不止一个：全点出来
-    "✗ 我不收这个旗标（给的是 '--a'、'--b'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）；`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
+    "✗ 我不收这个旗标（给的是 '--a'、'--b'）。收的只有这几个：`--each`（每件一个子进程真跑）、`--self-test`（跑本件的基线）、`--doctest`（只跑本件那份用例）、`--across`（跨件判决普查，只数不判）；`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`（收集器不起子进程，没有一件的天花板可言）。"
     """
     names = [given] if bad is None else bad
     return ("✗ 我不收这个旗标（给的是 " + "、".join(repr(a) for a in names) + "）。"
             "收的只有这几个：`--each`（每件一个子进程真跑）、"
-            f"`{SELF_TEST_FLAG}`（跑本件的基线）、`{DOCTEST_FLAG}`（只跑本件那份用例）；"
-            "`--root=<路径>` 两档都收，`--timeout=<秒>` 只管 `--each`"
+            f"`{SELF_TEST_FLAG}`（跑本件的基线）、`{DOCTEST_FLAG}`（只跑本件那份用例）、"
+            f"`{ACROSS_FLAG}`（跨件判决普查，只数不判）；"
+            "`--root=<路径>` 三档都收，`--timeout=<秒>` 只管 `--each`"
             "（收集器不起子进程，没有一件的天花板可言）。\n"
             "位置参数不是旗标，是模块名里的一个子串：\n"
             "    .venv/bin/python scripts/run_doctests.py            # 全部\n"
             "    .venv/bin/python scripts/run_doctests.py prober     # 只跑名字含 prober 的\n"
             "    .venv/bin/python scripts/run_doctests.py --each     # 每件一个子进程，真跑\n"
-            "    .venv/bin/python scripts/run_doctests.py --self-test  # 往沙盒种假件，量这条跑法")
+            "    .venv/bin/python scripts/run_doctests.py --self-test  # 往沙盒种假件，量这条跑法\n"
+            "    .venv/bin/python scripts/run_doctests.py --across   # 跨件判决普查：只数不判")
 
 
 def main(argv: list[str]) -> int:
@@ -2792,7 +3178,7 @@ def main(argv: list[str]) -> int:
             sys.path.insert(0, p)
 
     # 这支脚本收的旗全部登记在 `refusal` 那一句里：`--each`（2.70）、`--self-test`（2.74）、
-    # `--doctest`（2.69），加上 2.75 起两档都收的 `--root=`。
+    # `--doctest`（2.69），加上 2.75 起的 `--root=`、2.76 起的 `--across`。
     # 递给它一个没收过的旗标，以前它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和
     # scripts/ 还在不在」—— 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己
     # 踩过一次，见 2.56。
@@ -2804,6 +3190,13 @@ def main(argv: list[str]) -> int:
             print(refusal(argv[0], bad), file=sys.stderr)
             return 2
         return run_each(rest[0] if rest else "", **opts)
+    if argv and argv[0] == ACROSS_FLAG:
+        # 同一扇门、同一套取舍：`--root=` 换树、位置参数当过滤器、认不出的字退 2 并点名。
+        root, pattern, bad = own_options(argv[1:])
+        if bad:
+            print(refusal(argv[0], bad), file=sys.stderr)
+            return 2
+        return run_across(pattern, root)
     if DOCTEST_FLAG in argv:
         # 这一旗以前只在收尾那一句 `doctest_gate(sys.argv[1:])` 里被认，于是「从别的件里调
         # `main(['--doctest'])`」会一路走到下面的旗标登记处。搬进来之后**入口只有一处**
