@@ -48,8 +48,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # `--each` 那一档里一件的天花板。为什么要有：递 `--doctest` 给一件「会起监听」的脚本，
 # 最坏的读法不是它报错，是它**不返回** —— 那一遍整屏就停在那一行上，
-# 而屏幕上没有任何一行说「这一件我量完了」。03:27 实测 29 件全跑一遍 real **3.0 秒**
-# （`time` 那一栏，平均一件 0.1 秒），所以 60 秒**不是**按比例放出来的余量 —— 它是
+# 而屏幕上没有任何一行说「这一件我量完了」。09-25 10:43 实测 30 件全跑一遍 real
+# **3.43—3.55 秒**（现读四遍 3.55／3.47／3.48／3.43，平均一件 0.11 秒；上一节的 29 件那一遍
+# 是 03:27 的 3.0 秒），所以 60 秒**不是**按比例放出来的余量 —— 它是
 # 「一件卡住 = 它在等一个永远不来的东西」（起监听、等 stdin）那一族的兜底：给到一分钟，
 # 让它自己超时、屏幕上那一行照样落下来，而不是整屏停在那一件上。
 EACH_TIMEOUT = 60
@@ -721,14 +722,14 @@ def survey_routes(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "sr
     用例数写在名单里而不是只报件数：这一档真正要说的是「多少个用例只有收集器跑得动」。
 
     >>> found = survey_routes()
-    >>> sum(len(v) for v in found.values())                                # 每一档加起来 = 有用例的件数
-    29
+    >>> sum(len(v) for v in found.values())     # 每一档加起来 = 有用例的件数（2.72 起 30，上一节 29）
+    30
     >>> sorted(found)                                                      # 接线之后只剩两档有件
     ['没有入口', '走通']
     >>> [k for k in (ROUTE_ARGPARSE, ROUTE_NO_FLAG, ROUTE_AS_ARG) if k in found]
     []
-    >>> len(found[ROUTE_RUNS]) + len(found[ROUTE_NO_DOOR])                 # 29 = 接了门 + 纯库
-    29
+    >>> len(found[ROUTE_RUNS]) + len(found[ROUTE_NO_DOOR])                 # 30 = 接了门 + 纯库
+    30
     >>> all(s.startswith("src/") for s in found[ROUTE_NO_DOOR])            # 没有入口的全是库
     True
     >>> len(found[ROUTE_NO_DOOR])                                          # 11 件、只有收集器跑得动
@@ -825,8 +826,8 @@ def each_file(dirs: tuple[pathlib.Path, ...] = (ROOT / "scripts", ROOT / "src")
     副本 —— 见 `strays` 那段理由）；一条用例都没写的也不看（它没有「这条路通不通」这个问题）。
 
     >>> rows = each_file()
-    >>> len(rows)                                       # 接完 work_guard 之后在册的件数
-    29
+    >>> len(rows)                                       # 接完 doc_headings 之后在册的件数
+    30
     >>> all(n > 0 for _, n, _ in rows)                  # 没写用例的不入册
     True
     >>> [str(p.relative_to(ROOT)) for p, _, _ in rows if not p.stem.isidentifier()]
@@ -996,7 +997,7 @@ def each_tally(total: int, answered: int, silent: int, bad: int, guarded: int) -
 
     「没答」单独报数而不是混在「有毛病」里：那 11 件纯库**本来就不该答**（§2.69 的
     「没有入口」那一档），把它们算成毛病就等于把上一节的读数又判红一遍；
-    可它们必须写在屏幕上，因为「今天有 29 件在跑、其中 11 件是白跑」这件事
+    可它们必须写在屏幕上，因为「今天有 30 件在跑、其中 11 件是白跑」这件事
     只有那一句能说出来。
 
     >>> each_tally(29, 18, 11, 0, 0)
@@ -1039,7 +1040,7 @@ def spawn_each(path: pathlib.Path, argv: tuple[str, ...] = (DOCTEST_FLAG,)
 def run_each(pattern: str = "") -> int:
     """`--each` 那一档：逐件真跑，屏幕上那一屏就是本件的产物。
 
-    为什么这一档不进 `selfcheck.py`：它要起 29 个进程（03:27 实测全跑 3.0 秒），而自检那一屏
+    为什么这一档不进 `selfcheck.py`：它要起 30 个进程（09-25 10:43 实测四遍 3.43—3.55 秒），而自检那一屏
     的规矩是「14 条、每一秒都要有理由」；更要紧的是它会把每一件自己的 stdout 再过一遍 ——
     中性那一遍就不中性了。它是**手跑的**：改完一批门之后自己去看一眼。
 

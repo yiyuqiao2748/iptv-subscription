@@ -109,6 +109,11 @@ ALIASES: dict[str, tuple[str, ...]] = {
     # 别名这一层不区分这两件事 —— `selfcheck` 的散文里写「那 12 格」时点的名字就是 `lean-test`，
     # 少了这一行它就退化成「没点名，只要求属于 15/22/26/29」（2.64 那一遍量到的正是这个形状）。
     "lean_playlist": ("lean_playlist", "lean-test"),
+    # 2.72 那一把：`heads` 与 `heads-test` 点的是 `doc_headings`。这一行是本节**量出来**的，
+    # 不是照着上面那一族抄的 —— 步骤装完之后 `claims` 全场只报一处对不上（10:36:17 那三遍的
+    # 中间那遍：「`selfcheck.py:steps` 说 格 28、真值是 没点名，只要求属于 9/12/14/15/23/26/30/35」），
+    # 那 28 格正是刚装好那把尺的真实格数（2.64 那两把的来路一字不差）。
+    "doc_headings": ("doc_headings", "heads", "heads-test"),
 }
 
 
