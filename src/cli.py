@@ -54,16 +54,19 @@ id 由谁先创建频道桶决定」的行为。
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import re
 import sys
+import tempfile
 import urllib.request
 from collections import Counter, defaultdict
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, NamedTuple
 from urllib.parse import quote, unquote, urlsplit
 
 # Windows 控制台默认 GBK，输出 emoji 分组名会抛 UnicodeEncodeError
@@ -1853,7 +1856,9 @@ def cmd_build(argv: list[str]) -> int:
         return stop_config("源清单", args.sources_file, e,
                            "少一个源在表上是看不出来的，先修配置（`--sources-file` 换一份）")
     if not sources:
-        print("config/sources.yaml 里没有启用的源。", file=sys.stderr)
+        # 这句以前写死成「config/sources.yaml」：`--sources-file` 指到别处时它指着**没有的那一份**
+        # 说话（2.82 体内那一格第一次跑到这里就撞上了）。停在门口的话报错了门，比不说还糟。
+        print(f"{args.sources_file} 里没有启用的源。", file=sys.stderr)
         return 1
     # 手工线路在碰上游之前读 —— 2.37 给 channels.yaml 立过同一条规矩：读不进去这件事
     # 该在花掉那几分钟抓网络之前说。停下来的是**键名**那一档（`expires` 写歪 = 永不过期，
@@ -2383,12 +2388,16 @@ def cmd_build(argv: list[str]) -> int:
         print(f"  ⚠️ 第一线是循环录像的频道 {len(fake_live)} 个（有画但不是直播）："
               + "、".join(fake_live))
     for v in focus:
+        # 两张表各说一行，所以两行都得写明**是谁**（2.82）：下面那一支原本不带 label，
+        # 于是 aptv 与 hunan 的数一样时屏幕上就是两行一字不差的「第一线集中度：…」——
+        # 与 §2.66／§2.67 修过的那两处同一种病（只报数、不说是谁）。report.md 里那张
+        # 表一直带 label（`src/output/writer.py` 的 views），所以这个洞只在屏幕上。
         rows = [r for r in v["rows"] if r["channels"] >= 2]
         if not rows:
-            print(f"  第一线集中度：{v['label']} 那 {v['total']} 个台一家主机都不共用")
+            print(f"  第一线集中度（{v['label']}）：那 {v['total']} 个台一家主机都不共用")
             continue
         top = rows[0]
-        print(f"  第一线集中度：{v['total']} 个台只落在 {len(v['rows'])} 家主机上，"
+        print(f"  第一线集中度（{v['label']}）：{v['total']} 个台只落在 {len(v['rows'])} 家主机上，"
               f"`{top['host']}` 一家挂着 {top['channels']} 个台的第一线"
               + (f"（其中 {top['alone']} 个台全部线路都在它上面，换线路也换不出去）"
                  if top["alone"] else "")
@@ -2455,6 +2464,478 @@ def cmd_build(argv: list[str]) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# 体内的格子门（2.82）：`src/cli.py` 那 76 句判决的第一批钉子
+#
+# 为什么这一堆要长在**本件体内**：`run_doctests.survey_file` 数「这句屏幕话今天有没有
+# 格子钉」时，读的是**同一个文件**里的 `Cell(` 字面（2.76 起的那把跨件普查），所以格子
+# 放在别处只会钉住别处。本件体内原本一个 `Cell(` 都没有 —— 面 C 那句「`src/cli.py`
+# 判决 76 句：钉住 0」说的就是这件事（计划书 §2.81「下一步」第（1）条）。
+#
+# 这一堆的**安全边界**是从 §2.81 那次事故里直接抄出来的，四条都写在下面的闸里：
+#   1. 每一格都得把「五份输入 + 一份产物」指进自己那棵临时树，**跑之前**先过
+#      `cell_guards` 那道闸；不合格就整片不跑（退 2），不是「跑起来再说」。
+#   2. 出网那三样（`--fresh`、单递的 `--verify`、不带 `--no-egress-check` 的默认）
+#      由同一道闸拦死：开发机上出口是别人的隧道，量到的每一个数都是假的，而且
+#      「问一次本机出口」本身就是一趟 HTTPS（`--help` 里写着「连 --no-epg 也算这一趟」）。
+#   3. 上游只递**本地文件**（`--source`）或一份全关掉的源清单：就算哪天「退场在
+#      `collect` 之前」那道判断被改坏，最坏也只走到「没有启用的源」那一句停下。
+#   4. 每一格跑之前跑之后各数一次 `data/` 整棵的指纹（`data_fingerprint`），动了就判
+#      这格不符 —— 那次事故里「被覆盖了」是第二天靠文档尺读出来的，这里要它当场就有对照。
+#
+# 口径与另外几把共用的那一族一样（`run_doctests`／`table_drift`／`lean_playlist` 各带
+# 一份 `Cell`，2.65 立的先例：互相 import 就是绕环，而本件是被 `run_doctests` 面 A 真
+# import 的那一件）。退码：**0** 每格都符合期望；**1** 至少一格不符；**2** 一格都没跑
+# 成（名单是空的、或者那道预跑闸拦下了）。
+# ---------------------------------------------------------------------------
+
+SELF_TEST_FLAG = "--self-test"          # 与 `run_doctests.SELF_TEST_FLAG` 同一串字
+
+CELL_URL_PLACEHOLDER = "http://example.invalid/用不上的上游"   # 就算真去读也连不上
+
+
+class Cell(NamedTuple):
+    """一格：种哪几份配置、把哪些字递给 `main()`、屏幕上该有什么、盘上该留下什么。
+
+    与 `run_doctests.Cell` 那一族差三处：本件的格子不种 .py 源码（`files` 种的是配置
+    与清单），没有 `spawn`（每一格跑的是**本件自己的 `main()`**，在同一个进程里），
+    多两位 `wrote`／`absent` —— 因为这一件是唯一一件**会写文件**的那一族，
+    「屏幕上说了」和「盘上落了」是两件事（§2.81 那次事故正是这句话的形状）。
+
+    >>> Cell(who="举例", what="说人话的一格", rc=1).argv
+    ()
+    >>> [a.replace("{T}", "/tmp/x") for a in ("--out", "{T}/out")]
+    ['--out', '/tmp/x/out']
+    """
+
+    who: str                                  # 格子名
+    what: str                                 # 给人看的那一句：这一格量的是哪件事
+    rc: int                                   # 期望退码
+    argv: tuple[str, ...] = ()                # 递给 `main()` 的原样一串（含 "build"）
+    files: tuple[tuple[str, str], ...] = ()   # (相对沙盒树的路径, 内容)
+    has: tuple[str, ...] = ()                 # 屏幕上必须有的那几截
+    lacks: tuple[str, ...] = ()               # 屏幕上不许有的那几截
+    wrote: tuple[str, ...] = ()               # 跑完之后沙盒里必须**非空**的那几件
+    absent: tuple[str, ...] = ()              # 跑完之后沙盒里必须**不存在**的那几件
+
+
+# 沙盒里用得上的那几份配置。
+#
+# 为什么 `channels` 一条都不能省：`load_index`（`src/match/matcher.py`）明确拒空名单
+# —— 「channels 一条规则都没有 —— 表上的台全部来自这份名单，沿用它等于出一张空表」。
+# 这一条是 2.82 第一次跑 `--self-test` 抓到的：两格想量的分别是 `lacking_groups` 与
+# 「没有启用的源」，结果双双**提前**撞在这道读档关上，屏幕上印的是别处的话。
+# 格子要的是**退场的位置对不对**，所以它得先合法，才轮得到后面那几句。
+CELL_GROUP_TITLES = {
+    "hunan_local": "湖南本地",
+    "changsha": "长沙",
+    "shizhou": "市州台",
+    "jinying": "金鹰",
+}
+
+
+def cell_channels_yaml(group_ids: tuple[str, ...] = tuple(CELL_GROUP_TITLES),
+                       rules: tuple[tuple[str, str], ...] = ()) -> str:
+    """按给定分组造一份**读得进来**的频道配置；不写 `rules` 时每组配一条假台目。
+
+    >>> cell_channels_yaml(("hunan_local",)).count("- {name:")
+    1
+    >>> "id: jinying" in cell_channels_yaml(("hunan_local", "jinying"))
+    True
+    >>> "id: changsha" in cell_channels_yaml(("hunan_local", "jinying"))
+    False
+    >>> "查无此台" in cell_channels_yaml(("hunan_local",), rules=(("查无此台", "hunan_local"),))
+    True
+    """
+    rules = rules or tuple((f"例子台{i + 1}", g) for i, g in enumerate(group_ids))
+    lines = ["version: 1", "groups:"]
+    for gid in group_ids:
+        lines += [f"  - id: {gid}", f"    title: {CELL_GROUP_TITLES[gid]}"]
+    lines.append("channels:")
+    lines += [f"  - {{name: {name}, group: {rule_group}}}" for name, rule_group in rules]
+    return "\n".join(lines) + "\n"
+
+
+CELL_CHANNELS_OK = cell_channels_yaml()
+CELL_FAKE_CHANNELS = cell_channels_yaml(
+    rules=(("湖南卫视", "hunan_local"), ("湖南经视", "hunan_local"), ("长沙新闻", "changsha")))
+CELL_SOURCES_ALL_OFF = (
+    "version: 1\n"
+    "sources:\n"
+    "  - id: off\n"
+    f"    url: {CELL_URL_PLACEHOLDER}\n"
+    "    enabled: false\n"
+)
+CELL_EPG_OFF = f"epg:\n  url: {CELL_URL_PLACEHOLDER}\n  enabled: false\n"
+# 一份「假上游」：四条线路、三个对得上名单、一个对不上。地址全指向 127.0.0.1，
+# 因为这一格**不实测**（`--verify` 由预跑闸拦着），这些地址从来不会被拨一次。
+CELL_FAKE_M3U = (
+    "#EXTM3U\n"
+    '#EXTINF:-1 tvg-id="x1",湖南卫视\nhttp://127.0.0.1:8080/hnws.m3u8\n'
+    '#EXTINF:-1 tvg-id="x2",湖南经视\nhttp://127.0.0.1:8080/hnjs.m3u8\n'
+    '#EXTINF:-1 tvg-id="x3",长沙新闻\nhttp://127.0.0.1:8081/cs.m3u8\n'
+    '#EXTINF:-1 tvg-id="x4",上游有但名单里没有的台\nhttp://127.0.0.1:8082/nope.m3u8\n'
+)
+# 一份「全灭」的沿用记录：只覆盖前两条，第三条留成「从没测过」—— 少了这一条，
+# 表会在「一个台都没归上」那一扇就停，永远走不到「判决全灭」那一扇。
+# 这里点名用那两格的 `who`，不用行号：行号跟着文件长，而这一件天天在长（§2.82）。
+CELL_PROBE_ALL_DEAD = (
+    '{"at": "2026-09-20T12:00:00+08:00", "egress": "", "lines": {\n'
+    '  "http://127.0.0.1:8080/hnws.m3u8": {"ok": false, "http": 0, "ms": 0},\n'
+    '  "http://127.0.0.1:8080/hnjs.m3u8": {"ok": false, "http": 0, "ms": 0}}}\n'
+)
+CELL_PROBE_EMPTY = '{"at": "2026-09-20T12:00:00+08:00", "egress": "", "lines": {}}\n'
+
+# 每一格都要带上的那一串：五份输入指进沙盒、两份产物目录指进沙盒、三扇出网的门关上。
+CELL_ARGS_BASE = ("--config", "{T}/channels.yaml", "--sources-file", "{T}/sources.yaml",
+                  "--epg-file", "{T}/epg.yaml", "--history", "{T}/hist.jsonl",
+                  "--skip-local", "--no-epg", "--no-egress-check")
+CELL_TAIL = CELL_ARGS_BASE + ("--out", "{T}/out")
+
+
+def cell_files(cell: Cell) -> tuple[tuple[str, str], ...]:
+    """这一格要种的文件：那三份配置都种上，除非它自己写了同名的一份。
+
+    为什么默认要替每一格种好 `channels.yaml`／`sources.yaml`／`epg.yaml`：沙盒里那份源
+    清单**全是关掉的**、节目单**是关掉的**，所以任何一格走漏到 `collect` 之前，先撞上
+    「没有启用的源」那一句停下，而这一句在仓库里不落一个字。
+
+    >>> [rel for rel, _ in cell_files(Cell(who="x", what="y", rc=1))]
+    ['channels.yaml', 'epg.yaml', 'sources.yaml']
+    >>> [rel for rel, _ in cell_files(Cell(who="x", what="y", rc=1,
+    ...     files=(("channels.yaml", "a"), ("fake.m3u", "b"))))]
+    ['channels.yaml', 'epg.yaml', 'fake.m3u', 'sources.yaml']
+    """
+    out = {"channels.yaml": CELL_CHANNELS_OK, "sources.yaml": CELL_SOURCES_ALL_OFF,
+           "epg.yaml": CELL_EPG_OFF}
+    out.update(dict(cell.files))
+    return tuple(sorted(out.items()))
+
+
+def cell_argv(cell: Cell, tree: Path) -> list[str]:
+    """把 `{T}` 换成这一格那棵沙盒树的绝对路径。
+
+    >>> cell_argv(Cell(who="x", what="y", rc=1, argv=("--out", "{T}/out")), Path("/tmp/a"))
+    ['--out', '/tmp/a/out']
+    """
+    return [a.replace("{T}", str(tree)) for a in cell.argv]
+
+
+# 预跑闸的账本：路径类的旗标必须指进沙盒，开关类的必须递，出网的那几样必须不递。
+CELL_PATH_FLAGS = (
+    ("--out", "会把产物写进默认目录（那次事故盖的就是这一份）"),
+    ("--config", "会读仓库里那份真频道配置"),
+    ("--sources-file", "会读仓库那份真源清单：那一遍就出网了"),
+    ("--epg-file", "会读仓库那份节目单配置（缓存没有就是今天联网抓）"),
+    ("--history", "会往 data/output/probe-history.jsonl 上追加"),
+)
+CELL_SWITCHES = (
+    ("--skip-local", "会把仓库那份手工线路读进来：那些是真核对过的第一线地址"),
+    ("--no-epg", "会去取节目单（优先读缓存，缓存没有就联网）"),
+    ("--no-egress-check", "会花一趟 HTTPS 问本机出口是谁"),
+)
+
+
+def cell_guards(cells: Iterable[Cell]) -> list[str]:
+    """**跑之前**那道闸：每一格都得把输入输出指进沙盒、把出网的门关上，否则整片不跑。
+
+    为什么不等到跑起来再靠 `data/` 那把指纹：指纹是**事后**的账，那次事故里最贵的一句
+    话就是「等看见的时候已经盖掉了」；而出网这一头根本没有事后账可看（代理此刻开着，
+    量到的一切都是假的，见 §2.81）。这一道只看 argv，不起进程、不碰盘，所以它拦下的
+    那一遍一个字都不会写、一个包都不会发。
+
+    >>> bad = cell_guards([Cell(who="甲", what="y", rc=1, argv=("build",))])
+    >>> len(bad), bad[0]
+    (8, '甲：没递 --out —— 会把产物写进默认目录（那次事故盖的就是这一份）')
+    >>> print("\\n".join(bad[1:]))
+    甲：没递 --config —— 会读仓库里那份真频道配置
+    甲：没递 --sources-file —— 会读仓库那份真源清单：那一遍就出网了
+    甲：没递 --epg-file —— 会读仓库那份节目单配置（缓存没有就是今天联网抓）
+    甲：没递 --history —— 会往 data/output/probe-history.jsonl 上追加
+    甲：没递 --skip-local —— 会把仓库那份手工线路读进来：那些是真核对过的第一线地址
+    甲：没递 --no-epg —— 会去取节目单（优先读缓存，缓存没有就联网）
+    甲：没递 --no-egress-check —— 会花一趟 HTTPS 问本机出口是谁
+    >>> cell_guards([Cell(who="甲", what="y", rc=1,
+    ...     argv=("build",) + CELL_ARGS_BASE + ("--out", "/tmp/elsewhere/out"))])
+    ['甲：`--out` 没指进这一格的沙盒（递的是 /tmp/elsewhere/out）']
+    >>> cell_guards([Cell(who="甲", what="y", rc=1, argv=("build",) + CELL_TAIL)])
+    []
+    >>> cell_guards([Cell(who="乙", what="拼错的子命令，压根不出表", rc=2, argv=("bulid",))])
+    []
+    >>> cell_guards([Cell(who="丙", what="单递 --verify：那一格真去实测", rc=1,
+    ...     argv=("build", "--verify") + CELL_TAIL)])
+    ['丙：递了 --verify 又没配 --replay —— 那一格会真的动手测每条线路（出网）']
+    >>> cell_guards([Cell(who="丁", what="两扇一起递：门口就停，量的是那一句", rc=1,
+    ...     argv=("build", "--verify", "--replay") + CELL_TAIL)])
+    []
+    """
+    bad: list[str] = []
+    for cell in cells:
+        argv = cell.argv
+        if not argv or argv[0] != "build":
+            continue                      # 不走 `cmd_build` 的那几格没有产物目录可管
+        for flag, why in CELL_PATH_FLAGS:
+            if flag not in argv:
+                bad.append(f"{cell.who}：没递 {flag} —— {why}")
+                continue
+            i = argv.index(flag)
+            val = argv[i + 1] if i + 1 < len(argv) else ""
+            if "{T}" not in val:
+                bad.append(f"{cell.who}：`{flag}` 没指进这一格的沙盒（递的是 {val or '空'}）")
+        for sw, why in CELL_SWITCHES:
+            if sw not in argv:
+                bad.append(f"{cell.who}：没递 {sw} —— {why}")
+        if "--verify" in argv and "--replay" not in argv:
+            bad.append(f"{cell.who}：递了 --verify 又没配 --replay —— "
+                       "那一格会真的动手测每条线路（出网）")
+        if "--fresh" in argv:
+            bad.append(f"{cell.who}：递了 --fresh —— 那一格会联网抓上游，格子只在离线里跑")
+    return bad
+
+
+def data_fingerprint() -> tuple[tuple[str, int, int], ...]:
+    """仓库 `data/` 整棵的「名字＋字节＋修改时刻」，读不到就跳过那一个。
+
+    为什么从 `data/output/` 扩到整棵 `data/`：这一批格子里有会**走通到出表**的那几格，
+    而沿用的那份记录、履历、缓存都在 `data/` 的别处 —— 只盯 output 等于只盯上一次事故
+    的形状，下一次换个目录坏就没账了。
+
+    >>> isinstance(data_fingerprint(), tuple)
+    True
+    """
+    root = ROOT / "data"
+    rows = []
+    if not root.is_dir():
+        return ()
+    for p in sorted(root.rglob("*")):
+        try:
+            st = p.stat()
+        except OSError:                       # 正在被同步盘搬走：那一格算「看不见」
+            continue
+        if p.is_file():
+            rows.append((str(p.relative_to(root)), st.st_size, st.st_mtime_ns))
+    return tuple(rows)
+
+
+def hide_tmp(text: str, base: Path) -> str:
+    """把临时目录那截路径从读数里抹掉，免得 `has` 里写死的字跟着机器走。
+
+    >>> hide_tmp("写在 /tmp/pytest-of-x/out 里", Path("/tmp/pytest-of-x"))
+    '写在 <沙盒>/out 里'
+    """
+    return text.replace(str(base), "<沙盒>")
+
+
+def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
+    """跑一格：`(判定, 给人看的那句, 抹过临时路径的原文)`，判定是 `ok`／`bad`／`skip`。
+
+    走真的 `main()`，不是又调一遍 `build_arg_problems`：那几句判决长在 `cmd_build` 的
+    出口上，只调判据就把门口那一层绕开了（与另外几把尺同一口径）。
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     verdict, why, text = run_cell(Cell(who="举例", what="互斥那一档", rc=1,
+    ...         argv=("build", "--verify", "--replay") + CELL_TAIL), Path(d))
+    >>> verdict, "只能选一个" in text
+    ('ok', True)
+    >>> with tempfile.TemporaryDirectory() as d:      # 退码对了，盘上却没有那一件：判不符
+    ...     verdict, why, _ = run_cell(Cell(who="举例", what="空口无凭", rc=0,
+    ...         argv=("build", "--source", "{T}/fake.m3u") + CELL_TAIL,
+    ...         files=(("fake.m3u", CELL_FAKE_M3U), ("channels.yaml", CELL_FAKE_CHANNELS)),
+    ...         wrote=("out/没有这一件.m3u",)), Path(d))
+    >>> verdict, why
+    ('bad', '说好了要落的件没落（或落成了空文件）：out/没有这一件.m3u')
+    """
+    tree = base / "tree"
+    tree.mkdir(parents=True, exist_ok=True)
+    try:
+        for rel, body in cell_files(cell):
+            p = tree / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body, encoding="utf-8")
+    except OSError as e:
+        return "skip", f"种不出来，这一格没验成：{e}", ""
+    argv = cell_argv(cell, tree)
+    before = data_fingerprint()
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = main(list(argv))
+    except Exception as e:                        # noqa: BLE001  本件炸了算「跑过但不过」
+        return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
+    text = hide_tmp(buf.getvalue(), base)
+    if data_fingerprint() != before:
+        return "bad", "这一格动了仓库 `data/` 里的东西（名字/字节/修改时刻对不上）", text
+    if rc != cell.rc:
+        return "bad", f"退码：期望 {cell.rc}，实际 {rc}", text
+    for frag in cell.has:
+        if frag not in text:
+            return "bad", f"少了那句：{frag}", text
+    for frag in cell.lacks:
+        if frag in text:
+            return "bad", f"多说了那句：{frag} —— 误伤", text
+    for rel in cell.wrote:
+        p = tree / rel
+        if not p.is_file() or p.stat().st_size == 0:
+            return "bad", f"说好了要落的件没落（或落成了空文件）：{rel}", text
+    for rel in cell.absent:
+        if (tree / rel).exists():
+            return "bad", f"这一格不该落盘，落了：{rel}", text
+    return "ok", "", text
+
+
+# 跑之前写死的期望（不是「跑一遍看看像什么再抄下来」；`has` 里每一截都能在
+# §2.81 那张 18 档表里指到「哪一句」。行号本节故意不写：它跟着文件长，
+# 而这一件天天在长 —— 抄一个没人重算的数，就是本册 §2.60 那把尺要抓的那一种病。
+BASELINE: tuple[Cell, ...] = (
+    Cell(who="互斥", what="`--verify` 与 `--replay` 一起递：碰网络之前先拦", rc=1,
+         argv=("build", "--verify", "--replay") + CELL_TAIL,
+         has=("--verify 与 --replay 只能选一个",), lacks=("这一轮不出表。",)),
+    Cell(who="max-lines 0", what="`--max-lines 0`：那张等于空表的数字在写盘之前就被拦下",
+         rc=1, argv=("build", "--max-lines", "0") + CELL_TAIL,
+         has=("这一轮不出表。", "--max-lines 是 0")),
+    Cell(who="max-per-host 0", what="`--max-per-host 0`：同一主机留 0 条也是同一种坏法",
+         rc=1, argv=("build", "--max-per-host", "0") + CELL_TAIL,
+         has=("这一轮不出表。", "--max-per-host")),
+    Cell(who="out 是文件", what="`--out` 指到一个普通文件上：不许走到 mkdir 才崩",
+         rc=1, argv=("build", "--config", "{T}/channels.yaml", "--sources-file",
+                     "{T}/sources.yaml", "--epg-file", "{T}/epg.yaml", "--history",
+                     "{T}/hist.jsonl", "--skip-local", "--no-epg", "--no-egress-check",
+                     "--out", "{T}/blocked"),
+         files=(("blocked", "我不是目录\n"),), has=("是一个文件，不是放产物的目录",)),
+    Cell(who="try-reach 不在", what="`--try-reach` 那份候选规则根本不存在",
+         rc=1, argv=("build", "--try-reach", "{T}/nope.yaml") + CELL_TAIL,
+         has=("不是一份读得进来的文件",)),
+    Cell(who="config 不在", what="`--config` 指到不存在的路径",
+         rc=1, argv=("build", "--config", "{T}/nope.yaml", "--sources-file",
+                     "{T}/sources.yaml", "--epg-file", "{T}/epg.yaml", "--history",
+                     "{T}/hist.jsonl", "--skip-local", "--no-epg", "--no-egress-check",
+                     "--out", "{T}/out"),
+         has=("表上的台全部来自这份名单",)),
+    Cell(who="config 不是 YAML", what="`--config` 那份 YAML 本身读不进来",
+         rc=1, argv=("build", "--config", "{T}/channels.yaml", "--sources-file",
+                     "{T}/sources.yaml", "--epg-file", "{T}/epg.yaml", "--history",
+                     "{T}/hist.jsonl", "--skip-local", "--no-epg", "--no-egress-check",
+                     "--out", "{T}/out"),
+         files=(("channels.yaml", "version: 1\ngroups: [\n"),),
+         has=("表上的台全部来自这份名单",)),
+    Cell(who="config 缺分组", what="合法但少三个 hunan 分组的频道配置：先说再走",
+         rc=1, argv=("build", "--config", "{T}/channels.yaml", "--sources-file",
+                     "{T}/sources.yaml", "--epg-file", "{T}/epg.yaml", "--history",
+                     "{T}/hist.jsonl", "--skip-local", "--no-epg", "--no-egress-check",
+                     "--out", "{T}/out"),
+         files=(("channels.yaml", cell_channels_yaml(("hunan_local",))),),
+         has=("就是按这四个分组切的",)),
+    Cell(who="源清单不在", what="`--sources-file` 指到不存在的路径（走 `stop_config` 那一句）",
+         rc=1, argv=("build", "--config", "{T}/channels.yaml", "--sources-file",
+                     "{T}/nope.yaml", "--epg-file", "{T}/epg.yaml", "--history",
+                     "{T}/hist.jsonl", "--skip-local", "--no-epg", "--no-egress-check",
+                     "--out", "{T}/out"),
+         has=("读不了：", "这一轮不出表 —— ")),
+    Cell(who="源全关掉", what="源清单读得进来但一条启用的都没有",
+         rc=1, argv=("build", "--config", "{T}/channels.yaml", "--sources-file",
+                     "{T}/sources.yaml", "--epg-file", "{T}/epg.yaml", "--history",
+                     "{T}/hist.jsonl", "--skip-local", "--no-epg", "--no-egress-check",
+                     "--out", "{T}/out"),
+         has=("里没有启用的源",),
+         # 这一条 `lacks` 钉的是本节修掉的那个 bug：那句话以前写死成 `config/sources.yaml`，
+         # 于是 `--sources-file` 指到别处时它指着**没有的那一份**说话。只钉「没有启用的源」
+         # 抓不到它 —— 换回写死那份，句尾一模一样。要抓就得钉句首那个名字。
+         lacks=("config/sources.yaml 里没有启用的源",)),
+    Cell(who="走通到出表", what="一份假上游走完整条路：四张表落盘，屏幕上说的是谁",
+         rc=0, argv=("build", "--source", "{T}/fake.m3u") + CELL_TAIL,
+         files=(("fake.m3u", CELL_FAKE_M3U), ("channels.yaml", CELL_FAKE_CHANNELS)),
+         has=("读取 1 个上游", "输出到", "aptv.m3u  : 3 个频道", "hunan.m3u : 3 个频道",
+              "丢弃：黑名单 0 条，未匹配 1 条", "第一线集中度（aptv.m3u 全量）",
+              "第一线集中度（hunan.m3u 湖南本地）", "节目单：未启用"),
+         lacks=("本轮一个台都没归上", "线路判决把测过的"),
+         wrote=("out/aptv.m3u", "out/hunan.m3u", "out/hunan-lean.m3u", "out/test.m3u",
+                "out/report.md")),
+    Cell(who="一个台都没归上", what="名单与上游对不上：不许拿一张空表盖掉订阅目录",
+         rc=1, argv=("build", "--source", "{T}/fake.m3u") + CELL_TAIL,
+         files=(("fake.m3u", CELL_FAKE_M3U),),
+         has=("本轮一个台都没归上", "这一轮不出表 —— "),
+         absent=("out",)),
+    Cell(who="判决全灭", what="沿用的记录把测过的全判成不能用：剩下来的台靠「没测过」",
+         rc=1, argv=("build", "--source", "{T}/fake.m3u", "--replay", "{T}/probe.json",
+                     "--replay-max-age", "1000000") + CELL_TAIL,
+         files=(("fake.m3u", CELL_FAKE_M3U), ("channels.yaml", CELL_FAKE_CHANNELS),
+                ("probe.json", CELL_PROBE_ALL_DEAD)),
+         has=("线路判决沿用", "全判成不能用", "这一轮不出表 —— "),
+         absent=("out",)),
+    Cell(who="沿用空记录", what="--replay 那份记录里一条判决都没有：闸要拦住，不许静默降级",
+         rc=1, argv=("build", "--source", "{T}/fake.m3u", "--replay", "{T}/probe.json",
+                     "--replay-max-age", "1000000") + CELL_TAIL,
+         files=(("fake.m3u", CELL_FAKE_M3U), ("probe.json", CELL_PROBE_EMPTY)),
+         has=("那份记录不能用", "一条逐条判决都没有"),
+         lacks=("线路判决沿用",), absent=("out",)),
+    Cell(who="子命令拼错", what="`bulid`：拼错的子命令退 2，不顺手退 0", rc=2,
+         argv=("bulid",), has=("未知的子命令",)),
+    Cell(who="没给子命令", what="一个字都不递：那是想看用法说明，退 0", rc=0,
+         argv=(), has=(), lacks=("未知的子命令",)),
+    Cell(who="薄门不收字", what="`--self-test` 旁边递了字：整扇不答，点名那些字（2.77 那一族）",
+         rc=2, argv=(SELF_TEST_FLAG, "--out"), has=("这一扇体内不收任何参数",)),
+)
+
+
+def self_test(cells: tuple[Cell, ...] | None = None) -> int:
+    """`--self-test`：逐格把 `BASELINE` 那一整片跑一遍，对**跑之前**写死的期望。
+
+    顺序是定过的：过的一格一行先流水，不符期望的留在最后（跑整条基线的工具失败时只摊出
+    末尾几行，把 ✗ 挤在 ✓ 中间，那句 ✗ 到人眼前就只剩一个「退 1」）。
+
+    >>> len({c.who for c in BASELINE}) == len(BASELINE)      # 格子名不许重复（顿号那道闸管不着）
+    True
+    >>> all(c.has or c.lacks or c.wrote or c.absent for c in BASELINE)   # 不许有「什么都对不上」的格
+    True
+    >>> cell_guards(BASELINE)                                 # 写下来的每一格都得过自己的闸
+    []
+    >>> with tempfile.TemporaryDirectory() as d:              # 闸拦下的那一遍：整片不跑，退 2
+    ...     buf = io.StringIO()
+    ...     with contextlib.redirect_stdout(buf):
+    ...         rc = self_test([Cell(who="甲", what="没指进沙盒", rc=1, argv=("build",))])
+    >>> rc, "这一片不跑" in buf.getvalue(), "没递 --out" in buf.getvalue()
+    (2, True, True)
+    """
+    cells = BASELINE if cells is None else cells
+    if not cells:
+        print("一格都没有：`BASELINE` 是空的。这不算过")
+        return 2
+    guards = cell_guards(cells)
+    if guards:
+        print("这一片不跑，先把那几格改成指进沙盒、关上出网的门：")
+        for g in guards:
+            print(f"  · {g}")
+        return 2
+    ran = bad = skipped = 0
+    fails: list[tuple[Cell, str, str]] = []
+    for cell in cells:
+        with tempfile.TemporaryDirectory(prefix="cli-selftest-") as td:
+            verdict, why, text = run_cell(cell, Path(td))
+        if verdict == "skip":
+            skipped += 1
+            continue
+        ran += 1
+        if verdict == "bad":
+            bad += 1
+            fails.append((cell, why, text))
+            continue
+        print(f"  ✓ {cell.who:<18} {cell.what}")
+    if fails:
+        print(f"\n—— 以下 {len(fails)} 格不符期望（每格把自己那一遍的原文摊出来）——")
+        for cell, why, text in fails:
+            print(f"  ✗ {cell.who:<18} {cell.what}\n      {why}")
+            for line in text.strip().splitlines():
+                print(f"      | {line}")
+    print(f"\n扫了基线 {len(cells)} 格：{bad} 格不符期望"
+          + (" —— 那几扇门还认得路" if ran and not bad else " —— 上面逐格点名了")
+          + (f"（另有 {skipped} 格没验成）" if skipped else ""))
+    if not ran:
+        print("一格都没跑起来：临时目录建不起来，或者每一格都被 `run_cell` 跳过了。这不算过")
+        return 2
+    return 1 if bad else 0
+
+
 SUBCOMMANDS = ("build",)
 
 
@@ -2473,6 +2954,14 @@ def main(argv: list[str]) -> int:
     >>> (a, b)                           # 想看用法说明的两条路仍是 0
     (0, 0)
     """
+    # 2.82：本件自己的回归基线走这一扇薄门（与另外十把尺同一口径：一屏只答一扇，
+    # 递在旁边的字当场点名，不静默少跑一整片格子）。
+    if argv and argv[0] == SELF_TEST_FLAG:
+        if len(argv) > 1:
+            print(f"{SELF_TEST_FLAG} 这一扇体内不收任何参数（多递的是 "
+                  f"{'、'.join(argv[1:])}）；只想跑用例就递 --doctest", file=sys.stderr)
+            return 2
+        return self_test()
     if not argv or argv[0] in {"-h", "--help"}:
         print(__doc__)
         return 0

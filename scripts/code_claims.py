@@ -16,8 +16,12 @@ r"""量一遍「写在代码里的话」—— docstring 里那些报数的句�
      这一句若用反引号点了主人（`doc-cmds`、`num-test` 那类别名也算），就必须等于**那一位**的格数；
      没点名则只要求它属于真值集合。只认阿拉伯数字这一刀顺带解决了冠词与历史复述：
      汉语写「那一格」「四条默认」从不用阿拉伯数字。
-  乙 `默认 N 条` 与 `N 条离线尺` —— 真值是 `selfcheck.steps()` 现算的步数（汉字数字也认，
-     因为这一句本来的写法就是「默认十条」）。
+     `ALIASES` 今天那十一位里，`src/cli.py` 那一位**不是尺**（2.82）—— 别名这一层不管这件事，
+     它只管「散文里点的名 → 哪一个 `len(BASELINE)`」。
+  乙 `默认 N 条` 与 `N 条离线尺`／`N 条离线检查` —— 真值是 `selfcheck.steps()` 现算的步数（汉字数字也认，
+     因为这一句本来的写法就是「默认十条」）。2.82 那一遍把「离线尺」那个名词放宽成也认「离线检查」，
+     因为新挂进来的那一条（`cli-test`）量的不是尺、是产品本体那一件自己 —— 不换掉那个词，那一句
+     里的数就从「查得到」掉进「查不到」。放宽的只是名词，真值口径一个字没动（还是 `步-离线`）。
 
 它不量什么，把边界一并说清（每一条都是这一遍量到的现状，不是猜想）：
   · docstring 里**没有真值可算**的那些数不量 —— 而且它们**不进任何计数**：结论行那个「跳过」只统计
@@ -31,6 +35,10 @@ r"""量一遍「写在代码里的话」—— docstring 里那些报数的句�
   · **函数体里的字符串字面量不在范围内**：`selfcheck.steps()` 那五条步骤说明各写着一个格数
     （15／25／26／22／22），18:34 那一遍一个都没读到。读它们要把任意字符串都扫进来，而那一层里
     满是 `print("比了 N 处")` 这种运行时输出 —— 先把「运行时印的数」和「声明」分开，再说扫不扫。
+  · **子计数不量，而且它会假红**：甲只认「N 格」这一个形状，读到的每一个数都当成**那一位的格数全体**
+    —— 「`src/cli.py` 那 17 格里，4 格走通到出表」这一句里那个 4 会被要求等于 17。2.82 装 `cli`
+    那一位时当场撞上这一条，改的是写法（那半句换成「其中 4 个格子」），代价说清：**总数有闸、
+    子计数没有**，而子计数正是这一层最容易漂的那一种（它跟着判据走，不跟着 `len()` 走）。
   · 「九条默认」「两条要点名」那种**数在前、名在后**的写法不认（只认 `默认 N 条` 与 `N 条离线尺`），
     因为它们各自的真值口径今天还不唯一。
 
@@ -49,6 +57,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import importlib
 import io
 import re
 import sys
@@ -88,7 +97,7 @@ NUM = r"(?:[0-9]+|[零一二两三四五六七八九十]+)"
 # 那是**漏**不是**错**，而漏的方向是少报，不会把绿的报成红的。
 GRID = re.compile(r"(?<!\d)([0-9]+)\s*格(?!式|局|调|言)")
 SC_DEFAULT = re.compile(rf"默认\s*({NUM})\s*条")
-SC_OFFLINE = re.compile(rf"({NUM})\s*条\s*离线尺")
+SC_OFFLINE = re.compile(rf"({NUM})\s*条\s*离线(?:尺|检查)")
 QUOTE = re.compile(r"「[^」]*」")
 SPLIT_SENT = re.compile(r"[。；！？]")
 # 一把尺的别名：散文里点主人不会总用模块名。`doc-test` 点的是 `check_doc_cmds`，`names` 点的是
@@ -119,7 +128,17 @@ ALIASES: dict[str, tuple[str, ...]] = {
     # 不是「一把尺的读数」，是「逐件真跑那一档会不会说话」；别名这一层不区分这两件事，
     # 而 `selfcheck` 的散文里写「那 18 格」时点的名字正是 `run_doctests`（2.64/2.72 同一族）。
     "run_doctests": ("run_doctests", "doctests", "doctests-test"),
+    # 2.82 那一位**不是尺**：`src/cli.py` 是主路上唯一会写订阅目录的那一件，它体内那 17 格
+    # 是刚装的（`--self-test`）。别名这一层不区分这两件事 —— `selfcheck` 的散文里写「那 17 格」
+    # 时点的名字是 `cli-test`，少了这一行它就退化成「没点名，只要求属于 …」那个集合，
+    # 而 17 不在任何一把尺的格数里（2.63/2.64 量到的正是这个形状）。
+    "cli": ("cli", "src/cli.py", "cli-test"),
 }
+
+# `ALIASES` 的键是「散文里点的名」那一侧，`importlib` 认的是另一侧，那两位不总是同一个字：
+# `src/cli.py` 在包里，真名是 `src.cli`。写成一张小表而不是从键拼 —— 拼错了 `truth_of`
+# 会当成「真值取不到」整屏退 2，那是最贵的一种假红：它把另外十位的读数一起废掉。
+BY_IMPORT: dict[str, str] = {"cli": "src.cli"}
 
 
 def to_int(tok: str) -> int | None:
@@ -271,7 +290,7 @@ def truth_of() -> tuple[dict[str, int], list[str]]:
     holes: list[str] = []
     for mod in ALIASES:
         try:
-            m = __import__(mod)
+            m = importlib.import_module(BY_IMPORT.get(mod, mod))
             vals[f"n格-{mod}"] = len(m.BASELINE)        # type: ignore[attr-defined]
         except Exception as exc:                         # noqa: BLE001 —— 取不到要能点名
             holes.append(f"{mod}（BASELINE 读不到：{type(exc).__name__}）")
@@ -495,6 +514,7 @@ L_GRID = '"""`check_doc_cmds` 那 {n格-check_doc_cmds} 格已知好坏的文档
 L_ORPHAN = '"""种了 {n格-unmarked_nums} 格已知形状的文档，跑之前先写期望。"""'
 L_DEFAULT = '"""一条命令跑完全部对账：默认{步-默认汉字}条。"""'
 L_OFFLINE = '"""默认{步-默认汉字}条 —— {步-离线汉字}条离线尺，`page` 要问一眼进程。"""'
+L_CLI = '"""`src/cli.py` 那 {n格-cli} 格配置，种进临时沙盒。"""'
 
 
 BASELINE: tuple[Cell, ...] = (
@@ -540,6 +560,12 @@ BASELINE: tuple[Cell, ...] = (
          0, argv=("--doctest",),
          has=("合计", "个用例", "0 个失败", "code_claims.py"),
          lacks=("一条用例都没收到", "扫了被量的")),
+    # 2.82 那一位的**唯一**证据：`cli` 这个名字不在 `sys.path` 那一级上，真值要靠 `BY_IMPORT`
+    # 换成 `src.cli` 才取到。少了这一格，那条换名写坏时会变成整屏退 2（`truth_of` 报「真值取不到」），
+    # 而不是这一格红 —— 两种都响，但只有这一格说得出**是谁**坏了。
+    Cell("G12_产品那一件", "甲的第十一个主人：`src/cli.py` 不是尺，点名它要等于它自己的格数",
+         0, files=((PY, L_CLI),), argv=("--py", f"{SANDBOX}/{PY}"),
+         has=("✓ 假件.py:模块 说 格 {n格-cli}、真值是 cli={n格-cli}", "0 处对不上")),
     # ———— B 组：这些情形**必须**报错。它们绿了就是尺不咬 ————
     Cell("B1_点名点错人", "句里点 `doc_num` 却写未挂尺的格数 —— 这一处是这把尺存在的理由",
          1, files=((PY, '"""`doc_num` 那 {n格-unmarked_nums} 格"""'),),
@@ -643,7 +669,7 @@ def run_cell(cell: Cell, base: Path, values: dict[str, int]) -> tuple[str, str, 
 
 
 def self_test() -> int:
-    """`--self-test`：往临时目录里种 23 格已知好坏的假件，逐格对**跑之前**写死的期望。
+    """`--self-test`：往临时目录里种 24 格已知好坏的假件，逐格对**跑之前**写死的期望。
 
     结论行带着「扫了」那个词（`scripts/selfcheck.py` 的 `conclusion()` 靠它挑句子），
     过的一格一行流水、不符期望的留在最后 —— 与 §2.56~2.59 那四档同形。
