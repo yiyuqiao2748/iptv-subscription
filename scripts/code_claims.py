@@ -453,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--self-test", action="store_true", help="种已知形状的假件，逐格对期望")
     ap.add_argument("--doctest", action="store_true", help="只跑本文件的用例")
     a = ap.parse_args(argv)
-    door_rc = arg_door_exit(a)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    door_rc = arg_door_exit(a, argv)   # 2.80：那一判要读 argv —— 薄门旁边跟了字也点名
     if door_rc is not None:
         return door_rc
     answered = arg_door_answered(a)

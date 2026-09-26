@@ -518,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="把总数按顶层目录拆开印（总数会自己动，拆开才知道是谁动的）")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
-    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    door_rc = arg_door_exit(args, argv)   # 2.80：那一判要读 argv —— 薄门旁边跟了字也点名
     if door_rc is not None:
         return door_rc
     answered = arg_door_answered(args)

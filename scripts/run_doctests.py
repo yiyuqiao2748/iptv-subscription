@@ -2159,6 +2159,25 @@ BASELINE: tuple[Cell, ...] = (
          2, argv=(SELF_TEST_FLAG, DOCTEST_FLAG), spawn=real_path("scripts/unmarked_nums.py"),
          has=("一屏只答一扇门", "答的是 '--doctest'", "'--self-test' 没答"),
          lacks=("扫了基线", "个用例", "扫了 2 篇文档")),
+    # ———— W4…W5：薄门旁边跟了字，那九把也不许静默（2.80）————
+    # 10:49 现量（`/tmp/probe280b_1052.log`，干净副本 `/tmp/clean280a`）：九把的门以外 30 个面
+    # × 两扇 × 两种顺序 = **120 种写法，120 次全撞上** —— 退码与屏幕与「只递那一扇门」时
+    # 逐字节相同，门口那一句一个字没响。本件在 2.77 对同样的形状选的是「点名＋退 2」，
+    # 2.80 把同一判接到九把上（`arg_door_exit` 多读一位 `argv`）。
+    # 这两格钉的不是那句怎么说（`T3`／`T4` 钉过同一句的本件那一半），是**那一把真的接上了没有**，
+    # 以及那半截跟着「量的是谁」走的句子（`_RULER_MINE`）真的到了屏幕上 ——
+    # 那半截是塞进变量再拼出去的，预跑闸看不见它（§2.76 那条边界），所以只能让格子多钉一句。
+    # 递的是开关（`--all`／`--verbose`）不是收值的旗：Namespace 上「递了默认值本身」与
+    # 「没递」同形，收值那一类的看不见要另算，理由写在 `arg_extra_words` 的说明书里。
+    Cell("W4_薄门旁边跟了开关", "九把里的一件只答一扇、旁边跟了 `--all`：那一旗没用上，门口那一句点名、退 2",
+         2, argv=(DOCTEST_FLAG, "--all"), spawn=real_path("scripts/unmarked_nums.py"),
+         has=("体内不收任何参数", "递在它旁边的 '--all' 没人答", "这一遍跑的是那一扇自己的活",
+              "这一件的用例在 `--doctest` 那一扇"),
+         lacks=("扫了基线", "个用例", "篇文档")),
+    Cell("W5_反着递也一样（另一把）", "开关在前、`--self-test` 在后，换一把尺：同一条界线不该跟着件走",
+         2, argv=("--verbose", SELF_TEST_FLAG), spawn=real_path("scripts/check_doc_cmds.py"),
+         has=("体内不收任何参数", "递在它旁边的 '--verbose' 没人答", "这一遍跑的是那一扇自己的活"),
+         lacks=("扫了基线", "条命令、", "个用例")),
 )
 
 
@@ -3375,12 +3394,18 @@ def door_attr_reads(src: str, fn: str = "main") -> list[str]:
     所以 `rulers_not_wired` 只问那些答了门的。读不通的源码、读不到 `fn` 那一段都要说明白，
     不回空表冒充「没有」（同 `flag_readings`）。
 
+    2.80 起第四档：问了 `arg_door_exit` 却**少递 `argv`**。那一判的两档坏法里，「薄门旁边跟了字」
+    只有命令行能答（Namespace 上「递了默认值本身」与「没递」同形），所以本位钉的是
+    「九把有没有把 `argv` 交出去」—— 少了它那一档整档不响，而屏幕上看不出来。
+
     >>> door_attr_reads("def main(args):\n    if args.doctest:\n        return run_own(m)\n")
     ['直接读 `.doctest` 那一判 1 处', '答了一扇（调 `run_own`） 1 处']
     >>> door_attr_reads("def main(args):\n    if args.self_test:\n        return self_test()\n")
     ['直接读 `.self_test` 那一判 1 处', '答了一扇（调 `self_test`） 1 处']
-    >>> door_attr_reads("def main(args):\n    rc = arg_door_exit(args)\n    a = arg_door_answered(args)\n    return self_test()\n")
+    >>> door_attr_reads("def main(args, argv):\n    rc = arg_door_exit(args, argv)\n    a = arg_door_answered(args)\n    return self_test()\n")
     ['答了一扇（调 `self_test`） 1 处', '问了 `arg_door_answered` 1 处', '问了 `arg_door_exit` 1 处']
+    >>> door_attr_reads("def main(args):\n    rc = arg_door_exit(args)\n    a = arg_door_answered(args)\n    return self_test()\n")
+    ['arg_door_exit 少递了 argv 1 处', '答了一扇（调 `self_test`） 1 处', '问了 `arg_door_answered` 1 处', '问了 `arg_door_exit` 1 处']
     >>> door_attr_reads("def main(args):\n    return args.docs\n")
     ['一扇都没读：这一件不答门，别把它算成「已经统一」']
     >>> door_attr_reads("def f():\n    pass\n")
@@ -3396,25 +3421,31 @@ def door_attr_reads(src: str, fn: str = "main") -> list[str]:
     if not body:
         return [f"没有 {fn} 那一段：认不出来，别读成「没有」"]
     kinds: dict[str, int] = {}
+    no_argv = 0
     for node in ast.walk(body[0]):
         if isinstance(node, ast.Attribute) and node.attr in DOOR_ATTRS:
             kind = f"直接读 `.{node.attr}` 那一判"
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
                 and node.func.id in ARG_READERS:
             kind = f"问了 `{node.func.id}`"
+            if node.func.id == "arg_door_exit" and (
+                    len(node.args) < 2 or not isinstance(node.args[1], ast.Name)):
+                no_argv += 1
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
                 and node.func.id in ANSWER_CALLS:
             kind = f"答了一扇（调 `{node.func.id}`）"
         else:
             continue
         kinds[kind] = kinds.get(kind, 0) + 1
+    if no_argv:
+        kinds["arg_door_exit 少递了 argv"] = no_argv
     if not kinds:
         return ["一扇都没读：这一件不答门，别把它算成「已经统一」"]
     return [f"{k} {n} 处" for k, n in sorted(kinds.items())]
 
 
 def rulers_not_wired(root: pathlib.Path = ROOT) -> list[str]:
-    r"""**两扇**都答的件里，还自己读旗（或压根没问那一位口径）的那几份 —— 应该是空表。
+    r"""**两扇**都答的件里，还自己读旗（或压根没问那一位口径，或问了却少递 `argv`）的那几份 —— 应该是空表。
 
     只管答两扇的：一扇没有顺序可言，`serve_lan`／`work_guard`／`selfcheck`／`probe_pack`／
     `backfill_srcs` 这五件今天只挂了一扇 `--doctest`，本节不拿「统一口径」去判它们
@@ -3431,8 +3462,8 @@ def rulers_not_wired(root: pathlib.Path = ROOT) -> list[str]:
     ...     t = pathlib.Path(d)
     ...     _ = (t / "scripts").mkdir()
     ...     _ = (t / "scripts" / "接上.py").write_text(
-    ...         "def main(args):\n"
-    ...         "    rc = arg_door_exit(args)\n"
+    ...         "def main(args, argv):\n"
+    ...         "    rc = arg_door_exit(args, argv)\n"
     ...         "    a = arg_door_answered(args)\n"
     ...         "    if a == DOCTEST_FLAG:\n        return run_own(m)\n"
     ...         "    return self_test()\n", encoding="utf-8")
@@ -3440,12 +3471,18 @@ def rulers_not_wired(root: pathlib.Path = ROOT) -> list[str]:
     ...         "def main(args):\n"
     ...         "    if args.doctest:\n        return run_own(m)\n"
     ...         "    if args.self_test:\n        return self_test()\n", encoding="utf-8")
+    ...     _ = (t / "scripts" / "少递argv.py").write_text(
+    ...         "def main(args):\n"
+    ...         "    rc = arg_door_exit(args)\n"
+    ...         "    a = arg_door_answered(args)\n"
+    ...         "    if a == DOCTEST_FLAG:\n        return run_own(m)\n"
+    ...         "    return self_test()\n", encoding="utf-8")
     ...     _ = (t / "scripts" / "只一扇.py").write_text(
     ...         "def main(args):\n"
     ...         "    if args.doctest:\n        return run_own(m)\n    return 0\n",
     ...         encoding="utf-8")
     ...     rulers_not_wired(t)
-    ['没接：直接读 `.doctest` 那一判 1 处、直接读 `.self_test` 那一判 1 处、答了一扇（调 `run_own`） 1 处、答了一扇（调 `self_test`） 1 处']
+    ['少递argv：arg_door_exit 少递了 argv 1 处、答了一扇（调 `run_own`） 1 处、答了一扇（调 `self_test`） 1 处、问了 `arg_door_answered` 1 处、问了 `arg_door_exit` 1 处', '没接：直接读 `.doctest` 那一判 1 处、直接读 `.self_test` 那一判 1 处、答了一扇（调 `run_own`） 1 处、答了一扇（调 `self_test`） 1 处']
     """
     out: list[str] = []
     for path in module_paths(root):
@@ -3460,7 +3497,8 @@ def rulers_not_wired(root: pathlib.Path = ROOT) -> list[str]:
                  if any(r.startswith(f"答了一扇（调 `{c}`）") for r in reads)]
         if len(doors) < 2:
             continue                       # 一扇都答不全：不归这一位管，理由见上面那段
-        if any(r.startswith("直接读") for r in reads) or not any(
+        if any(r.startswith("直接读") for r in reads) or any(
+                r.startswith("arg_door_exit 少递了") for r in reads) or not any(
                 r.startswith("问了") for r in reads):
             out.append(f"{module_name(path, root)}：{'、'.join(reads)}")
     return sorted(out)
@@ -3504,7 +3542,15 @@ def door_clash(argv: list[str]) -> tuple[str, tuple[str, ...]] | None:
     return (answered, dropped) if dropped else None
 
 
-def clash_line(answered: str, dropped: tuple[str, ...], guide: str = "") -> str:
+_OWN_MINE = "这一遍量的还是本件自己。"
+# 2.80：薄门旁边跟了字，那一句的**后半截**跟着「这一遍还在量谁」走 —— 本件量的是自己那份用例，
+# 那九把量的是文档／表／EPG／名字，把本件这半句借给它们就是假话（§2.60 那一族：写在两家用
+# 的话只能有一家说得出口）。前半截（「体内不收任何参数：递在它旁边的 X 没人答」）仍然只有一份。
+_RULER_MINE = "这一遍跑的是那一扇自己的活，那些字一个字也没用上。"
+
+
+def clash_line(answered: str, dropped: tuple[str, ...], guide: str = "",
+               mine: str = _OWN_MINE) -> str:
     """被丢下的那几个字怎么说 —— 与 `refusal` 并列的第二句登记话：那一句管「这旗我不收」，
     这一句管「这旗我收了、可这一遍答的不是它」。
 
@@ -3517,11 +3563,16 @@ def clash_line(answered: str, dropped: tuple[str, ...], guide: str = "") -> str:
     2.79 起这一句**九把也借**（`arg_door_exit`）：屏幕上那句话本件与它们同一份，只有末尾
     那一行指路不同 —— 收集器那句「要换一棵树量 `--each --root=`」在它们嘴里是假话，
     它们没有那两扇。指路那一行因此从写死变成递进来的（`guide`，不给就是本件那一行）。
+    2.80 起同一件事落到**句子本身**：薄门旁边跟了字那一支，后半截「这一遍量的还是本件自己」
+    在九把嘴里也是假话（它们量的是文档、表、EPG、名字），于是那半截也参数化（`mine`）。
+    两扇一起递那一支不受影响 —— 那一句里本来就没有「量的是谁」。
 
     >>> print(clash_line("--doctest", ("--across",)).splitlines()[0])
     ✗ 一屏只答一扇门（答的是 '--doctest'，递进来的 '--across' 没答）。
     >>> print(clash_line("--doctest", ("--root=/tmp/x",)).splitlines()[0])
     ✗ `--doctest` 这一扇的体内不收任何参数：递在它旁边的 '--root=/tmp/x' 没人答，这一遍量的还是本件自己。
+    >>> print(clash_line("--self-test", ("--all",), mine=_RULER_MINE).splitlines()[0])
+    ✗ `--self-test` 这一扇的体内不收任何参数：递在它旁边的 '--all' 没人答，这一遍跑的是那一扇自己的活，那些字一个字也没用上。
     >>> print(clash_line("--doctest", ("--self-test",), guide="另一行指路").splitlines()[-1])
     另一行指路
     """
@@ -3532,7 +3583,7 @@ def clash_line(answered: str, dropped: tuple[str, ...], guide: str = "") -> str:
     if any(a in DOORS for a in dropped):
         return f"✗ 一屏只答一扇门（答的是 {answered!r}，递进来的 {names} 没答）。" + tail
     return (f"✗ `{answered}` 这一扇的体内不收任何参数：递在它旁边的 {names} 没人答，"
-            "这一遍量的还是本件自己。" + tail)
+            + mine + tail)
 
 
 # ———— 那九把的同一位口径（2.79）————
@@ -3590,13 +3641,49 @@ def arg_door_answered(args: argparse.Namespace) -> str:
     return given[0] if given else ""
 
 
-def arg_door_exit(args: argparse.Namespace, stream=None) -> int | None:
-    """两扇门一起递：把门口那一句说到错误流、回 2；只递一扇或没递回 `None`，一个字都不印。
+def arg_extra_words(argv: list[str] | None, answered: str) -> tuple[str, ...]:
+    """那一串字里，除开答了的那一扇，还有哪些**递进来没人答** —— 按命令行原样数。
+
+    为什么读 `argv` 而不读 Namespace：Namespace 上没有「递没递」这一位 ——
+    `--root=<正好是默认值>` 与「压根没递 `--root`」在那一头是同一个对象。2.80 动手前现量过
+    这件事的形状（`/tmp/census280b.log`）：九把的门以外一共 30 个面，其中 21 个收值、
+    9 个是开关或位置参数。只读 Namespace 要判「这一遍还有字没答」，那 21 个里唯一的看不见
+    是「递进去的值恰好等于默认值」，而那一种**没有东西被丢掉** —— 听起来够用，但它要把
+    九把各自的默认值表抄进这一位（§2.58 那一族：一条规矩两个地方各写一遍，而默认表会长）。
+    命令行原样数没有这一份表，代价只是多点名一次「你写了默认值本身」—— 那一句本来就值得说。
+
+    `argv is None` 与 argparse 同释：那是「没递参数列表」，读真实命令行 `sys.argv[1:]`。
+
+    >>> arg_extra_words(["--doctest"], "--doctest")
+    ()
+    >>> arg_extra_words(["--doctest", "--all"], "--doctest")
+    ('--all',)
+    >>> arg_extra_words(["--root=/tmp/x", "--self-test"], "--self-test")
+    ('--root=/tmp/x',)
+    >>> arg_extra_words(["--timeout", "5", "--doctest"], "--doctest")
+    ('--timeout', '5')
+    >>> arg_extra_words([], "--doctest")
+    ()
+    """
+    words = sys.argv[1:] if argv is None else list(argv)
+    return tuple(w for w in words if w != answered)
+
+
+def arg_door_exit(args: argparse.Namespace, argv: list[str] | None = None,
+                  stream=None) -> int | None:
+    """递了门而这一屏答不全：把门口那一句说到错误流、回 2；答得完就回 `None`，一个字都不印。
+
+    两档坏法（与本件 2.77 那两条界线同名，屏幕上那句话也只有一份）：
+    （一）**两扇一起递** —— `argv` 递不递都一样，Namespace 上看两扇都真；
+    （二）**薄门旁边跟了字** —— 只答一扇，而命令行里还有别的字（2.80 量到的那 120 种写法：
+    九把 × 门以外的 30 个面 × 两扇 × 两种顺序，退码与屏幕与只递那一扇时**逐字节相同**）。
+    第二档要读 `argv`，所以本位多了那一位；不递（旧写法）时那一档整档不响，第一档照旧 ——
+    `rulers_not_wired` 现在钉的就是「九把有没有把 `argv` 递进来」。
 
     为什么是「两扇都不答」而不是「答一扇、顺便提一句另一扇没跑」：§2.62 那三档里
-    退 0 说的是「这一屏量到了、都符合期望」，而这一遍用户要量的那两扇只跑了一扇 ——
-    把那一半悄悄丢掉再退 0 正是本节要治的病（09:18 那 18 次就是这个形状）。本件在 2.77
-    选的也是退 2，所以这一位与 `main` 里那三句门口话同档、同一句、同退码。
+    退 0 说的是「这一屏量到了、都符合期望」，而这一遍用户要量的那一半根本没跑 ——
+    把它悄悄丢掉再退 0 正是本节要治的病（09:18 那 18 次、10:49 那 120 次都是这个形状）。
+    本件在 2.77 选的也是退 2，所以这一位与 `main` 里那三句门口话同档、同一句、同退码。
 
     为什么连「印」带「退码」一起做（而不是回一句话让九把各自去印）：那一句加那一个退码
     就是这一档的规矩，写在九个地方是 §2.58 那一族 —— 九把里只要有一件把 `return 2` 写成
@@ -3605,21 +3692,39 @@ def arg_door_exit(args: argparse.Namespace, stream=None) -> int | None:
     >>> import argparse, contextlib, io
     >>> err = io.StringIO()
     >>> with contextlib.redirect_stderr(err):      # 两扇一起递：点名、退 2
-    ...     rc = arg_door_exit(argparse.Namespace(doctest=True, self_test=True))
+    ...     rc = arg_door_exit(argparse.Namespace(doctest=True, self_test=True), ["--doctest", "--self-test"])
     >>> rc, err.getvalue().splitlines()[0]
     (2, "✗ 一屏只答一扇门（答的是 '--doctest'，递进来的 '--self-test' 没答）。")
     >>> err.getvalue().splitlines()[-1].startswith("    这一件的用例在")   # 指路那一行是它们的
     True
     >>> err2 = io.StringIO()
-    >>> with contextlib.redirect_stderr(err2):     # 只递一扇：不响，交给下面那两判
-    ...     rc = arg_door_exit(argparse.Namespace(doctest=True, self_test=False))
+    >>> with contextlib.redirect_stderr(err2):     # 只递一扇、旁边干净：不响，交给下面那两判
+    ...     rc = arg_door_exit(argparse.Namespace(doctest=True, self_test=False), ["--doctest"])
     >>> (rc, err2.getvalue())
+    (None, '')
+    >>> err3 = io.StringIO()
+    >>> with contextlib.redirect_stderr(err3):     # 薄门旁边跟了字（2.80 那一档）
+    ...     rc = arg_door_exit(argparse.Namespace(doctest=True, self_test=False),
+    ...                        ["--doctest", "--all"])
+    >>> rc, err3.getvalue().splitlines()[0]
+    (2, "✗ `--doctest` 这一扇的体内不收任何参数：递在它旁边的 '--all' 没人答，这一遍跑的是那一扇自己的活，那些字一个字也没用上。")
+    >>> err4 = io.StringIO()
+    >>> with contextlib.redirect_stderr(err4):     # 没答到门：这一位一个字不说，旗归那一把的正文
+    ...     rc = arg_door_exit(argparse.Namespace(doctest=False, self_test=False), ["--all"])
+    >>> (rc, err4.getvalue())
     (None, '')
     """
     given = arg_doors_given(args)
-    if len(given) < 2:
+    if not given:
         return None
-    print(clash_line(given[0], tuple(given[1:]), _RULER_GUIDE), file=stream or sys.stderr)
+    if len(given) >= 2:
+        print(clash_line(given[0], tuple(given[1:]), _RULER_GUIDE, _RULER_MINE),
+              file=stream or sys.stderr)
+        return 2
+    dropped = arg_extra_words(argv, given[0])
+    if not dropped:
+        return None
+    print(clash_line(given[0], dropped, _RULER_GUIDE, _RULER_MINE), file=stream or sys.stderr)
     return 2
 
 

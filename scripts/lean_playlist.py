@@ -491,7 +491,7 @@ def main(argv: list[str]) -> int:
                     help="不问表，只问这一支自己还咬得动吗：往临时沙盒里种基线那 12 格，逐格对")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
-    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    door_rc = arg_door_exit(args, argv)   # 2.80：那一判要读 argv —— 薄门旁边跟了字也点名
     if door_rc is not None:
         return door_rc
     answered = arg_door_answered(args)

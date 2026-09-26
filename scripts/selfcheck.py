@@ -454,7 +454,7 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     **自己会不会说话** —— 它那一屏说出口的十几句（「字还在、路已死」「它去干了自己的活」
     「那把尺判错了」「这一档对不上」……）在今天的仓库里**一句都没有实例**，而 §2.71 那笔账
     （一条判决今天没有实例 ＝ 等同没测）这一遍轮到收集器自己欠。
-    `run_doctests` 那一档种的是 46 格假件：每格一个新沙盒、每格真起子进程、真的挂在
+    `run_doctests` 那一档种的是 48 格假件：每格一个新沙盒、每格真起子进程、真的挂在
     `scripts/work_guard.py` 底下，跑完把整格回收。它比其余那九把都贵 —— 14:31—14:32 两批各三遍
     1.85／1.81／1.80 与 2.66／2.07／2.03（头一遍缓存冷，里面约一秒是 `卯` 那一格真等天花板掐表），
     换的是那一整条「起进程 → 递旗标 → 读护栏 → 数合计」的路从今天起改坏了会响：
@@ -493,7 +493,7 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
     out: list[tuple[str, str, Callable[[], tuple[str, str]]]] = [
         ("doctests", "全项目的逻辑样例（改过逻辑先看这条）",
          lambda: run_script(["scripts/run_doctests.py"])),
-        ("doctests-test", "收集器那条逐件真跑自己还咬得动吗（往临时沙盒里种 46 格假件）",
+        ("doctests-test", "收集器那条逐件真跑自己还咬得动吗（往临时沙盒里种 48 格假件）",
          lambda: run_script(["scripts/run_doctests.py", "--self-test"])),
         ("across", "整册判决面积：每一件屏幕上说出口的每句话，有没有一格钉过（只数不判）",
          lambda: run_script(["scripts/run_doctests.py", "--across"])),
