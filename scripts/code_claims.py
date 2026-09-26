@@ -1,4 +1,4 @@
-r"""量一遍「写在代码里的话」—— docstring 里那些报数的句子，那个数今天还对不对（计划书 2.60）。
+r"""量一遍「写在代码里的话」—— 代码散文里那些报数的句子，那个数今天还对不对（计划书 2.60）。
 
 为什么要有它：2.59 收口时顺手量到一件事 —— 别的尺都在读**文档**，`run_doctests` 会跑说明书里的
 例子、可它一个字都不读例子**外面**的那些字。于是 `scripts/selfcheck.py` 里那句「默认十条」的说明，
@@ -14,7 +14,9 @@ r"""量一遍「写在代码里的话」—— docstring 里那些报数的句�
 
   甲 `N 格`（**只认阿拉伯数字**）—— 真值是 `ALIASES` 里每一位各自 `len(BASELINE)`，现取。
      这一句若用反引号点了主人（`doc-cmds`、`num-test` 那类别名也算），就必须等于**那一位**的格数；
-     没点名则只要求它属于真值集合。只认阿拉伯数字这一刀顺带解决了冠词与历史复述：
+     没点名则只要求它属于真值集合。2.83 给「点了主人」添了第二种认法：体字面量若挂在
+     `("主人名", "话")` 那种元组里、且第一位**整个字**是一位主人的名字或别名，那位就是它的主人
+     （`steps()` 与 `dispositions()` 都是这个形状）。只认阿拉伯数字这一刀顺带解决了冠词与历史复述：
      汉语写「那一格」「四条默认」从不用阿拉伯数字。
      `ALIASES` 今天那十一位里，`src/cli.py` 那一位**不是尺**（2.82）—— 别名这一层不管这件事，
      它只管「散文里点的名 → 哪一个 `len(BASELINE)`」。
@@ -29,16 +31,33 @@ r"""量一遍「写在代码里的话」—— docstring 里那些报数的句�
     11 处，而「99 个台」那种连形状都不对的字一个都没被数过）。所以「0 处对不上」说的是
     **这 21 处**，不是「代码散文里的数都对」。
   · `>>>` 示例里的数不量 —— 那是**读数**，核它等于把量具的说明书当判据。
-  · 被 「」 括起来的复述不量（2.56 那三条追记全靠这一条豁免）。代价也说清：**把该核对的话塞进
-    引号就能躲过这把尺**。这一节认这个代价 —— 「复述当时的措辞」是这一层里唯一「数故意是旧的」
-    那一类，误伤的代价（追记整片红）比漏一条的代价大。
-  · **函数体里的字符串字面量不在范围内**：`selfcheck.steps()` 那五条步骤说明各写着一个格数
-    （15／25／26／22／22），18:34 那一遍一个都没读到。读它们要把任意字符串都扫进来，而那一层里
-    满是 `print("比了 N 处")` 这种运行时输出 —— 先把「运行时印的数」和「声明」分开，再说扫不扫。
+  · 被 「」 括起来的复述不量（2.56 那三条追记全靠这一条豁免）。2.83 把同一条道理**扩到反引号**
+    `…`，而且两层同一个口径（docstring 与体字面量之间不换规矩）：体字面量里满是「把一句话原样
+    抄回去」的写法，`默认十条` 与 `（15 格、每格先写期望）` 那种都是在抄形状、不是在报数。
+    扩的代价当场量到：14:46 那一遍 docstring 层 29 处里正有 1 处落在反引号里，**29 → 28 是自愿的**。
+    代价也说清：**把该核对的话塞进引号就能躲过这把尺**。这一节认这个代价 —— 「复述当时的措辞」
+    是这一层里唯一「数故意是旧的」那一类，误伤的代价（追记整片红）比漏一条的代价大。
+  · **函数体里的字符串字面量：2.83 起也读**（2.60 那一版把它整个排除在外）。当时排除的理由是
+    「那一层里满是 `print("比了 N 处")` 这种运行时输出，得先把运行时印的数与声明分开」——
+    这一遍量下来那一刀**由形状代劳了**：只认甲乙两种形状，而运行时印的那些句子没有「默认 N 条」
+    那种措辞、也没有落在「N 格」上（它报的是「处」）。装之前先把面积量过（09-26 14:36 与 14:46
+    两遍 `/tmp/census283*.py`，跑在干净树上）：19 个在册 .py 里两种形状共 21 处命中，反引号那条
+    砍 1、种下去的源码那条砍 1，留下的 19 处**当时全对、一处假红都没有**，其中 14 处由元组第一位
+    接上了主人（从「只要求属于集合」升到「等于那一位」）。落地之后 15:02 那一遍是 51 处：
+    说明书 28、代码正文 23，对不上 0（那多出来的 4 处是把 `dispositions()` 里四句「N 份文档」
+    改成「N 格文档」的结果 —— 单位一换，那四句才从「这把尺看不见」变成「这把尺管得着」）。
+  · **像「种下去的源码」那种字面量整条不读**（2.83 新添，只在体字面量这一档成立）：一条字面量里
+    出现 `>>>`、三连引号或成对的花括号占位，它就不是「谁在报数」，而是一份要原样写进沙盒当假件
+    的源码 —— 里面那些数全是形状与读数。docstring 那一层不设这一条，因为说明书不会被种下去。
+    它今天全场只砍到 1 处（本件基线 `G6` 种进去那份里的 `999 格`），砍掉的正是该砍的；
+    而且它砍的每一处都进结论行的「跳过」计数，不许静默 —— 这是 2.60 立下的规矩，新豁免照办。
   · **子计数不量，而且它会假红**：甲只认「N 格」这一个形状，读到的每一个数都当成**那一位的格数全体**
     —— 「`src/cli.py` 那 17 格里，4 格走通到出表」这一句里那个 4 会被要求等于 17。2.82 装 `cli`
     那一位时当场撞上这一条，改的是写法（那半句换成「其中 4 个格子」），代价说清：**总数有闸、
     子计数没有**，而子计数正是这一层最容易漂的那一种（它跟着判据走，不跟着 `len()` 走）。
+    2.83 把量程扩到体字面量之后这一条**更贵了**：`steps()` 与 `dispositions()` 那些话里最容易写出
+    「那 17 格里有 4 格……」这种句子，而那一层没有「换个说法」的旧规矩可依 —— 写的时候就把子计数
+    换成「其中 4 个格子」那种不带形状的单位，别指望这把尺替你区分总数与子计数。
   · 「九条默认」「两条要点名」那种**数在前、名在后**的写法不认（只认 `默认 N 条` 与 `N 条离线尺`），
     因为它们各自的真值口径今天还不唯一。
 
@@ -99,6 +118,9 @@ GRID = re.compile(r"(?<!\d)([0-9]+)\s*格(?!式|局|调|言)")
 SC_DEFAULT = re.compile(rf"默认\s*({NUM})\s*条")
 SC_OFFLINE = re.compile(rf"({NUM})\s*条\s*离线(?:尺|检查)")
 QUOTE = re.compile(r"「[^」]*」")
+# 2.83：反引号在这一点上和 「」 是同一件事 —— 括起来的那一截是在**抄那个形状**，不是在报数。
+# 体字面量里这一种更多（`默认十条`、`（15 格、每格先写期望）`），所以扩它不是为了少读，是为了不多读。
+BACKTICK = re.compile(r"`[^`]*`")
 SPLIT_SENT = re.compile(r"[。；！？]")
 # 一把尺的别名：散文里点主人不会总用模块名。`doc-test` 点的是 `check_doc_cmds`，`names` 点的是
 # `stray_names`（那是它在 selfcheck 里那一步的名字）。少一别名，那一处引用就退化成「没点名」。
@@ -242,6 +264,84 @@ def quote_spans(sent: str) -> list[tuple[int, int]]:
     return [(m.start(), m.end()) for m in QUOTE.finditer(sent)]
 
 
+def backtick_spans(sent: str) -> list[tuple[int, int]]:
+    """句里 `…` 的跨度 —— 与 「…」 同一档道理：落在里面的那个数是在抄形状（2.83 的甲）。
+
+    为什么两层共用一条：豁免规则如果在 docstring 与体字面量之间换口径，就得在说明书里另写一段
+    「哪一层用哪一条」，而那一段的价钱是每次改都要想起改两处。当场量到的代价写在模块头上：
+    docstring 那一层今天 29 处里正有 1 处落在反引号里，29 → 28 是自愿的。
+
+    >>> s = "那句「四条默认」和 `（15 格）` 都是抄的"
+    >>> [(i, j, s[i:j]) for i, j in backtick_spans(s)]
+    [(10, 18, '`（15 格）`')]
+    >>> backtick_spans("15 格没被括起来")
+    []
+    """
+    return [(m.start(), m.end()) for m in BACKTICK.finditer(sent)]
+
+
+def looks_planted(value: str) -> bool:
+    """这条**体字面量**像不像一份原样种进沙盒的假源码（2.83 的乙）。
+
+    三种记号任意一种就够：`>>>` 是示例、三连引号是「把一整个 .py 抄在字符串里」、成对的花括号
+    是格子填真值用的占位。它们共同的不是长相而是**用途**：这一条不会被任何人当话读，它是要写进
+    一个假件里的源码，里面的数全是形状与读数。
+
+    为什么只加在体字面量那一层、docstring 一层没有：说明书一辈子不会被种下去，而它里面出现
+    `>>>` 由 `doctest 区` 那一档逐行豁免（那是另一条更细的界线，两者不许互相顶替）。
+
+    >>> looks_planted("示例：>>> f() 之后那句 999 格")
+    True
+    >>> looks_planted("假件正文用三个单引号包起来：'''种 999 格'''")
+    True
+    >>> looks_planted("种了 {n格-doc_num} 格已知形状的文档")
+    True
+    >>> looks_planted("那 15 格名字是它自己种在临时目录里的")
+    False
+    >>> looks_planted("只有半边花括号不算：{ 15 格")
+    False
+    """
+    return (">>>" in value or '"""' in value or "'''" in value
+            or ("{" in value and "}" in value))
+
+
+def owner_of_tuple(elts: Sequence[ast.expr], mine: ast.expr) -> str:
+    """`("主人名", "话", …)` 里那条「话」的主人（2.83 的丙）；认不出返回空串。
+
+    只看元组**第一位**，而且要**整个字**等于某位主人的名字或别名。`selfcheck.steps()` 与
+    `dispositions()` 都是这个形状，所以那句「种 15 格名字」归 `stray_names` 管，不再只是
+    「属于那个集合」。
+
+    为什么不做子串匹配（本节量过才定下来）：`("self-test", …)` 那种标签是九把尺**共用**的旗标名，
+    一旦子串能认，每一句「种 N 格」都会被接到某一位头上，接到谁全看 ALIASES 的字典顺序。
+    整字匹配今天接上 14 处，剩下 5 处退回「属于集合」（那 5 处今天也对，见 2.83 的账）。
+
+    >>> t = ast.parse('("doc-cmds", "种 25 格")').body[0].value
+    >>> owner_of_tuple(t.elts, t.elts[1])
+    'check_doc_cmds'
+    >>> owner_of_tuple(t.elts, t.elts[0])
+    ''
+    >>> u = ast.parse('("self-test", "种 15 格")').body[0].value
+    >>> owner_of_tuple(u.elts, u.elts[1])
+    ''
+    >>> v = ast.parse('("doc_num", 7, "那把尺种 9 格")').body[0].value
+    >>> owner_of_tuple(v.elts, v.elts[2])
+    'doc_num'
+    >>> w = ast.parse('("不在名册里", "种 9 格")').body[0].value
+    >>> owner_of_tuple(w.elts, w.elts[1])
+    ''
+    """
+    first = elts[0] if elts else None
+    if (first is None or first is mine or not isinstance(first, ast.Constant)
+            or not isinstance(first.value, str)):
+        return ""
+    key = first.value.strip()
+    for mod, alts in ALIASES.items():
+        if key == mod or key in alts:
+            return mod
+    return ""
+
+
 def owners_named(sent: str) -> list[str]:
     """这一句用反引号点了哪几把尺的主名（认别名）。
 
@@ -338,8 +438,77 @@ def grid_verdict(val: int, owners: Sequence[str], vals: dict[str, int],
     return f"没点名，只要求属于 {joined}", val in grid
 
 
+def _docstring_of(body: list[ast.stmt]) -> ast.Constant | None:
+    """一个语句块开头那份**非空** docstring 的**节点**，没有就返回 None。
+
+    要节点不要字符串：`layers_of` 靠节点 id 把 docstring 从体字面量那一档里挖掉，
+    靠字符串比对会撞车（同一个件里两处话长得一模一样是常事）。
+    """
+    if (body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str) and body[0].value.value.strip()):
+        return body[0].value
+    return None
+
+
+def layers_of(tree: ast.Module) -> list[tuple[str, str, bool, str]]:
+    """一份 .py 里**该读的那些话**：`(在哪一层, 正文, 是不是体字面量, 元组第一位点到的主人)`。
+
+    两层各有各的读法：docstring（模块 / 函数 / 类）是说明书，体字面量是会上屏的话（步骤说明、
+    追因的话、`--help` 里那句旗标说明）。同一个节点不许读两遍 —— 按节点 id 挖掉，2.83 之前只读
+    一层没处可撞，两层并读之后撞了就是同一个数上两行屏幕、跳过计数跟着翻倍，而屏幕上看不出事。
+
+    层名带 `体:` 前的是体字面量（`假件.py:体:steps`），结论行靠那一个冒号把两层分开报数。
+    类 docstring 是这一遍顺手补的：2.60 那一版只收模块与函数，类那一层**两层都不读**，
+    今天全场它 0 处形状命中（14:46 那遍量的），补上不加面积，但它不该是个洞。
+
+    >>> src = "'模块说明书'\\ndef f():\\n    x = ('doc-cmds', '种 25 格')"
+    >>> [(l, t, b) for l, t, b, o in layers_of(ast.parse(src))]
+    [('模块', '模块说明书', False), ('体:f', 'doc-cmds', True), ('体:f', '种 25 格', True)]
+    >>> [o for l, t, b, o in layers_of(ast.parse(src))]
+    ['', '', 'check_doc_cmds']
+    >>> [(l, t) for l, t, b, o in layers_of(ast.parse("'说明书'\\nclass C:\\n    '类的说明书'"))]
+    [('模块', '说明书'), ('C', '类的说明书')]
+    """
+    out: list[tuple[str, str, bool, str]] = []
+    docs: list[tuple[str, ast.Constant]] = []
+    top = _docstring_of(tree.body)
+    if top is not None:
+        docs.append(("模块", top))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            d = _docstring_of(node.body)
+            if d is not None:
+                docs.append((node.name, d))
+    for layer, node in docs:
+        out.append((layer, node.value, False, ""))
+    seen = {id(node) for _, node in docs}
+    parent: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[id(child)] = node
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in seen or not node.value.strip():
+            continue
+        holder: ast.AST | None = node
+        while holder is not None and not isinstance(holder, (ast.FunctionDef,
+                                                             ast.AsyncFunctionDef)):
+            holder = parent.get(id(holder))
+        layer = f"体:{holder.name}" if holder is not None else "体:顶层"
+        direct = parent.get(id(node))
+        owner = owner_of_tuple(direct.elts, node) if isinstance(direct, ast.Tuple) else ""
+        out.append((layer, node.value, True, owner))
+    return out
+
+
 def scan_source(src: str, name: str, vals: dict[str, int]) -> tuple[list[Claim], Counter]:
-    """读一个 .py 的 docstring（模块 + 函数），返回 `(引用, 跳过计数)`。"""
+    """读一个 .py 里该读的那些话（docstring 与体字面量），返回 `(引用, 跳过计数)`。
+
+    豁免的顺序是有讲究的，写在代码里免得下一个人重新商量：体字面量先过「整条像种下去的源码」
+    那一档（那是一条字面量级别的判断，不该逐个数再问一遍），再过 `doctest 区`，最后才看
+    「」与反引号两种引用。每一档都进「跳过」计数，谁都不许静默。
+    """
     out: list[Claim] = []
     skip: Counter = Counter()
     try:
@@ -348,17 +517,9 @@ def scan_source(src: str, name: str, vals: dict[str, int]) -> tuple[list[Claim],
         skip["读不进"] += 1
         out.append(Claim(name, "读不进", "—", f"第 {exc.lineno} 行语法不通", False, ""))
         return out, skip
-    docs: list[tuple[str, str]] = []
-    top = ast.get_docstring(tree)
-    if top:
-        docs.append(("模块", top))
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            d = ast.get_docstring(node)
-            if d:
-                docs.append((node.name, d))
     grid = frozenset(v for k, v in vals.items() if k.startswith("n格-"))
-    for layer, text in docs:
+    for layer, text, is_body, hint in layers_of(tree):
+        planted = is_body and looks_planted(text)
         for para, flags in paragraphs(text):
             idx = 0
             for piece in (p.strip() for p in SPLIT_SENT.split(para)):
@@ -374,11 +535,17 @@ def scan_source(src: str, name: str, vals: dict[str, int]) -> tuple[list[Claim],
                     for m in rx.finditer(piece):
                         rel = m.start()               # 相对 piece
                         pos = start + rel             # 相对整段（flags 是逐段对齐的）
+                        if planted:
+                            skip["像种下去的代码"] += 1
+                            continue
                         if pos < len(flags) and flags[pos] == "D":
                             skip["doctest 区"] += 1
                             continue
                         if any(a <= rel < b for a, b in quote_spans(piece)):
                             skip["「」内复述"] += 1
+                            continue
+                        if any(a <= rel < b for a, b in backtick_spans(piece)):
+                            skip["反引号内复述"] += 1
                             continue
                         val = to_int(m.group(1))
                         if val is None:
@@ -386,7 +553,11 @@ def scan_source(src: str, name: str, vals: dict[str, int]) -> tuple[list[Claim],
                             continue
                         ctx = piece[max(0, m.start() - 22):m.end() + 20].strip()
                         if kind == "格":
-                            truth, good = grid_verdict(val, owners_named(piece), vals, grid)
+                            # 主人有两个来路：句里反引号点的、与元组第一位带的。两个都算，
+                            # 去重后交给 `grid_verdict` —— 它只要求「等于其中某一位」。
+                            named = owners_named(piece) + ([hint] if hint else [])
+                            owners = list(dict.fromkeys(named))
+                            truth, good = grid_verdict(val, owners, vals, grid)
                         else:
                             key = "步-默认" if kind == "默认条数" else "步-离线"
                             truth = str(vals.get(key, "真值取不到"))
@@ -443,10 +614,12 @@ def report(claims: Sequence[Claim], skip: Counter, unread: Sequence[tuple[str, s
         for k, v in sorted(skip.items()):
             print(f"  · 跳过 {k}：{v} 处（不扫，也不核）")
     n = sum(1 for c in claims if c.kind != "读不进")
+    in_body = sum(1 for c in claims if c.kind != "读不进" and ":体:" in c.file)
     bad = [c for c in claims if not c.ok and c.kind != "读不进"]
     tail = ("（一处没跳过）" if not skip else
             "（跳过 " + "、".join(f"{k} {v} 处" for k, v in sorted(skip.items())) + "）")
-    print(f"\n扫了被量的 {scanned} 个 .py 里的代码散文：查到 {n} 处报数的话，"
+    print(f"\n扫了被量的 {scanned} 个 .py 里的代码散文：查到 {n} 处报数的话"
+          f"（说明书 {n - in_body} 处、代码正文 {in_body} 处），"
           f"{len(bad)} 处对不上{tail}")
     if copies:
         print(f"  另有 {copies} 份文件名像同步盘冲突副本的 .py 没扫 —— 点名它们是 "
@@ -516,6 +689,14 @@ L_DEFAULT = '"""一条命令跑完全部对账：默认{步-默认汉字}条。"
 L_OFFLINE = '"""默认{步-默认汉字}条 —— {步-离线汉字}条离线尺，`page` 要问一眼进程。"""'
 L_CLI = '"""`src/cli.py` 那 {n格-cli} 格配置，种进临时沙盒。"""'
 
+# 2.83 那五格的假件：种的是一份**假 .py**，被读的是它体内的字面量与类的说明书。
+# 每一格的数量都写成 `{n格-…}` 占位（不写死数字），否则这份基线自己就成了它管的那种东西。
+L_BODY = 'def steps():\n    return [("doc-cmds", "种 {n格-check_doc_cmds} 格假件")]\n'
+L_BODY_BAD = 'def steps():\n    return [("doc_headings", "种 {n格-doc_headings+1} 格文档")]\n'
+L_CLASS = "class Gate:\n    '''`doc_num` 那 {n格-doc_num} 格说明书'''\n"
+L_CITE_BODY = 'def main():\n    return [("doc_num", "那句 `（999 格、每格先写期望）` 是抄的形状")]\n'
+L_PLANT_BODY = 'def f():\n    return [("doc_num", "示例：>>> f() 之后那句 999 格不在示例行")]\n'
+
 
 BASELINE: tuple[Cell, ...] = (
     # ———— G 组：这些情形**不许**报错。它们红了就是尺在瞎咬 ————
@@ -566,6 +747,18 @@ BASELINE: tuple[Cell, ...] = (
     Cell("G12_产品那一件", "甲的第十一个主人：`src/cli.py` 不是尺，点名它要等于它自己的格数",
          0, files=((PY, L_CLI),), argv=("--py", f"{SANDBOX}/{PY}"),
          has=("✓ 假件.py:模块 说 格 {n格-cli}、真值是 cli={n格-cli}", "0 处对不上")),
+    # ———— 2.83 那三格：读的是**函数体里的字面量**，不是说明书 ————
+    Cell("G13_体字面量认主人", "丙的正主：那句「种 N 格」挂在 `(\"主人名\", \"话\")` 第二位，主人就是第一位",
+         0, files=((PY, L_BODY),), argv=("--py", f"{SANDBOX}/{PY}"),
+         has=("✓ 假件.py:体:steps 说 格 {n格-check_doc_cmds}、真值是 check_doc_cmds="
+              "{n格-check_doc_cmds}", "代码正文 1 处", "0 处对不上")),
+    Cell("G14_类说明书也读", "2.60 那一版只收模块与函数，类那一层两层都不读 —— 这一格把它补上",
+         0, files=((PY, L_CLASS),), argv=("--py", f"{SANDBOX}/{PY}"),
+         has=("✓ 假件.py:Gate 说 格 {n格-doc_num}、真值是 doc_num={n格-doc_num}",
+              "说明书 1 处")),
+    Cell("G15_体层反引号豁免", "甲扩到反引号之后要在体层验一遍：那个数被 `…` 括着就是在抄形状",
+         2, files=((PY, L_CITE_BODY),), argv=("--py", f"{SANDBOX}/{PY}"),
+         has=("一处引用都没查到", "跳过 反引号内复述 1 处")),
     # ———— B 组：这些情形**必须**报错。它们绿了就是尺不咬 ————
     Cell("B1_点名点错人", "句里点 `doc_num` 却写未挂尺的格数 —— 这一处是这把尺存在的理由",
          1, files=((PY, '"""`doc_num` 那 {n格-unmarked_nums} 格"""'),),
@@ -606,6 +799,15 @@ BASELINE: tuple[Cell, ...] = (
     Cell("B12_非UTF8假件", "二进制件不许把整屏带走",
          2, bins=("坏件.py",), argv=("--py", f"{SANDBOX}/坏件.py"),
          has=("没读进来：坏件.py —— 不是 UTF-8",), lacks=("Traceback",)),
+    # 2.83 的两格负例：这一节把量程扩到体字面量，为的就是让「步骤说明里抄的那个格数」从此有闸。
+    # `B13` 是这一格存在的理由 —— 把 `steps()` 里那句「种 29 格假件」改错一位，屏幕上必须响。
+    Cell("B13_体字面量数写死", "丙接上主人之后：那位的主人换了格数、那句话没跟着换 → 红，且说得出是谁",
+         1, files=((PY, L_BODY_BAD),), argv=("--py", f"{SANDBOX}/{PY}"),
+         has=("✗ 假件.py:体:steps 说 格 {n格-doc_headings+1}、真值是 doc_headings={n格-doc_headings}",
+              "1 处对不上", "代码正文 1 处")),
+    Cell("B14_种下去的代码不读", "乙要单独验：那个数不在 `>>>` 行上、也不跟着它，只有整条判读才拦得住",
+         2, files=((PY, L_PLANT_BODY),), argv=("--py", f"{SANDBOX}/{PY}"),
+         has=("一处引用都没查到", "跳过 像种下去的代码 1 处")),
 )
 
 
@@ -669,7 +871,11 @@ def run_cell(cell: Cell, base: Path, values: dict[str, int]) -> tuple[str, str, 
 
 
 def self_test() -> int:
-    """`--self-test`：往临时目录里种 24 格已知好坏的假件，逐格对**跑之前**写死的期望。
+    """`code_claims` 的 `--self-test`：往临时目录里种 29 格已知好坏的假件，逐格对**跑之前**写死的期望。
+
+    这一句为什么把主人的名字写进反引号：那个 29 只有**等于本件 `len(BASELINE)`** 才有意义，
+    而光写「种 29 格」在本件这把尺那儿只是「属于那一群格数」—— 明天基线涨到 30，这一句写成 30
+    照样绿（30 正好是 `unmarked_nums` 的格数）。点名主人才是把它钉死。
 
     结论行带着「扫了」那个词（`scripts/selfcheck.py` 的 `conclusion()` 靠它挑句子），
     过的一格一行流水、不符期望的留在最后 —— 与 §2.56~2.59 那四档同形。

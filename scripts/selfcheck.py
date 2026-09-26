@@ -43,7 +43,7 @@
 （2.56 那个理由第四次管用），于是它的 `--self-test` 跟着挂上，成一比一的那对
 （2.59 那一遍种的是 22 个格子；2.67 起 30 格）。
 **2.60 追记**：再把那两个数各加二 —— 多的是 `claims` 与 `claims-test`，第五把「量那把尺」的尺
-（`scripts/code_claims.py` 读 .py 的 docstring；它自己那份基线的格数本节不在这儿抄 —— 抄一次就要跟着改一次口，`claims` 把历史读数当今天的引用，§2.82 那一遍量到过）。2.60 那一遍的口径是「默认十二条 = 十一条离线尺」
+（`scripts/code_claims.py` 读 .py 的代码散文 —— 2.83 起连函数体里的字面量一起读；它自己那份基线的格数本节不在这儿抄 —— 抄一次就要跟着改一次口，`claims` 把历史读数当今天的引用，§2.82 那一遍量到过）。2.60 那一遍的口径是「默认十二条 = 十一条离线尺」
 加 `page`。这一节的顺序是反的，值得记下来：先加两条步骤，才有人来报上面那两句里哪几个字变了 ——
 18:32:30 那一遍 `claims` 自己数出 6 处对不上，全部出自这一个原因（第 3 行的注释、2.59 那句、
 `check_page` 与 `steps` 各自那份说明书）。放在以前那四轮里，这 6 处是人拿着日志逐条改的。
@@ -535,9 +535,10 @@ def steps(args: argparse.Namespace) -> list[tuple[str, str, Callable[[], tuple[s
          lambda: run_script(["scripts/unmarked_nums.py"])),
         ("um-test", "那把报数的尺自己还咬得动吗（往临时目录里种 30 格文档）",
          lambda: run_script(["scripts/unmarked_nums.py", "--self-test"])),
-        ("claims", "写在代码里的那些话，报的数对不对（只读 .py 的 docstring，不跑它们）",
+        ("claims", "写在代码里的那些话，报的数对不对（读 .py 的代码散文：说明书与函数体里的字面量，"
+                    "不跑它们）",
          lambda: run_script(["scripts/code_claims.py"])),
-        ("claims-test", "那把读散文的尺自己还咬得动吗（往临时目录里种 24 格假件）",
+        ("claims-test", "那把读散文的尺自己还咬得动吗（往临时目录里种 29 格假件）",
          lambda: run_script(["scripts/code_claims.py", "--self-test"])),
         ("drift-test", "比表那把尺自己还咬得动吗（往临时沙盒里种 9 格表）",
          lambda: run_script(["scripts/table_drift.py", "--self-test"])),
@@ -680,7 +681,7 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
                         "全靠这一条分开）。"))
     if "num-test" in f:
         out.append(("num-test",
-                    "`num-test` 那条红**不是说文档里的数抄错了**：那 26 份文档是它自己种的临时件，"
+                    "`num-test` 那条红**不是说文档里的数抄错了**：那 26 格文档是它自己种的临时件，"
                     "仓库里那两篇它一个字没读。它说的是数尺的判据或者措辞变了 —— "
                     "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/doc_num.py`（2.58）。"))
         if "numbers" not in f:
@@ -698,19 +699,19 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
                     "\n           反过来它绿也不读成「数都挂全了」：它报的是分母，不是判决。"))
     if "um-test" in f:
         out.append(("um-test",
-                    "`um-test` 那条红也**不是说文档里有数没挂**：那 22 份文档是它自己种的临时件，"
+                    "`um-test` 那条红也**不是说文档里有数没挂**：那 30 格文档是它自己种的临时件，"
                     "\n           跑完就回收，仓库里那两篇它一个字没读。它说的是分桶的判据或者措辞变了 —— "
                     "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/unmarked_nums.py`（2.59）。"))
         if "unmarked" not in f:
             out.append(("um-test/unmarked-green",
-                        "`unmarked` 绿、`um-test` 红 —— 上面那几行数（甲 74、乙 109、丙 481）"
+                        "`unmarked` 绿、`um-test` 红 —— 上面那几行数（甲、乙、丙那三行）"
                         "\n           **这一轮不能读**：它们出自一把自己承认咬不动的尺。"
                         "\n           而 `numbers` 那句「比了 74 处」不受牵连，那是另一把尺量的。"))
     if "doc-test" in f:
         # 这一句要挡住的是那种最贵的误读：以为 `doc-test` 在说「文档里有一条命令写错了」。
-        # 那是 `doc-cmds` 的活；这一条扫的是它自己种的 25 份临时文档，跟仓库里那三篇无关。
+        # 那是 `doc-cmds` 的活；这一条扫的是它自己种的 35 格临时文档，跟仓库里那三篇无关。
         out.append(("doc-test",
-                    "`doc-test` 那条红也**不是说文档里有命令写错了**：那 25 份文档是它自己种的临时件，"
+                    "`doc-test` 那条红也**不是说文档里有命令写错了**：那 35 格文档是它自己种的临时件，"
                     "\n           跑完就回收，仓库里那三篇它一个字没读。它说的是命令尺的判据或者措辞变了 —— "
                     "先看它点的是 `G` 组（误伤）还是 `B` 组（该红没红），再 `git log -p scripts/check_doc_cmds.py`（2.57）。"))
         if "doc-cmds" not in f:
@@ -762,7 +763,7 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
                         "\n           2.72 那十一格结构判据在今天的文档里一处实例都没有，这一屏上它们唯一的证据就是这一条。"))
     if "doctests-test" in f:
         out.append(("doctests-test",
-                    "`doctests-test` 那条红**不是说仓库里哪件脚本的用例跑不起来**：那四十三格是它自己种在"
+                    "`doctests-test` 那条红**不是说仓库里哪件脚本的用例跑不起来**：那 48 格是它自己种在"
                     "\n           临时沙盒里的假件，仓库里那些件它一件都没起。它说的是收集器那一档"
                     "\n           （逐件真跑 + 护栏 + 数合计）的判据或措辞变了 —— "
                     "\n           红了先 `git log -p scripts/run_doctests.py`（2.74）。"))
@@ -778,8 +779,10 @@ def dispositions(fails: Sequence[str]) -> list[tuple[str, str]]:
         out.append(("across",
                     "`across` 那条红**不是说整册那些判决没人钉**：缺口多少句它都不判，"
                     "\n           今天那一片缺口配的是退 0（2.76 那一档的取舍）。这一句故意不写句数 —— "
-                    "\n           它在这里是**函数体里的字面量**，`code_claims` 那一把读不到（只读 docstring），"
-                    "\n           写死一个数就是让它自己飘：上一版写 278，同一节里 `steps()` 那份已经量到 262。"
+                    "\n           不是因为它读不到：2.83 起 `code_claims` 连函数体里的字面量一起读，"
+                    "写死了就会被核。是因为**它没有真值可核** —— 那三个数的单位是「句」，"
+                    "\n           出自 `run_doctests --across` 那一遍的读数，不在这把尺认的两种形状里，"
+                    "写死一个数就是让它自己飘（上一版写 278，同一节里 `steps()` 那份已量到 262）。"
                     "\n           要现在的三个数，看 `steps()` 里 `across` 那一段，或直接跑那一把。"
                     "\n           它红只有两种读法，"
                     "\n           屏幕上各自点名：写「读不通」是**某一件的源码 AST 过不去、或不是 UTF-8 文本**"
