@@ -110,7 +110,11 @@ from doc_num import (DOC, SANDBOX, Cell, build_cell, hide_tmp,  # noqa: E402
                      ragged_cells, unresolvable)
 from unmarked_nums import braced_cells          # noqa: E402  花括号那道闸只有一份
 from baseline_guard import guard as guard_names  # noqa: E402
-from run_doctests import add_doctest_flag, run_own  # noqa: E402  `--doctest` 那面旗的口径只有一份
+from run_doctests import (DOCTEST_FLAG, SELF_TEST_FLAG,            # noqa: E402
+                          arg_door_answered, arg_door_exit, run_own)
+# `--doctest` 那一旗在 2.69 起口径只有一份；2.79 起「这一遍答哪一扇」也只有一份。
+# （这里原先还挂着 `add_doctest_flag`：改前就没人用它 —— 这一件的 `--doctest` 是上面
+# `parse_args` 里自己 `add_argument` 的，help 那句话与共享那句不同。死进口一条，顺带删。）
 from code_claims import to_int                  # noqa: E402  中文数字→整数，认不出返回 None（不猜）
 from stray_names import RED as NAME_RED        # noqa: E402  「这一档名字要跳过」= 只有 red 那一档
 from stray_names import classify as classify_name  # noqa: E402  「这是同步盘掉进来的副本」只判一次
@@ -806,15 +810,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--self-test", action="store_true", dest="self_test",
                     help=f"往临时目录里种 {len(BASELINE)} 格已知形状的文档，问这把尺判得对不对")
     ap.add_argument("--doctest", action="store_true",
-                    help="只跑它自己的 doctest（读 `args.doctest`，所以这一屏不读任何文档）")
+                    help="只跑它自己的 doctest（答的是 `--doctest` 那一扇，所以这一屏不读任何文档）")
     return ap.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.doctest:
+    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(args)
+    if answered == DOCTEST_FLAG:
         return run_own(sys.modules[__name__])   # 2.69：答在 `main()` 里，不在收尾那一道
-    if args.self_test:
+    if answered == SELF_TEST_FLAG:
         return self_test()                      # 先跑掉：这一档一个字都不该读仓库里那几篇
     docs = [s.strip() for s in args.docs.split(",") if s.strip()]
     if not docs:

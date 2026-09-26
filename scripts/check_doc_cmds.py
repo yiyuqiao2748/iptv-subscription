@@ -79,7 +79,8 @@ from doc_num import BIN_BODY, read_doc          # noqa: E402
 # 「一个 「」 就够把整句真引用一起豁免」），这里不许再粗判一遍。
 from code_claims import quote_spans             # noqa: E402
 # 2.69 同上：`--doctest` 这一旗在哪一层被认、那一屏说什么话，都不许每件写一遍。
-from run_doctests import add_doctest_flag, has_parser, run_own   # noqa: E402
+from run_doctests import (DOCTEST_FLAG, SELF_TEST_FLAG, add_doctest_flag,     # noqa: E402
+                          arg_door_answered, arg_door_exit, has_parser, run_own)
 
 ROOT = Path(__file__).resolve().parent.parent
 # 「会自己过期的命令」那一层要复用 `src.cli` 里的 `build_parser()` / `replay_gate()`
@@ -1383,10 +1384,14 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"往临时文件里种已知好坏的 {len(BASELINE)} 格文档，逐格核对这把尺说了什么")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
-    if args.doctest:
+    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(args)
+    if answered == DOCTEST_FLAG:
         # 排在 `--self-test` 之前：这一支连临时沙盒都不建，只读说明书。
         return run_own(sys.modules[__name__])
-    if args.self_test:
+    if answered == SELF_TEST_FLAG:
         # 这一档不读任何真文档，所以它排在 `paths` 之前；`docs` 参数一起给了也不生效（明说了）。
         return self_test()
 

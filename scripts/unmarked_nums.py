@@ -67,7 +67,8 @@ from baseline_guard import guard as guard_names  # noqa: E402
 # 在这一屏上完全同形 —— 都是 0 字节、都退 0。
 # （2.69 顺手删掉的一处重复：同一个 `from run_doctests import run_own` 在这里写了两遍，
 # 各带一段注释 —— 两份注释说的是同一件事，第二份是 2.68 收尾时贴上去没对上位置。）
-from run_doctests import run_own  # noqa: E402
+from run_doctests import (DOCTEST_FLAG, SELF_TEST_FLAG, arg_door_answered,   # noqa: E402
+                          arg_door_exit, run_own)
 
 FENCE = re.compile(r"^\s*```")
 NUM = re.compile(r"\d[\d,]*")
@@ -488,7 +489,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # —— 2.69 之前只有前一重：挂号在 parser、应答在模块收尾，于是 `main(["--doctest"])`
     # 这一种调法（基线格子调尺子就是这一种）会越过收尾、直接去读那两篇真文档。
     ap.add_argument("--doctest", action="store_true",
-                    help="只跑它自己的 doctest（读 `args.doctest`，所以这一屏不会读任何文档）")
+                    help="只跑它自己的 doctest（答的是 `--doctest` 那一扇，所以这一屏不会读任何文档）")
     return ap.parse_args(argv)
 
 
@@ -527,9 +528,13 @@ def read_all(paths: Sequence[Path]) -> tuple[list[tuple[str, str]], list[tuple[s
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.doctest:
+    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(args)
+    if answered == DOCTEST_FLAG:
         return run_own(sys.modules[__name__])   # 2.69：答在 `main()` 里，不在收尾那一道
-    if args.self_test:
+    if answered == SELF_TEST_FLAG:
         return self_test()            # 先跑掉：这一档一个字都不该读仓库里那两篇文档
     paths = doc_paths(args.docs)
     base = Path(args.base)

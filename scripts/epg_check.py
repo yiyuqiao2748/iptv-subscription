@@ -54,7 +54,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from baseline_guard import guard as guard_names          # noqa: E402  顿号那道闸（几把基线尺共用）
-from run_doctests import add_doctest_flag, run_own       # noqa: E402  `--doctest` 那一旗的口径只有一份
+from run_doctests import (DOCTEST_FLAG, SELF_TEST_FLAG, add_doctest_flag,      # noqa: E402
+                          arg_door_answered, arg_door_exit, run_own)
+# `--doctest` 那一旗的口径只有一份；2.79 起「这一遍答哪一扇」也只有一份
 from doc_num import hide_tmp, read_doc                   # noqa: E402
 from src.check.epg import align_all, coverages, load_bytes, parse_tv # noqa: E402
 from src.cli import load_epg_config                        # noqa: E402
@@ -881,9 +883,13 @@ def main(argv: list[str]) -> int:
                          "一格一格看退码和屏幕上的句子对不对得上（一个请求都不发，也不需要 --playlist 真的存在）")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
-    if args.doctest:
+    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(args)
+    if answered == DOCTEST_FLAG:
         return run_own(sys.modules[__name__])   # 2.69：先答说明书，一个请求都不发
-    if args.self_test:
+    if answered == SELF_TEST_FLAG:
         return self_test()
 
     cfg = Path(args.config)

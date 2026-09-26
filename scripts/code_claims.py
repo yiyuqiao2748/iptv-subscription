@@ -71,7 +71,8 @@ from baseline_guard import guard as guard_names  # noqa: E402
 # 「跑自己那份用例、收尾说一句」这一支的口径只有一份（2.68）：`run_doctests` 是收用例的那一个，
 # 这句话该由它说。以前这里写的是 `doctest.testmod(verbose=False).failed` —— 量到 31 条和
 # 一条都没量到，屏幕上都是 0 字节。
-from run_doctests import run_own  # noqa: E402
+from run_doctests import DOCTEST_FLAG, SELF_TEST_FLAG, arg_door_answered   # noqa: E402
+from run_doctests import arg_door_exit, run_own   # noqa: E402
 
 PY = "假件.py"                                   # 沙盒里种的那个「被量的代码」
 COPYISH = re.compile(r"\s\d+\.py$")             # `check_doc_cmds 2.py` 那种同步盘冲突副本
@@ -452,9 +453,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--self-test", action="store_true", help="种已知形状的假件，逐格对期望")
     ap.add_argument("--doctest", action="store_true", help="只跑本文件的用例")
     a = ap.parse_args(argv)
-    if a.doctest:
+    door_rc = arg_door_exit(a)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(a)
+    if answered == DOCTEST_FLAG:
         return run_own(sys.modules[__name__])
-    if a.self_test:
+    if answered == SELF_TEST_FLAG:
         return self_test()
     vals, holes = truth_of()
     root = Path(a.root)

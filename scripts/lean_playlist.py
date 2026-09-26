@@ -39,7 +39,9 @@ import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
-from run_doctests import add_doctest_flag, run_own   # `--doctest` 那一旗的口径只有一份（§2.69）
+from run_doctests import (DOCTEST_FLAG, SELF_TEST_FLAG, add_doctest_flag,   # noqa: E402
+                          arg_door_answered, arg_door_exit, run_own)
+# `--doctest` 那一旗的口径只有一份（§2.69）；2.79 起「这一遍答哪一扇」也只有一份
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "data" / "output"
@@ -489,10 +491,14 @@ def main(argv: list[str]) -> int:
                     help="不问表，只问这一支自己还咬得动吗：往临时沙盒里种基线那 12 格，逐格对")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
+    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(args)
 
-    if args.doctest:
+    if answered == DOCTEST_FLAG:
         return run_own(sys.modules[__name__])   # 2.69：先答说明书，一张表都不读
-    if args.self_test:
+    if answered == SELF_TEST_FLAG:
         return self_test()
 
     src, dst = resolve_io(args.src, args.dst)

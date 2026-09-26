@@ -86,7 +86,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / "scripts") not in sys.path:      # 为了 import `baseline_guard`（2.58 共用的那道闸）
     sys.path.insert(0, str(ROOT / "scripts"))
 from baseline_guard import guard as guard_names  # noqa: E402
-from run_doctests import add_doctest_flag, run_own   # noqa: E402  `--doctest` 那一旗的口径只有一份
+from run_doctests import (DOCTEST_FLAG, SELF_TEST_FLAG, add_doctest_flag,   # noqa: E402
+                          arg_door_answered, arg_door_exit, run_own)
+# `--doctest` 那一旗的口径只有一份；2.79 起「这一遍答哪一扇」也只有一份
 
 # 「 数字」结尾：`计划书 2.md` 的 stem 是 `计划书 2`，`index 3` 的 stem 就是它自己，两种都要认。
 CONFLICT = re.compile(r" \d+$")
@@ -516,10 +518,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="把总数按顶层目录拆开印（总数会自己动，拆开才知道是谁动的）")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
+    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(args)
 
-    if args.doctest:
+    if answered == DOCTEST_FLAG:
         return run_own(sys.modules[__name__])   # 2.69：先答说明书，一个目录都不扫
-    if args.self_test:
+    if answered == SELF_TEST_FLAG:
         return self_test()
 
     root = Path(args.root).expanduser()

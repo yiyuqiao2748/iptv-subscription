@@ -52,7 +52,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from baseline_guard import guard as guard_names  # noqa: E402  三把基线尺共用那道顿号闸
-from run_doctests import add_doctest_flag, run_own   # noqa: E402  `--doctest` 那一旗的口径只有一份
+from run_doctests import (DOCTEST_FLAG, SELF_TEST_FLAG, add_doctest_flag,   # noqa: E402
+                          arg_door_answered, arg_door_exit, run_own)
+# `--doctest` 那一旗的口径只有一份；2.79 起「这一遍答哪一扇」也只有一份
 from probe_pack import (base_of, channel_groups, focus_by_host,  # noqa: E402
                         host_of, load_results, load_stats)
 from src.check.scope import PUBLIC, load_reachability            # noqa: E402
@@ -477,9 +479,13 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"往临时目录里种 {len(BASELINE)} 格已知好坏的文档，问这把尺自己还咬不咬得动")
     add_doctest_flag(ap)
     args = ap.parse_args(argv)
-    if args.doctest:
+    door_rc = arg_door_exit(args)      # 2.79：两扇一起递时不再静默，那句门口话与收集器同一份
+    if door_rc is not None:
+        return door_rc
+    answered = arg_door_answered(args)
+    if answered == DOCTEST_FLAG:
         return run_own(sys.modules[__name__])   # 2.69：先答说明书，一篇文档都不读
-    if args.self_test:
+    if answered == SELF_TEST_FLAG:
         return self_test()           # 先跑掉：这一档一个字都不该读仓库里那三篇文档
 
     base = Path(args.base)
