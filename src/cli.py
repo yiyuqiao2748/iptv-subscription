@@ -1568,7 +1568,32 @@ def load_lean_fn():
 
     scripts/ 不是包，所以按文件路径加载；文件不在就返回 None，
     主流程照常出 aptv.m3u / hunan.m3u，不因诊断用的附属文件而失败。
+
+    加载前先把 `scripts/` 那一格插进 `sys.path`：那一份文件开头要向同一格里的邻居要门口
+    那几样（§2.69 立的「一旗一个写法」），而那个邻居**只有把 `scripts/` 当搜索路径
+    才找得着**。以前只有「把本件当脚本跑」那一头有这一级（`__main__` 收尾插的），
+    **同一个进程里 import 起来调 `main()` 的人**没有 —— 于是 `build` 一路走到出表前一步，
+    由 `cmd_build` 在这里裸抛 `ModuleNotFoundError`（§2.85 那遍 A/B 的对照辛抓到，
+    那一遍沙盒种好了、源也读进来了，屏幕停在「节目单：未启用」之后一句没有）。
+    同一种「换一棵树要先把它那一格插进去」的药 `run_doctests.host` 已经立过（§2.75），
+    这里照同一味，不重抄那份道理。
+
+    >>> import sys
+    >>> saved = [p for p in sys.path if p.endswith("/scripts")]     # 假装是「import 起来调」的那个人
+    >>> for p in saved:
+    ...     sys.path.remove(p)
+    >>> try:
+    ...     got = load_lean_fn()
+    ... except ModuleNotFoundError as e:
+    ...     got = f"★在这儿裸崩了：{e}"
+    ... finally:
+    ...     sys.path[:0] = saved
+    >>> callable(got)
+    True
     """
+    slot = str(ROOT / "scripts")
+    if slot not in sys.path:            # 只插一次；已经在就不动（别人的顺序比我的偏好要紧）
+        sys.path.insert(0, slot)
     path = ROOT / "scripts" / "lean_playlist.py"
     if not path.exists():
         return None
@@ -2859,6 +2884,54 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     走真的 `main()`，不是又调一遍 `build_arg_problems`：那几句判决长在 `cmd_build` 的
     出口上，只调判据就把门口那一层绕开了（与另外几把尺同一口径）。
 
+    **§2.85 的兜底**：真跑之前，本函数体内自己再问一遍「产物要落在哪儿、argv 里那些词指着
+    谁」。判据一个字都不读 `cell_guards` 那三本账 —— 只认换好值的 argv、自己这颗沙盒树、
+    `SUBCOMMANDS` 与 `ROOT`。为什么要两道各写一遍：闸是**在册**的（旗标会长、账本得有人登记，
+    `cell_ledger_covers_parser` 盯的就是这一族漂移），兜底只盯一味药 —— 写在 argv 里的路径
+    落不落得进沙盒。§2.84 那台变异机上，一把 `cell_guards → return []` 的刀让说明书里
+    `argv=("build",)` 那一格一路走到底、真发了一趟 HTTPS（护栏记到 17 条动作、三条点名
+    `ipinfo.io`），要拦的就是那一步。两扇门：写门（`--out` 没钉进沙盒，取的就是仓库默认
+    目录）与读门（argv 里任何一个带 `/` 的词展开后落在仓库里 —— 不必认得那是哪个旗标）。
+    拦下来时**一个字节都不写、一个包都不出**：判据排在种文件之前。这一句也不是许愿 ——
+    `/tmp/zero285.py` 那遍 A/B（16:55，跑在 /tmp 的副本树里，`socket` 那一层换成
+    **只记不放**的线）量的是八串：兜底在位的那一遍，八串全部「走进真跑 0 次、沙盒里多出
+    0 个件、落进仓库 `data/` 0 项、想出门 0 次」；只把体内那句 `if stop:` 摘掉、同一棵树
+    再跑一遍，同一批读成 **8 次／33 个／5 项／3 次**。两遍数字一模一样的串是 **0** 串，
+    所以那些「0」每一个都是兜底改写的走向，不是一句「量具没连上」——「拦不拦都一样」
+    正是 §2.83 那条「不红时印不印」在这一节的形状。
+
+    同一味药还要在**闸也没了**的那一棵树上量一遍（`/tmp/mut285.py`，跑在 16:58—17:01 之间）：三棵副本树、
+    同一个 `argv=("build",)`（就是 §2.84 说明书里那一格，一个字没改）、同一根只记不放的线。
+    干净那一棵退 2、屏幕上出现闸那句；只把 `cell_guards` 改成开口就 `return []`（兜底不动）
+    读成 **走进真跑 0 次、想出门 0 次**、改由兜底喊停、整扇退 1；闸与兜底一起摘（等于
+    §2.84 那一版的行为）同一格读成 **1 次／3 次**，屏幕上却是一个 `✓`。§2.84 写在边界里的
+    那句「复发口子本节没有堵：谁再跑一次 M1 的 doctest 门，还是会出网」到这一遍可以收口。
+    （同一格在三棵树上「落进仓库」都读 0 —— 那一档两遍一模一样，说的是这一串本身走不到
+    写表那一步，不是兜底改写的走向；本节不把它算进兜底的功劳。）
+
+    下面那五条例子摆的全是「该被拒」的写法，每一条都故意带上 `--verify` 与 `--replay`
+    那一对 —— 兜底哪天被人删了，它们最坏停在「只能选一个」那一句上。这句话不是许愿：
+    16:35 的预检（`/tmp/preflight285.py`，挂在只记不拦的护栏底下、跑在 /tmp 的副本树里）
+    量到甲丙丁三串各退 1、`--out` 空着那一串退 2（那是 argparse 自己拦的）、落进仓库 0 件、
+    出门 0 行；同一遍的对照「不带那一对、又不递 `--out`」往 `data/output/` 落了 **6 件** ——
+    所以那几行「0 件」不是空话。戊／己两串由 16:55 那遍 A/B 量到（摘掉兜底那一遍：举手 1、
+    屏幕上出现那句、落进仓库 0 项）。而**庚那种「一个字都不递、开关一个都不带」的写法
+    故意不做成例子**：例子是会在别人机器上照跑的，它一删兜底就会真出门 —— A/B 那一遍拿
+    只记不放的线量到的企图是 3 次 `raw.githubusercontent.com:443`，而 §2.84 的
+    15:31 那一遍（真出门、护栏只记不拦）记下的是 3 趟 `ipinfo.io:443`。要拦的就是那一步。
+
+    最后一条例子（数字取成非数字）钉的不是兜底，是**接住 `SystemExit`** 那一句：
+    `argparse` 读不下去一串字时是抛码走人、不返回，而这一格只认返回码，所以一格坏 argv
+    会把**整扇** `--self-test` 打死在途中。这一条不是推想：A/B 的第一遍（16:51，那棵树里
+    还没有这一句 catch）里乙那一串在没有兜底的那一版让整个子进程退 **2**、一句结果都没
+    回来；补上 catch 之后 16:55 重跑，同一串读成「退码：期望 1，实际 2」—— 门还开着，
+    后面的格子照跑。坏 argv 因此从「砸门」变成「可钉的一格」。
+    同一遍里辛那一串（不带那一对、又不递 `--out`）在摘掉兜底的那一版往 `data/` 落了
+    **5 项**，被本函数自己那道指纹闸当场喊出「这一格动了仓库 `data/` 里的东西」。
+    上面 16:35 那遍预检对同一族写法量到的是 **6 件**：那一遍数的是「副本树里多出或改动的
+    件」，这一遍数的是「`data/` 指纹里对不上的项」（指纹连修改时刻一起比），两把尺各量各的，
+    本节没有把它们对成同一个数 —— 要用的时候注意是哪一个。
+
     >>> import tempfile
     >>> with tempfile.TemporaryDirectory() as d:
     ...     verdict, why, text = run_cell(Cell(who="举例", what="互斥那一档", rc=1,
@@ -2873,8 +2946,81 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     ...         wrote=("out/没有这一件.m3u",)), Path(d))
     >>> verdict, why
     ('bad', '说好了要落的件没落（或落成了空文件）：out/没有这一件.m3u')
+    >>> with tempfile.TemporaryDirectory() as d:      # 写门·没递：以前这一串一路走到仓库默认目录
+    ...     v, why, _ = run_cell(Cell(who="举例", what="`--out` 没递", rc=1,
+    ...         argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_ARGS_BASE),
+    ...         Path(d))
+    >>> v, why
+    ('bad', '兜底：`--out` 没递 —— 取的是仓库默认的产物目录，这一格不跑')
+    >>> with tempfile.TemporaryDirectory() as d:      # 写门·递在末位没值：argparse 取默认，同一条路
+    ...     v, why, _ = run_cell(Cell(who="举例", what="`--out` 空着", rc=1,
+    ...         argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_ARGS_BASE
+    ...               + ("--out",)), Path(d))
+    >>> v, why
+    ('bad', '兜底：`--out` 递在末位或后面紧跟旗标 —— 取的是仓库默认的产物目录，这一格不跑')
+    >>> with tempfile.TemporaryDirectory() as d:      # 写门·指到沙盒外（同一颗临时目录的另一头）
+    ...     v, why, _ = run_cell(Cell(who="举例", what="`--out` 在沙盒外", rc=1,
+    ...         argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_ARGS_BASE
+    ...               + ("--out", str(Path(d) / "elsewhere"))), Path(d))
+    >>> v, why
+    ('bad', '兜底：`--out` 不在这颗沙盒底下（<沙盒>/elsewhere）—— 这一格不跑')
+    >>> with tempfile.TemporaryDirectory() as d:      # 同一个旗标递两遍：后写的那条也算（写门）
+    ...     v, why, _ = run_cell(Cell(who="举例", what="两条 `--out`，后写的在仓库", rc=1,
+    ...         argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_TAIL
+    ...               + ("--out", "data/output")), Path(d))
+    >>> v, why
+    ('bad', '兜底：`--out` 不在这颗沙盒底下（data/output）—— 这一格不跑')
+    >>> with tempfile.TemporaryDirectory() as d:      # 读门：一个旗标名都不必认得，只看词落在哪
+    ...     v, why, _ = run_cell(Cell(who="举例", what="`--source` 指着仓库产物", rc=1,
+    ...         argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_TAIL
+    ...               + ("--source", "data/output/hunan.m3u")), Path(d))
+    >>> v, why
+    ('bad', '兜底：data/output/hunan.m3u 指着仓库里的东西 —— 这一格不跑')
+    >>> with tempfile.TemporaryDirectory() as d:      # 不走 `cmd_build` 的那几格：兜底不开火
+    ...     v, why, _ = run_cell(Cell(who="举例", what="拼错的子命令", rc=2,
+    ...         argv=("bulid",), has=("未知的子命令",)), Path(d))
+    >>> v, why
+    ('ok', '')
+    >>> with tempfile.TemporaryDirectory() as d:      # `argparse` 抛码走人：接住，别把整扇门打死
+    ...     v, why, text = run_cell(Cell(who="举例", what="数字取成非数字", rc=2,
+    ...         argv=("build", "--max-lines", "很多") + CELL_TAIL), Path(d))
+    >>> v, "invalid int value" in text
+    ('ok', True)
+    >>> [n for n in ("CELL_PATH_FLAGS", "CELL_SWITCHES", "CELL_LOCAL_PATH_FLAGS",     # 兜底不读账本
+    ...              "cell_guards", "cell_argv_words", "cell_flag_value")
+    ...  if n in run_cell.__code__.co_names]
+    []
     """
     tree = base / "tree"
+    argv = cell_argv(cell, tree)
+    # ———— §2.85 的兜底：只认 argv 与这棵树，不读 `cell_guards` 那三本账（理由见说明书）————
+    w: list[str] = []
+    for a in argv:                      # `--旗=值` 折成两个字：与闸同一形状，**故意重抄一份**
+        w += a.split("=", 1) if a.startswith("--") and "=" in a else [a]
+    stop = ""
+    if w and w[0] in SUBCOMMANDS:       # 不走 `cmd_build` 的那几格没有产物目录可管
+        here = tree.resolve()
+        spots = [i for i, a in enumerate(w) if a == "--out"]
+        nxt = w[spots[-1] + 1] if spots and spots[-1] + 1 < len(w) else ""
+        val = "" if not spots or nxt.startswith("-") else nxt
+        if not val:                     # 写门·没值：argparse 就用起手的默认目录
+            stop = ("兜底：`--out` " + ("没递" if not spots else "递在末位或后面紧跟旗标")
+                    + " —— 取的是仓库默认的产物目录，这一格不跑")
+        elif here != Path(val).resolve() and here not in Path(val).resolve().parents:
+            stop = (f"兜底：`--out` 不在这颗沙盒底下（{hide_tmp(val, base)}）"
+                    "—— 这一格不跑")
+        else:                           # 写门锁住了，才轮得到读门
+            for a in w:
+                if a.startswith("-") or "/" not in a:
+                    continue
+                q = (Path(a) if Path(a).is_absolute() else Path.cwd() / a).resolve()
+                if q == here or here in q.parents:
+                    continue
+                if q == ROOT or ROOT in q.parents:
+                    stop = f"兜底：{a} 指着仓库里的东西 —— 这一格不跑"
+                    break
+    if stop:
+        return "bad", stop, ""
     tree.mkdir(parents=True, exist_ok=True)
     try:
         for rel, body in cell_files(cell):
@@ -2883,12 +3029,16 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
             p.write_text(body, encoding="utf-8")
     except OSError as e:
         return "skip", f"种不出来，这一格没验成：{e}", ""
-    argv = cell_argv(cell, tree)
     before = data_fingerprint()
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             rc = main(list(argv))
+    except SystemExit as e:                       # `argparse` 读不下去一串字时是「抛码走人」，不返回。
+        rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        # 不接住它，一整扇 `--self-test` 会被一格坏 argv 打死（§2.85 那遍 A/B 里，摘掉兜底
+        # 那一遍的乙就是这么让子进程退 2、一句 RESULT 都没回来）。接住之后这一格照旧按
+        # 「退码对不对」判 —— 坏 argv 从「砸门」变成「可钉的一格」。
     except Exception as e:                        # noqa: BLE001  本件炸了算「跑过但不过」
         return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
     text = hide_tmp(buf.getvalue(), base)
