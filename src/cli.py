@@ -2345,7 +2345,12 @@ def cmd_build(argv: list[str]) -> int:
                         f"{trusted_rel} 那张仍是上一轮可信版本")
     report = format_report(
         sources=[f"{s['id']} ← {s['target']}" for s in sources] + (
-            [f"{LOCAL_ID} ← {LOCAL_SOURCES_FILE.relative_to(ROOT)}"
+            # 那份手工线路的名字要说得出在哪：`run_cell` 里第四道腿（`cell_bend`）会把它指进沙盒，
+            # 那时候它不在仓库底下 —— 拿 `relative_to(ROOT)` 直接折会抛 `ValueError`（崩在出表那一步，
+            # 不是判不过）。与上面 `cfg_name` 那一处同一个形状（2.53）。
+            [f"{LOCAL_ID} ← {(str(LOCAL_SOURCES_FILE.relative_to(ROOT))
+                             if LOCAL_SOURCES_FILE.is_relative_to(ROOT)
+                             else LOCAL_SOURCES_FILE)}"
              f"（手工核对 {len(local_lines)} 条）"] if local_lines else []),
         total_entries=len(entries),
         channels=channels,
@@ -3061,6 +3066,114 @@ def cell_wire_note(refusals: list[str]) -> str:
             "—— 被体内那根线当场拒了")
 
 
+# 第四道腿的名单：这些模块级常量是 `build_parser()` 里那些默认值的来路。`ROOT` 故意不在
+# 名单上 —— 它是 §2.70 那把护栏与 `run_cell` 里那道指纹闸的锚，拧了它两把尺读的就是沙盒了。
+CELL_BEND_NAMES = ("SOURCES_FILE", "LOCAL_SOURCES_FILE", "REACH_FILE", "EPG_FILE",
+                   "HISTORY_FILE", "PROBE_FILE", "CACHE_DIR")
+
+
+def cell_bend_map(tree: Path) -> dict[str, Path]:
+    """真跑那一格时，哪几条「仓库默认的绝对路径」临时指进这棵沙盒。
+
+    为什么要有这一道：闸与兜底读的都是 argv，一串字里没写那个旗标，取的就是仓库那一份
+    （§2.87 收尾时量到的那 3 次出门就是这么来的 —— 说明书里那一格故意什么都不递）。
+    第三道腿是在**出手那一刻**拦它，这一道更早：让它根本没有仓库那一份可读、可写、可缓存。
+
+    >>> m = cell_bend_map(Path("/tmp/沙盒"))
+    >>> tuple(m) == CELL_BEND_NAMES
+    True
+    >>> all(str(v).startswith("/tmp/沙盒/") for v in m.values())
+    True
+    >>> [k for k, v in m.items() if str(v).startswith(str(ROOT))]      # 一条都不许串回仓库
+    []
+    >>> [n for n in CELL_BEND_NAMES if n not in globals()]     # 常量被人改了名要当场红在这里
+    []
+    """
+    return {
+        "SOURCES_FILE": tree / "sources.yaml",
+        "LOCAL_SOURCES_FILE": tree / "sources_local.yaml",
+        "REACH_FILE": tree / "reachability.yaml",
+        "EPG_FILE": tree / "epg.yaml",
+        "HISTORY_FILE": tree / "hist.jsonl",
+        "PROBE_FILE": tree / "probe.json",
+        "CACHE_DIR": tree / "cache",
+    }
+
+
+def cell_bend_gaps() -> list[str]:
+    """那本名单**够不着**的旗标：默认值不从常量来、而是从 `ROOT` 现拼的那几条。
+
+    够不着只有一种来源：`build_parser()` 里写成 `str(ROOT / ...)` 的默认 —— 要盖住它就得拧
+    `ROOT`，而 `ROOT` 是 §2.70 的锚。这两条由第二道腿看着：`--out`、`--config` 不递就不跑。
+    这一句不是许愿：名单里新加一条、或者 `build_parser()` 新添一个指着仓库的默认，
+    下面那条例子就会把名字摊出来，而不是安静地少盖一处。
+
+    >>> cell_bend_gaps()
+    ['--config', '--out']
+    """
+    covered = {str(globals()[n]) for n in CELL_BEND_NAMES if n in globals()}
+    gaps: list[str] = []
+    for act in build_parser()._actions:           # noqa: SLF001  量具读自己的旗标登记处
+        for value in (getattr(act, "default", None), getattr(act, "const", None)):
+            if not isinstance(value, str) or not value:
+                continue
+            try:
+                points_at_repo = Path(value).is_relative_to(ROOT)
+            except (ValueError, OSError):         # 相对路径、非法字符：不是仓库那一份
+                continue
+            if points_at_repo and value not in covered:
+                gaps.append(act.option_strings[0])
+                break
+    return gaps
+
+
+@contextlib.contextmanager
+def cell_bend(tree: Path):
+    """把上面那张名单临时接到模块级常量上，出这一小段再原样装回去。
+
+    只在这一小段在身上（和第三道腿同一个位置）：`--self-test` 那一扇里在册格子要读的仓库
+    默认，跟真跑那一格时读的必须是同一个东西，否则量的就不是那串字了。
+
+    下面那条例子读的是 `live` 而不是裸的名字 —— doctest 拿到的是模块 `__dict__` 的**一份
+    拷贝**，拧的是真那一份，例子读不见（头一遍我按裸名写，屏幕上回来的是 `False False`）。
+
+    >>> import tempfile
+    >>> live = __import__("importlib").import_module(cell_bend.__module__).__dict__
+    >>> before = (str(live["SOURCES_FILE"]), str(live["CACHE_DIR"]), str(live["REACH_FILE"]))
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     with cell_bend(Path(d)) as bent:
+    ...         print(str(live["SOURCES_FILE"]) == f"{d}/sources.yaml",
+    ...               str(live["CACHE_DIR"]) == f"{d}/cache")
+    ...     print((str(live["SOURCES_FILE"]), str(live["CACHE_DIR"]),
+    ...            str(live["REACH_FILE"])) == before, len(bent))
+    True True
+    True 7
+    >>> [n for n in ("CELL_PATH_FLAGS", "CELL_SWITCHES", "cell_guards") if n in cell_bend.__code__.co_names]
+    []
+
+    这一拧**盖全了没有**：下面那两行问的是同一件事的两面 —— 没拧的时候模块级有几个常量指着仓库、
+    名单外剩哪一个；拧上之后还剩几个（答：一条都不剩）。哪天有人新加一条 `X = ROOT / ...`
+    而没进名单，头那一行会先把那个名字摊出来。
+    >>> repo = [n for n, v in live.items() if n.isupper() and isinstance(v, (str, Path))
+    ...         and str(v).startswith(str(ROOT))]
+    >>> len(repo), [n for n in repo if n not in CELL_BEND_NAMES]
+    (8, ['ROOT'])
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     with cell_bend(Path(d)):
+    ...         sorted(n for n, v in live.items() if n.isupper() and isinstance(v, (str, Path))
+    ...                and str(v).startswith(str(ROOT) + "/"))
+    []
+    """
+    saved = [(n, globals()[n]) for n in CELL_BEND_NAMES]
+    for name, path in cell_bend_map(tree).items():
+        globals()[name] = path
+    try:
+        yield [n for n, _ in saved]
+    finally:
+        for name, old in saved:
+            globals()[name] = old
+
+
 def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     """跑一格：`(判定, 给人看的那句, 抹过临时路径的原文)`，判定是 `ok`／`bad`／`skip`。
 
@@ -3118,6 +3231,9 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     屏幕上没有一句说过它们。也就是说：那几趟真出门**从来没有**被哪一扇门的屏幕报过，能报的只有
     这根线；而它唯一一次「只开口不拦人」（W07 只记不拒）也正是靠这一栏读出来的（线句 **1**、
     想出门 **0** —— 那个 0 是量具的盲区，见 §2.87 边界）。
+    §2.88 把上面那一行的 4 次改小了：第四道腿（`cell_bend`）在真跑那一格之前就把「仓库那一份」
+    换成「沙盒那一份」，所以那 3 次不是被拦下来的，是**根本没走到**；同样这三把刀现在只剩那一
+    次故意的 `127.0.0.1`。要把那 3 次请回来，得连第四道腿一起摘 —— 电池里那一行叫「四腿全摘」。
 
     下面那五条例子摆的全是「该被拒」的写法，每一条都故意带上 `--verify` 与 `--replay`
     那一对 —— 兜底哪天被人删了，它们最坏停在「只能选一个」那一句上。这句话不是许愿：
@@ -3126,7 +3242,7 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     出门 0 行；同一遍的对照「不带那一对、又不递 `--out`」往 `data/output/` 落了 **6 件** ——
     所以那几行「0 件」不是空话。戊／己两串由 16:55 那遍 A/B 量到（摘掉兜底那一遍：举手 1、
     屏幕上出现那句、落进仓库 0 项）。而**庚那种「一个字都不递、开关一个都不带」的写法
-    故意不做成例子**：例子是会在别人机器上照跑的，它一删兜底就会真出门 —— A/B 那一遍拿
+    故意不做成例子**：例子是会在别人机器上照跑的，它一删兜底就会走到仓库那一份 —— A/B 那一遍拿
     只记不放的线量到的企图是 3 次 `raw.githubusercontent.com:443`，而 §2.84 的
     15:31 那一遍（真出门、护栏只记不拦）记下的是 3 趟 `ipinfo.io:443`。要拦的就是那一步。
 
@@ -3198,6 +3314,8 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     ...              "cell_guards")                  # 那根线不读账本，也不问闸（独立第三条腿）
     ...  if n in cell_wire.__code__.co_names]
     []
+    >>> "cell_bend" in run_cell.__code__.co_names    # 第四道腿确实接在下面真跑那一小段上
+    True
     >>> with tempfile.TemporaryDirectory() as d:      # 不走 `cmd_build` 的那几格：兜底不开火
     ...     v, why, _ = run_cell(Cell(who="举例", what="拼错的子命令", rc=2,
     ...         argv=("bulid",), has=("未知的子命令",)), Path(d))
@@ -3256,7 +3374,7 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            with cell_wire(refusals):                 # 第三道腿：只在这一小段在身上
+            with cell_wire(refusals), cell_bend(tree):     # 第三／四道腿：只在这一小段在身上
                 rc = main(list(argv))
     except SystemExit as e:                       # `argparse` 读不下去一串字时是「抛码走人」，不返回。
         rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
