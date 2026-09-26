@@ -59,6 +59,7 @@ import importlib.util
 import io
 import json
 import re
+import socket
 import sys
 import tempfile
 import urllib.request
@@ -2520,7 +2521,29 @@ def cmd_build(argv: list[str]) -> int:
 
 SELF_TEST_FLAG = "--self-test"          # 与 `run_doctests.SELF_TEST_FLAG` 同一串字
 
-CELL_URL_PLACEHOLDER = "http://example.invalid/用不上的上游"   # 就算真去读也连不上
+CELL_URL_PLACEHOLDER = "http://example.invalid/用不上的上游"
+# 这一句先前写着「在册那 17 种源全写着 `enabled: false`」，是**把「17 格」听成了「17 种源」**——
+# 两个数都不是那个意思。19:14:21 那一遍拿代码自己复量（直接读 `BASELINE` 与 `cell_files`）读到的是：
+# `--self-test` 在册 **17** 格里，自己写 `sources.yaml` 的 **0** 格，于是 17 格种的全是下面那份
+# `CELL_SOURCES_ALL_OFF`（一条 `enabled: false`）、种了启用源的 **0** 格 —— 这才是「没有一格真去读
+# 这个地址」的来路。仓库那份 `config/sources.yaml` 是**另一件事**：5 条源、3 条写着 `enabled: true`，
+# 而那 17 格的 `--sources-file` 指着沙盒，一寸都碰不到它。
+
+# §2.87 那格「闸眼里合格、只有线拦得住」的摆法用的地址 —— **故意是回环字面量，不是上面那个名字**。
+# 两处理由，都是量出来的，不是想出来的：
+#   * `scripts/work_guard.py` 那柄护栏（§2.70 的「不许去干自己的活」）在 `urllib.Request` 与
+#     `http.client.connect` 这两处就记账了，比这根线**高一层**。19:13 那一遍把下面这个常量的值
+#     换成 `CELL_URL_PLACEHOLDER` 各跑一遍 `work_guard.py … src/cli.py --doctest`，两遍都看见
+#     `http.client.connect 1`、`urllib.Request 1` 这两条，可判决分了两档：名字那一遍
+#     「落在仓库里 **2** 条：出门 urllib.Request -> example.invalid、出门 http.client.connect -> …」
+#     **退 1**，回环这一遍「落在仓库里 **0** 条（被量件退 0）」**退 0**。也就是这根线明明当场拒了、
+#     护栏仍按「本件想联网」判它不过 —— `local_host("127.0.0.1")` 说「哪儿都没去」，护栏看见的才是
+#     一趟被拒的回环尝试，不再是一趟真出门。
+#   * 万一这根线被谁摘掉（变异电池里就有这一把），名字一律要问 DNS、那一问在开代理的机器上
+#     是真上墙的（`work_guard.py:458-460` 写死了这条），而 `127.0.0.1:1` 一个字节都不出机器。
+#     19:10:30 那一遍电池里唯一一把摘掉整根线的（W01）读到的正是这个分别：外面那根只记不放的线
+#     记到 `getaddrinfo 127.0.0.1` **1** 次，不是 `example.invalid`。
+CELL_URL_LOOPBACK = "http://127.0.0.1:1/用不上的上游"
 
 
 class Cell(NamedTuple):
@@ -2596,6 +2619,17 @@ CELL_SOURCES_ALL_OFF = (
     "    enabled: false\n"
 )
 CELL_EPG_OFF = f"epg:\n  url: {CELL_URL_PLACEHOLDER}\n  enabled: false\n"
+# 一份「启用」的源清单 —— §2.87 那根线唯一能当场开火的摆法：三扇开关全递、五个路径旗全指沙盒，
+# 在**闸眼里是合规格**的（普查 戊 的 B4 那一串读到「闸：放行」），可 `collect` 照样要去取那一条
+# 上游。闸与兜底读的都是 argv，全仓库没有一处读「种进沙盒的那份配置」，所以这一串两道腿都看不见。
+# 那两个引号是必需的：`id: on` 在 YAML 里读出来是布尔 True，§2.46 那道形状闸会先把它吃掉。
+CELL_SOURCES_ON = (
+    "version: 1\n"
+    "sources:\n"
+    '  - id: "on"\n'
+    f"    url: {CELL_URL_LOOPBACK}\n"
+    "    enabled: true\n"
+)
 # 一份「假上游」：四条线路、三个对得上名单、一个对不上。地址全指向 127.0.0.1，
 # 因为这一格**不实测**（`--verify` 由预跑闸拦着），这些地址从来不会被拨一次。
 CELL_FAKE_M3U = (
@@ -2878,6 +2912,155 @@ def hide_tmp(text: str, base: Path) -> str:
     return text.replace(str(base), "<沙盒>")
 
 
+# §2.87 的第三道腿：真跑期间身上带的一根线。要换掉的出口分两处 —— `socket` 模块上的
+# `getaddrinfo`（一次 DNS 查询**本身**就是一趟外发，戊 量到 B4 那一串就是先摸到它），和
+# `socket.socket` 上的两个方法（TCP 握手那一步）。这两处各是谁撑着，由**逐槽摘掉**读出来的
+# （`/tmp/mut287g.out` 19:32:44：W03 只把两个方法清空 → 外面记到 `connect 192.0.2.1`＋
+# `connect_ex 192.0.2.1` 各 1 次；W04 只把 `getaddrinfo` 清空 → 记到 `getaddrinfo 127.0.0.1`＋
+# `getaddrinfo localhost` 各 1 次；W10 只摘 `connect_ex` → 记到它 1 次）—— 三把各漏各的，
+# 谁也不是多余的那一个。早先 乙 那遍（`/tmp/census287b.out` 18:37:03）问的是另一件事：只拒
+# `connect`＋`connect_ex` 那一层，上面三层（`create_connection`／`getaddrinfo`／`urlopen`）
+# 各记到 **3** 次、一共 12 次；只拒 `create_connection` 则 `getaddrinfo` **0** 次、`urlopen`
+# 仍 **3** 次 —— 本节头一版把后一条记成了「`getaddrinfo` 仍漏 3 次」，19:19 复量时才对着原文件
+# 读出是 0（`create_connection` 在它上游，拒在前头它就再没响过）；写进这里的只能是量的那一个。
+# `scripts/work_guard.py:56-63` 那张 03:55:42／03:56:21 两遍
+# 量出来的层表对得上：`create_connection()` 发的是 `getaddrinfo` ＋ `connect`，所以接住这两处
+# 就接住了从 `urllib`、`http.client` 与裸 `socket()` 走过来的路子 —— 唯独不握手的 `sendto`
+# （直接扔 UDP 数据报）在这两处之外，本件没有那种用法（哪天有了就得再添槽）。
+# 但那张表说的是**审计层**（PEP 578 的钩子在 C 里面补发事件名），**属性层是另一回事**：
+# 只把 `socket.socket.connect` 换掉时，`connect_ex(("192.0.2.1", 443))` 一次都不经过它、
+# 直落 C 并返回 0（量于 §2.87 的本机 3.12.14，下面那条例子钉着它）—— 所以 `connect_ex`
+# 得单列，不能当 `connect` 的同义词省掉。
+CELL_WIRE_ENTRY = ("getaddrinfo",)
+CELL_WIRE_METHODS = ("connect", "connect_ex")
+
+
+def cell_wire_name(arg: object) -> str:
+    """把一次外发的「去哪」那一个参数折成「谁」：`(host, port)` 摊平、`Request` 认它的 URL。
+
+    递进来的是**哪一个**参数由 `cell_wire` 按槽位定：模块函数（`getaddrinfo`）的第一个就是，
+    而 `socket.socket` 上的方法头一个是 socket 自己 —— 越过它，不然点出来的会是
+    `<socket.socket fd=3, family=2, ...>` 这么一截，谁也没去成却报了个名（自己量到的，见 §2.87）。
+
+    >>> cell_wire_name(("raw.githubusercontent.com", 443))
+    'raw.githubusercontent.com:443'
+    >>> cell_wire_name(("/tmp/sock",))               #  Unix 域套接字：第一个字就是路径
+    '/tmp/sock'
+    >>> cell_wire_name("127.0.0.1")
+    '127.0.0.1'
+    """
+    if hasattr(arg, "full_url"):
+        return str(arg.full_url)
+    if isinstance(arg, tuple):
+        return ":".join(str(x) for x in arg[:2] if x != "")
+    return str(arg)
+
+
+@contextlib.contextmanager
+def cell_wire(sink: list[str]):
+    """真跑那一小段时间里，把 `socket` 的出口换成「先记进 `sink`，再当场拒」。
+
+    为什么要在这**体内**再装一根线：仓库外面那根只跟着量具走。`scripts/work_guard.py` 那柄
+    PEP 578 审计钩护的是「`run_doctests` 逐件真跑」那一族**子进程**；而 `run_cell` 是在
+    `--self-test`／`--doctest` 这同一进程里跑格子的，那柄钩子够不着。至于量具那一侧临时套的
+    只记不放的线，别人照抄 `python -m src.cli --self-test`、或者只跑 `--doctest`，身上是一根
+    都没有的 —— 而 §2.86 量到：闸与兜底两条腿一起不在时，`--doctest` 那一扇门会真发三趟
+    HTTPS（`self_test` 说明书里那一格 `argv=("build",)`，读的是仓库那份真源清单）。
+    这一根线跟着代码走，不跟着量具走。
+
+    它**不读**那三本账、也不读 `cell_guards`：装的是「想出门」这一味，不是「旗标对不对」。
+    它对在册那些格子是一个字都不改 —— 拿 HEAD 与工作树各跑两扇门逐行比（`/tmp/cmp287.py`，
+    19:30:56 那一遍：件 3469 行 → 3696 行）：self-test 那一屏 20 行里 **0** 行不同，doctest 那一屏
+    4 行里只不同 2 行 —— 就是「合计 N 个用例」那一行的两面（261 → 280）；两棵树各自跑两扇门，
+    四遍都想出门 **0** 次、退 **0**。
+    反过来**摘掉**它屏幕才变：电池里 W01 那一把（只把 `run_cell` 里那处接线去掉）读到
+    `--doctest` 红 **1** 例、`--self-test` 那一屏照旧**一个字没改**（就是上面 19:30:56 那遍量的
+    那 0 行差），而外面那根只记不放的线记到 `getaddrinfo 127.0.0.1` **1** 次（19:32:44 那一遍；
+    19:10:30 那一遍除行号与后来新加的那一栏外同读）。注意红的那一例在哪儿：是本件下面
+    `run_cell` 里那一格「闸放行、只有线拦得住」，**不是**上面那几条例子 —— 那几条直接调
+    `cell_wire`，不经过 `run_cell` 那处接线，所以接线整根断掉它们仍然全绿。钉住「接线」这一处
+    的就是那**一**条例子，这是本节最小的那块覆盖，边界写在 §2.87。
+
+    线记的是**「谁」**，不是「哪一口」：`getaddrinfo` 的第一个参数就是主机名（端口在第二位，
+    说的是想要哪种地址族的结果，不是「去哪」），`connect` 递的才是 `(host, port)` ——
+    所以那两槽一个记成 `localhost`、一个记成 `192.0.2.1:443`，读得清谁在前谁在后。
+    例子故意用 `localhost` 与 TEST-NET 的字面量：万一这根线被谁摘掉，`localhost` 由 `/etc/hosts`
+    就地答、数字地址根本不问 DNS，两步都不会上墙；换个公网名字（`work_guard.py:458-460` 写着
+    「名字一律要问 DNS」）就等于把「线被摘掉」变成一次真出门。
+
+    >>> refusals: list[str] = []
+    >>> import socket
+    >>> with cell_wire(refusals):                     # 线在身上时：谁摸谁被点名
+    ...     try:
+    ...         socket.getaddrinfo("localhost", 80)
+    ...     except OSError as e:
+    ...         print("拒了：", e)
+    拒了： 这一格不许出门（getaddrinfo localhost）
+    >>> refusals
+    ['getaddrinfo localhost']
+    >>> with cell_wire(refusals):                     # 另一槽：绕开查名、直接握手（拿 IP 字面量
+    ...     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)   #   就不必经 `getaddrinfo`）
+    ...     try:
+    ...         s.connect(("192.0.2.1", 443))                     # 故意用 UDP：connect 只登记
+    ...     except OSError as e:
+    ...         print("拒了：", e)                                #   对端，一个包都不发、不等握手
+    拒了： 这一格不许出门（connect 192.0.2.1:443）
+    >>> refusals                     # 记的是地址，不是那个 socket 自己（方法槽越过头一个参数）
+    ['getaddrinfo localhost', 'connect 192.0.2.1:443']
+    >>> with cell_wire(refusals):                     # 第三个名字也不能省：只接 `connect` 接不住它
+    ...     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    ...     try:
+    ...         s.connect_ex(("192.0.2.1", 443))
+    ...     except OSError as e:
+    ...         print("拒了：", e)
+    拒了： 这一格不许出门（connect_ex 192.0.2.1:443）
+    >>> saved = socket.getaddrinfo                   # 出了那一小段，原样还回去
+    >>> with cell_wire([]):
+    ...     pass
+    >>> socket.getaddrinfo is saved
+    True
+    """
+    import socket
+
+    saved: list[tuple[object, str, object, int]] = [
+        (socket, n, getattr(socket, n), 0) for n in CELL_WIRE_ENTRY]
+    saved += [(socket.socket, n, getattr(socket.socket, n), 1)
+              for n in CELL_WIRE_METHODS]      # 1：方法头一个参数是 socket 自己
+
+    def make(name: str, offset: int):
+        def trip(*a: object, **k: object) -> object:      # 只记不放：点名进 sink，再抛
+            target = cell_wire_name(a[offset] if len(a) > offset else "")
+            sink.append(f"{name} {target}")
+            raise OSError(f"这一格不许出门（{name} {target}）")
+        return trip
+
+    try:
+        for owner, name, _old, offset in saved:
+            setattr(owner, name, make(name, offset))
+        yield sink
+    finally:
+        for owner, name, old, _offset in saved:
+            setattr(owner, name, old)
+
+
+def cell_wire_note(refusals: list[str]) -> str:
+    """线点名之后那句话：几次、都是谁（最多摊三个，全在 `sink` 里，一句话说得完）。
+
+    空的那一侧返回空串，而不是「想出门 0 次」—— 这句话是**给失败那一格配的说明**，
+    没想出门的格子不该被安上这么一句（`run_cell` 里两处都是先 `if refusals` 再拼它，
+    而判「过不过」读的仍是 `refusals` 这个列表本身，不是这句话）。
+
+    >>> cell_wire_note(["getaddrinfo 127.0.0.1", "connect 192.0.2.1:443"])
+    '线：这一格想出门 2 次（getaddrinfo 127.0.0.1、connect 192.0.2.1:443）—— 被体内那根线当场拒了'
+    >>> cell_wire_note([])
+    ''
+    """
+    if not refusals:
+        return ""
+    return (f"线：这一格想出门 {len(refusals)} 次（{'、'.join(refusals[:3])}）"
+            "—— 被体内那根线当场拒了")
+
+
 def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     """跑一格：`(判定, 给人看的那句, 抹过临时路径的原文)`，判定是 `ok`／`bad`／`skip`。
 
@@ -2907,7 +3090,34 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     §2.84 那一版的行为）同一格读成 **1 次／3 次**，屏幕上却是一个 `✓`。§2.84 写在边界里的
     那句「复发口子本节没有堵：谁再跑一次 M1 的 doctest 门，还是会出网」到这一遍可以收口。
     （同一格在三棵树上「落进仓库」都读 0 —— 那一档两遍一模一样，说的是这一串本身走不到
-    写表那一步，不是兜底改写的走向；本节不把它算进兜底的功劳。）
+    写表那一步，不是兜底改写的走向；本节不把它算进兜底的功劳。）上面那两句「到这一遍可以
+    收口」到 §2.86 的验收电池里要补一个条件：那只对**只摘闸**那一档成立，把闸与兜底**两条腿
+    一起摘**掉还剩 3 次真 HTTPS 出门（`self_test` 说明书里 `argv=("build",)` 那一格，读的是
+    仓库那份真源清单）—— 那一档由本节下面那根线接住。
+
+    **§2.87 的第三道腿**（`cell_wire`，就套在下面 `main()` 那一句外面）：真跑那一小段时间里
+    在身上再套一根线 —— 把 `socket.getaddrinfo` 与 `socket.socket` 的 `connect`／`connect_ex`
+    换成「先点名进 `refusals`、再当场拒」。它补的不是上面那道兜底的缺口，是**两条腿共有的一块
+    盲区**：闸与兜底读的都是 argv，而「这一格到底出不出网」还由**种进沙盒的那份配置**说了算。
+    普查（`/tmp/census287e.py` → `census287e.out`）量到六串摆法里有一串 —— 三扇开关全递、五个
+    路径旗全指沙盒，在闸眼里是**合规格**的、兜底也放行 —— 照样摸了一次它自己那条启用的上游
+    （那一遍种的是 `example.invalid`；下面那格现在种回环字面量，理由写在 `CELL_URL_LOOPBACK`
+    头上）；把线摘掉，同一串判 **ok、那一句是空的**（体外那根量具替它记下了：六串各一次）。所以这里
+    加的是一条判据：`refusals` 非空 ⇒ 这一格判不过，**退码对上了也不过**。
+    同一遍还量到一件事：干净那一棵树上它一次都不开火（在册那些格子不碰网络，屏幕上没有一个字
+    是它写的），所以钉它的不是 `--self-test` 那一扇，是下面那条例子（它从 `run_cell` 直接进，
+    不经过闸）。19:32:44 那一遍验收电池（`/tmp/mut287.py` → `/tmp/mut287g.out`：**12** 把单刀＋
+    **3** 把组合＝**15** 把 × 两扇门＝**30** 行读数）里那一栏「线句」把它说清了。那一栏数的是
+    doctest 报失败时 **`Got:` 那一面**里「线：这一格想出门」出现几次 —— 只按整屏数会连
+    `Expected:` 的回声一起数进去（19:17:30 那一遍就是：W01 把线整个摘掉，屏幕上仍读到 1 次，那一句
+    是失败报告替它回显的期望值，不是线说的）。三行对照：**干净** 线句 **0**／回声外也 0（它在
+    册的格子里一个字都不写）；**W01**（只摘这处接线）线句 **0**、而外面那根只记不放的线记到
+    `getaddrinfo 127.0.0.1` **1** 次 —— 那一次今天由例子红着说；**N01＋N11＋W01**（三条腿全摘）
+    屏幕新增点名 **17** 句、线句仍 **0**，外头却记到 **4** 次（`getaddrinfo 127.0.0.1` 1 次＋
+    `getaddrinfo raw.githubusercontent.com` **3** 次），那 3 次全走在 `redirect_stdout` 底下、
+    屏幕上没有一句说过它们。也就是说：那几趟真出门**从来没有**被哪一扇门的屏幕报过，能报的只有
+    这根线；而它唯一一次「只开口不拦人」（W07 只记不拒）也正是靠这一栏读出来的（线句 **1**、
+    想出门 **0** —— 那个 0 是量具的盲区，见 §2.87 边界）。
 
     下面那五条例子摆的全是「该被拒」的写法，每一条都故意带上 `--verify` 与 `--replay`
     那一对 —— 兜底哪天被人删了，它们最坏停在「只能选一个」那一句上。这句话不是许愿：
@@ -2976,6 +3186,18 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     ...               + ("--source", "data/output/hunan.m3u")), Path(d))
     >>> v, why
     ('bad', '兜底：data/output/hunan.m3u 指着仓库里的东西 —— 这一格不跑')
+    >>> with tempfile.TemporaryDirectory() as d:      # 第三道腿·闸放行的那一串：沙盒里源是启用的
+    ...     v, why, text = run_cell(Cell(who="举例", what="想取沙盒里那条启用上游", rc=1,
+    ...         argv=("build",) + CELL_TAIL,
+    ...         files=(("sources.yaml", CELL_SOURCES_ON),)), Path(d))
+    >>> v, why                       # 退码对上了也不过：那一格期望 1、真跑的也是 1，
+    ('bad', '线：这一格想出门 1 次（getaddrinfo 127.0.0.1）—— 被体内那根线当场拒了')
+    >>> "127.0.0.1" in text          # 屏幕上那句降级话照旧由 `collect` 说（线只管点名）
+    True
+    >>> [n for n in ("CELL_PATH_FLAGS", "CELL_SWITCHES", "CELL_LOCAL_PATH_FLAGS",
+    ...              "cell_guards")                  # 那根线不读账本，也不问闸（独立第三条腿）
+    ...  if n in cell_wire.__code__.co_names]
+    []
     >>> with tempfile.TemporaryDirectory() as d:      # 不走 `cmd_build` 的那几格：兜底不开火
     ...     v, why, _ = run_cell(Cell(who="举例", what="拼错的子命令", rc=2,
     ...         argv=("bulid",), has=("未知的子命令",)), Path(d))
@@ -2993,6 +3215,7 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     """
     tree = base / "tree"
     argv = cell_argv(cell, tree)
+    refusals: list[str] = []               # §2.87 那根线的点名册：真跑那一小段时间里谁摸过出口
     # ———— §2.85 的兜底：只认 argv 与这棵树，不读 `cell_guards` 那三本账（理由见说明书）————
     w: list[str] = []
     for a in argv:                      # `--旗=值` 折成两个字：与闸同一形状，**故意重抄一份**
@@ -3033,15 +3256,19 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            rc = main(list(argv))
+            with cell_wire(refusals):                 # 第三道腿：只在这一小段在身上
+                rc = main(list(argv))
     except SystemExit as e:                       # `argparse` 读不下去一串字时是「抛码走人」，不返回。
         rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
         # 不接住它，一整扇 `--self-test` 会被一格坏 argv 打死（§2.85 那遍 A/B 里，摘掉兜底
         # 那一遍的乙就是这么让子进程退 2、一句 RESULT 都没回来）。接住之后这一格照旧按
         # 「退码对不对」判 —— 坏 argv 从「砸门」变成「可钉的一格」。
     except Exception as e:                        # noqa: BLE001  本件炸了算「跑过但不过」
-        return "bad", f"跑这一格时抛了 {type(e).__name__}: {e}", ""
+        return "bad", (f"跑这一格时抛了 {type(e).__name__}: {e}"
+                       + (f"；{cell_wire_note(refusals)}" if refusals else "")), ""
     text = hide_tmp(buf.getvalue(), base)
+    if refusals:                                  # 想出门 = 这一格没过，退码对上了也不过（戊 量到）
+        return "bad", cell_wire_note(refusals), text
     if data_fingerprint() != before:
         return "bad", "这一格动了仓库 `data/` 里的东西（名字/字节/修改时刻对不上）", text
     if rc != cell.rc:
