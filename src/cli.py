@@ -6,6 +6,7 @@
     python -m src.cli build --fresh          # 联网抓 config/sources.yaml 里启用的源
     python -m src.cli build --verify         # 生成前实测线路（probe:false 的源跳过）
     python -m src.cli build --source <url或文件>   # 临时换上游，忽略 sources.yaml
+    python -m src.cli build --no-epg --no-egress-check   # 连本机出口也不问：这一轮一次网也不出
 
 产物在 data/output/：aptv.m3u（全量）、hunan.m3u（只有湖南本地）、report.md、probe.json（实测过才有）。
 
@@ -39,6 +40,10 @@ id 由谁先创建频道桶决定」的行为。
 出口身份和逐条结果一起写进 data/output/probe.json。
 2026-09-21 起：TUN 关掉后本机出口就是家里的联通宽带，与 Apple TV 同一张网，
 这时的实测数字可以直接当判据。
+问出口那一趟（`egress_hint()` → ipinfo.io）**每轮都跑**，连 `--no-epg` 的纯离线重出也算 ——
+在出口不对的时刻它只是一句没用的话，而拿量具量一次 build 就多出一趟外网。
+`--no-egress-check` 关的是这一趟：一轮离线重出因此可以「一次网也不出」，屏幕上那句
+「本机当前出口」跟着换成「没问」（为什么不能印成「未取到」见 `egress_of()`）。
 
 体检报警的那一轮 `--verify` 只写履历，产物（两张 m3u + probe.json + report.md）关进
 `data/output/untrusted/`，`data/output/` 保持上一轮可信版本 —— 因为 `--verify` 会删线路，
@@ -147,6 +152,33 @@ def judgment_egress(egress: str, warns: list[str], runs: list[dict], *, measured
     if measured and egress and not warns:
         return egress
     return hist.current_egress("", runs)
+
+
+EGRESS_SKIPPED = "没问（--no-egress-check）"      # 屏幕上那一格：这一轮压根没去问
+EGRESS_MISSING = "未取到"                        # 屏幕上那一格：问了、没问到（网络问题）
+
+
+def egress_of(no_check: bool, hint: str) -> str:
+    """屏幕上那句「本机当前出口」该印什么。
+
+    为什么要单独一位：`build` 每跑一次都花一趟 HTTPS 去问 ipinfo.io（`env.EGRESS_URL`），
+    而离线重出（不带 `--verify`）的那一轮**并不拿它量任何东西** —— 11:44 那份普查
+    （`/tmp/probe281b_1144.log`，18 档全在仓库的一份副本里跑、产物 `--out` 指到沙盒）量到：
+    停在门口的 11 档一条这类动作都没看见，而走完 `collect` 的 7 档每档的护栏行里都有
+    「出门 ... -> ipinfo.io」。给这一趟一个不出的法，一轮离线重出才算真的一次网也不出。
+    为什么这一位要认三档而不是两档：问到（`hint` 有字）、问了没问到（`hint` 是空串 —— 
+    `egress_hint()` 超时或失败就静默回空串）、这一轮选择不问（递了 `--no-egress-check`），
+    是三件不同的事。把第二件印成空行，下次排查网络的人就看不见「问过、没问到」这条线索；
+    把第三件印成「未取到」，他就会被误导成网络问题。所以两边各有各的一句话。
+
+    >>> egress_of(True, "")
+    '没问（--no-egress-check）'
+    >>> egress_of(False, "119.39.40.124 CN AS4837")
+    '119.39.40.124 CN AS4837'
+    >>> egress_of(False, "")                       # 问了、没问到：仍是那句「未取到」
+    '未取到'
+    """
+    return EGRESS_SKIPPED if no_check else (hint or EGRESS_MISSING)
 
 
 UNTRUSTED = "untrusted"
@@ -1696,6 +1728,10 @@ def build_parser() -> argparse.ArgumentParser:
     6
     >>> ap.parse_args([]).replay      # 不带 --replay：空串，不是 None —— 闸只看这个
     ''
+    >>> ap.parse_args([]).no_egress_check, ap.parse_args(["--no-egress-check"]).no_egress_check
+    (False, True)
+    >>> egress_of(ap.parse_args([]).no_egress_check, "1.2.3.4 CN")   # 不递那一旗：照旧印问到的
+    '1.2.3.4 CN'
     """
     ap = argparse.ArgumentParser(prog="src.cli build", description="生成 APTV 订阅列表")
     ap.add_argument("--source", action="append", dest="sources",
@@ -1739,6 +1775,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "节目单本身优先从它的 cache 读，缓存里没有今天才联网）")
     ap.add_argument("--no-epg", action="store_true",
                     help="完全不读节目单：不改任何 tvg-id，头部地址回到「抄上游第一条」的老行为")
+    ap.add_argument("--no-egress-check", action="store_true", dest="no_egress_check",
+                    help="本轮不去问本机出口是谁（默认每跑一次 build 都要花一趟 HTTPS 问 "
+                         "ipinfo.io，连 --no-epg 也算这一趟）。离线重出、拿假源试表时用它，"
+                         "那一轮就一次网也不出；屏幕上「本机当前出口」那一句会明说「没问」。"
+                         "别拿它配 --verify：体检靠的就是知道出口在不在家里那张网上")
     return ap
 
 
@@ -1889,6 +1930,9 @@ def cmd_build(argv: list[str]) -> int:
     # 实测履历：判据只认「体检没报警」的那些轮，而参照出口由 judgment_egress() 定
     # （表是给电视用的，开发机代理在哪不影响这个依据）。
     # 出口身份现查一次就够，屏幕、probe.json、落盘、体检都用它，别重复查。
+    # `--no-egress-check` 省掉的是这一趟：省下来的空串不进屏幕（那里印「没问」），只进
+    # 落盘的那份来历（`egress: ""`）—— 「没问」与「没问到」在履历里本来就是同一个形状，
+    # 分辨它靠的是同一行的 `mode`（offline / verify / replay），不是靠猜。
     history_path = Path(args.history)
     hist_problems: list[str] = []
     runs = hist.load_history(history_path, problems=hist_problems)
@@ -1896,7 +1940,8 @@ def cmd_build(argv: list[str]) -> int:
         # 履历读不出行只影响排序（不删台），所以报一句就往下走 —— 但不能不报：
         # 不报的话这份履历读不出来和「履历里就是没有可信轮次」长成同一个样子（2.32 同族）。
         print(f"⚠️ 实测履历：{p}", file=sys.stderr)
-    egress = egress_hint()
+    egress = "" if args.no_egress_check else egress_hint()
+    egress_says = egress_of(args.no_egress_check, egress)   # 屏幕上那一句：没问 ≠ 没问到
     warns = measurement_warnings(egress) if args.verify else []   # 只查一次，后面几处复用
     # --replay：本轮不实测，但把上一轮那一份**逐条**判决当本轮结果用。于是判据出口、
     # 体检警告、该不该隔离，全部换成「那一轮」的 —— 本机现在的出口在这一轮不构成任何测量
@@ -2264,7 +2309,7 @@ def cmd_build(argv: list[str]) -> int:
                 "align": align,
                 "caveat": epg_cfg.get("caveat", "")}
     if quarantined:
-        verify_note += (f"。⚠️ 本轮体检报警（出口 {egress or '未取到'}），被剔的那些多半是假阴性，"
+        verify_note += (f"。⚠️ 本轮体检报警（出口 {egress_says}），被剔的那些多半是假阴性，"
                         f"所以这份表只落在 {UNTRUSTED}/ 里当排查用，"
                         f"{trusted_rel} 那张仍是上一轮可信版本")
     report = format_report(
@@ -2352,10 +2397,10 @@ def cmd_build(argv: list[str]) -> int:
     if hosts:
         if replay:
             print(f"  线路判决来自 {replay_at} 那一轮（出口 {replay_meta['egress'] or '未知'}，"
-                  f"详情见 {args.replay}）；本机当前出口 {egress or '未取到'}，"
+                  f"详情见 {args.replay}）；本机当前出口 {egress_says}，"
                   "这一轮没拿它量过任何东西")
         else:
-            print(f"  实测出口：{egress or '未取到'}（详情见 {out_dir / 'probe.json'}）")
+            print(f"  实测出口：{egress_says}（详情见 {out_dir / 'probe.json'}）")
         bad = [h for h in hosts if h["ok"] < h["total"]]
         for h in bad[:8]:
             print(f"    ⚠️ {h['host']:<34} 可用 {h['ok']}/{h['total']}"
