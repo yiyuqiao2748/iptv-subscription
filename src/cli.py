@@ -2472,7 +2472,7 @@ def cmd_build(argv: list[str]) -> int:
 # 放在别处只会钉住别处。本件体内原本一个 `Cell(` 都没有 —— 面 C 那句「`src/cli.py`
 # 判决 76 句：钉住 0」说的就是这件事（计划书 §2.81「下一步」第（1）条）。
 #
-# 这一堆的**安全边界**是从 §2.81 那次事故里直接抄出来的，四条都写在下面的闸里：
+# 这一堆的**安全边界**是从 §2.81 那次事故里直接抄出来的，五条都写在下面的闸里：
 #   1. 每一格都得把「五份输入 + 一份产物」指进自己那棵临时树，**跑之前**先过
 #      `cell_guards` 那道闸；不合格就整片不跑（退 2），不是「跑起来再说」。
 #   2. 出网那三样（`--fresh`、单递的 `--verify`、不带 `--no-egress-check` 的默认）
@@ -2482,6 +2482,10 @@ def cmd_build(argv: list[str]) -> int:
 #      `collect` 之前」那道判断被改坏，最坏也只走到「没有启用的源」那一句停下。
 #   4. 每一格跑之前跑之后各数一次 `data/` 整棵的指纹（`data_fingerprint`），动了就判
 #      这格不符 —— 那次事故里「被覆盖了」是第二天靠文档尺读出来的，这里要它当场就有对照。
+#   5. §2.84 补的：闸的账本必须跟着 parser 长。上面那两本只登了「五份输入 + 一份产物」，
+#      于是 `--source` 指着仓库产物、`--try-reach` 指着仓库规则、**空着的** `--replay`
+#      （默认就是仓库那份真记录）这三种写法在闸眼里一路静默 —— 现在它们进第二本账
+#      `CELL_LOCAL_PATH_FLAGS`，而「有没有旗标漏登」由 `cell_ledger_covers_parser` 自己问。
 #
 # 口径与另外几把共用的那一族一样（`run_doctests`／`table_drift`／`lean_playlist` 各带
 # 一份 `Cell`，2.65 立的先例：互相 import 就是绕环，而本件是被 `run_doctests` 面 A 真
@@ -2621,6 +2625,46 @@ def cell_argv(cell: Cell, tree: Path) -> list[str]:
     return [a.replace("{T}", str(tree)) for a in cell.argv]
 
 
+def cell_argv_words(cell: Cell) -> list[str]:
+    """把 `--旗=值` 那一式摊开成两个字，让闸只需认一种摆法。
+
+    argparse 两式同义（`--out x` 与 `--out=x`），而闸原先按整词比 —— 于是
+    `--out=data/output` 在闸眼里是「没递 --out」（那句还是假的），在 argparse 眼里
+    是「产物写进仓库」。这一句先把这一族折成同一形状，上面那本账才谈得上「每一处都查」。
+
+    >>> cell_argv_words(Cell(who="x", what="y", rc=1,
+    ...     argv=("build", "--out={T}/out", "--replay-max-age=6")))
+    ['build', '--out', '{T}/out', '--replay-max-age', '6']
+    >>> cell_argv_words(Cell(who="x", what="y", rc=1, argv=("build", "--source=a=b.m3u")))
+    ['build', '--source', 'a=b.m3u']
+    """
+    out: list[str] = []
+    for a in cell.argv:
+        if a.startswith("--") and "=" in a:
+            flag, _, val = a.partition("=")
+            out.extend([flag, val])
+        else:
+            out.append(a)
+    return out
+
+
+def cell_flag_value(argv: list[str], i: int) -> str:
+    """第 `i` 位那个旗标的值：递在末位、或后面紧接着又是一个旗标 —— 都算「没值」。
+
+    后面是旗标时 argparse（`nargs="?"` 那一族）不会把它吃成值，所以「空着」与
+    「后面跟了旗标」是同一件事：这一位**没递值**，走的是那一版默认。
+
+    >>> cell_flag_value(["build", "--out", "{T}/out"], 1)
+    '{T}/out'
+    >>> cell_flag_value(["build", "--replay", "--out", "{T}/out"], 1)   # 后面是旗标
+    ''
+    >>> cell_flag_value(["build", "--out"], 1)                         # 递在末位
+    ''
+    """
+    nxt = argv[i + 1] if i + 1 < len(argv) else ""
+    return "" if nxt.startswith("-") else nxt
+
+
 # 预跑闸的账本：路径类的旗标必须指进沙盒，开关类的必须递，出网的那几样必须不递。
 CELL_PATH_FLAGS = (
     ("--out", "会把产物写进默认目录（那次事故盖的就是这一份）"),
@@ -2634,6 +2678,16 @@ CELL_SWITCHES = (
     ("--no-epg", "会去取节目单（优先读缓存，缓存没有就联网）"),
     ("--no-egress-check", "会花一趟 HTTPS 问本机出口是谁"),
 )
+# 第二本账：**不递没事、一递就必须指进沙盒**的那几样。§2.84 之前闸只查上面那本，
+# 于是「`--source` 指着仓库产物」「`--replay` 不带值」这两种写法在闸眼里是静默的 ——
+# 而 `--replay` 不带值取的就是仓库那份真记录（`--help` 与本件 1722 行都钉着这个默认）。
+# 第三样字「能不能不递值」：`--replay` 是 `nargs="?"`，空着走默认，所以空着就要点名；
+# `--source`／`--try-reach` 必须带值，空着的那一种 argparse 自己就退 2，落不到「读仓库」这一族。
+CELL_LOCAL_PATH_FLAGS = (
+    ("--source", "会把仓库那份真产物当上游读进来：量的就不是种下去的假件了", False),
+    ("--try-reach", "会读仓库那份候选规则：规则一变，那一格说的话就跟着变", False),
+    ("--replay", "不带值的那一版取的是仓库那份 data/output/probe.json", True),
+)
 
 
 def cell_guards(cells: Iterable[Cell]) -> list[str]:
@@ -2643,6 +2697,11 @@ def cell_guards(cells: Iterable[Cell]) -> list[str]:
     话就是「等看见的时候已经盖掉了」；而出网这一头根本没有事后账可看（代理此刻开着，
     量到的一切都是假的，见 §2.81）。这一道只看 argv，不起进程、不碰盘，所以它拦下的
     那一遍一个字都不会写、一个包都不会发。
+
+    §2.84 把这本账补全了三处：同一个旗标递**好几遍**时每一遍都查（argparse 后写的算，
+    只看第一处等于查那个不生效的）、`--旗=值` 那一式折成同一形状、以及第二本账
+    `CELL_LOCAL_PATH_FLAGS`（`--source`／`--try-reach`／`--replay`：不递没事、一递就得进沙盒，
+    而 `--replay` **空着**那一版取的就是仓库那份真记录）。
 
     >>> bad = cell_guards([Cell(who="甲", what="y", rc=1, argv=("build",))])
     >>> len(bad), bad[0]
@@ -2666,22 +2725,58 @@ def cell_guards(cells: Iterable[Cell]) -> list[str]:
     ...     argv=("build", "--verify") + CELL_TAIL)])
     ['丙：递了 --verify 又没配 --replay —— 那一格会真的动手测每条线路（出网）']
     >>> cell_guards([Cell(who="丁", what="两扇一起递：门口就停，量的是那一句", rc=1,
-    ...     argv=("build", "--verify", "--replay") + CELL_TAIL)])
+    ...     argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_TAIL)])
     []
+    >>> cell_guards([Cell(who="戊", what="递 --fresh：那一格联网抓上游", rc=1,
+    ...     argv=("build", "--fresh") + CELL_TAIL)])
+    ['戊：递了 --fresh —— 那一格会联网抓上游，格子只在离线里跑']
+    >>> cell_guards([Cell(who="己", what="`--out` 递在末位、后面没值", rc=1,
+    ...     argv=("build",) + CELL_ARGS_BASE + ("--out",))])
+    ['己：`--out` 没指进这一格的沙盒（递的是 空）']
+    >>> cell_guards([Cell(who="庚", what="同一个旗标递两遍：argparse 后写的算，两处都得查",
+    ...     rc=1, argv=("build", "--config", "{T}/c.yaml", "--sources-file", "{T}/s.yaml",
+    ...                 "--epg-file", "{T}/e.yaml", "--history", "{T}/h.jsonl",
+    ...                 "--skip-local", "--no-epg", "--no-egress-check",
+    ...                 "--out", "{T}/out", "--config", "config/channels.yaml"))])
+    ['庚：`--config` 没指进这一格的沙盒（递的是 config/channels.yaml）']
+    >>> cell_guards([Cell(who="辛", what="`--source` 指着仓库那份真产物", rc=1,
+    ...     argv=("build", "--source", "data/output/hunan.m3u") + CELL_TAIL)])
+    ['辛：`--source` 没指进这一格的沙盒（递的是 data/output/hunan.m3u —— 会把仓库那份真产物当上游读进来：量的就不是种下去的假件了）']
+    >>> cell_guards([Cell(who="壬", what="`--replay` 空着：默认就是仓库那份真记录", rc=1,
+    ...     argv=("build", "--replay") + CELL_TAIL)])
+    ['壬：`--replay` 没指进这一格的沙盒（递的是 空 —— 不带值的那一版取的是仓库那份 data/output/probe.json）']
+    >>> cell_guards([Cell(who="癸", what="`--旗=值` 那一式：合规的写法别再被读成没递", rc=1,
+    ...     argv=("build", "--config={T}/c.yaml", "--sources-file={T}/s.yaml",
+    ...           "--epg-file={T}/e.yaml", "--history={T}/h.jsonl",
+    ...           "--skip-local", "--no-epg", "--no-egress-check", "--out={T}/out"))])
+    []
+    >>> cell_guards([Cell(who="子", what="`--try-reach` 指着仓库那份候选规则", rc=1,
+    ...     argv=("build", "--try-reach", "config/reachability.yaml") + CELL_TAIL)])
+    ['子：`--try-reach` 没指进这一格的沙盒（递的是 config/reachability.yaml —— 会读仓库那份候选规则：规则一变，那一格说的话就跟着变）']
     """
     bad: list[str] = []
     for cell in cells:
-        argv = cell.argv
+        argv = cell_argv_words(cell)
         if not argv or argv[0] != "build":
             continue                      # 不走 `cmd_build` 的那几格没有产物目录可管
         for flag, why in CELL_PATH_FLAGS:
-            if flag not in argv:
+            spots = [i for i, a in enumerate(argv) if a == flag]
+            if not spots:
                 bad.append(f"{cell.who}：没递 {flag} —— {why}")
-                continue
-            i = argv.index(flag)
-            val = argv[i + 1] if i + 1 < len(argv) else ""
-            if "{T}" not in val:
-                bad.append(f"{cell.who}：`{flag}` 没指进这一格的沙盒（递的是 {val or '空'}）")
+            for i in spots:
+                val = cell_flag_value(argv, i)
+                if "{T}" not in val:
+                    bad.append(f"{cell.who}：`{flag}` 没指进这一格的沙盒（递的是 {val or '空'}）")
+        for flag, why, bare in CELL_LOCAL_PATH_FLAGS:
+            for i, a in enumerate(argv):
+                if a != flag:
+                    continue
+                val = cell_flag_value(argv, i)
+                if not val and not bare:
+                    continue      # 那种写法 argparse 自己就退 2，读不到仓库，不归这一族
+                if "{T}" not in val:
+                    bad.append(f"{cell.who}：`{flag}` 没指进这一格的沙盒（递的是 "
+                               f"{val or '空'} —— {why}）")
         for sw, why in CELL_SWITCHES:
             if sw not in argv:
                 bad.append(f"{cell.who}：没递 {sw} —— {why}")
@@ -2690,6 +2785,38 @@ def cell_guards(cells: Iterable[Cell]) -> list[str]:
                        "那一格会真的动手测每条线路（出网）")
         if "--fresh" in argv:
             bad.append(f"{cell.who}：递了 --fresh —— 那一格会联网抓上游，格子只在离线里跑")
+    return bad
+
+
+def cell_ledger_covers_parser() -> list[str]:
+    """`build` 那把 parser 里**默认值落在仓库**的旗标，闸的三本账是否本本都认得它。
+
+    应该是空表。它盯的不是「哪句判决没写」，是「旗标会长、账本不会自己长」这一族：
+    §2.84 那个洞就是这么来的 —— `--replay` 的默认值是仓库那份真记录（`build_parser`
+    里 `const=str(PROBE_FILE)`，本件 1722 行那条 doctest 还钉着它），可闸的账本里没有它，
+    于是「`--replay` 空着递进来」这一格在闸眼里一路静默走到真数据上。
+    这一道把它换成一句读数：**新增一个默认落进仓库的旗标、又没登记进账本，这里就点名。**
+
+    走的是**活的** `build_parser()`，不是再抄一份名单：口径只有一份（§2.42 那一族的取舍）。
+
+    >>> cell_ledger_covers_parser()
+    []
+    >>> sorted(f for f, *_ in CELL_PATH_FLAGS)          # 那五样都必须落进仓库，才轮得到点名
+    ['--config', '--epg-file', '--history', '--out', '--sources-file']
+    """
+    named = ({f for f, *_ in CELL_PATH_FLAGS} | {f for f, *_ in CELL_SWITCHES}
+             | {f for f, *_ in CELL_LOCAL_PATH_FLAGS})
+    root = str(ROOT)
+    bad: list[str] = []
+    for act in build_parser()._actions:             # noqa: SLF001  旗标的登记处只有这一份
+        for opt in act.option_strings:
+            if not opt.startswith("--") or opt in named:
+                continue
+            for val in (act.default, act.const):
+                if isinstance(val, str) and val and (val.startswith(root)
+                                                     or val.startswith(("config/", "data/"))):
+                    bad.append(f"{opt} 的默认值落在仓库（{val}），可它不在这三本账里")
+                    break
     return bad
 
 
@@ -2735,7 +2862,8 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
     >>> import tempfile
     >>> with tempfile.TemporaryDirectory() as d:
     ...     verdict, why, text = run_cell(Cell(who="举例", what="互斥那一档", rc=1,
-    ...         argv=("build", "--verify", "--replay") + CELL_TAIL), Path(d))
+    ...         argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_TAIL),
+    ...         Path(d))
     >>> verdict, "只能选一个" in text
     ('ok', True)
     >>> with tempfile.TemporaryDirectory() as d:      # 退码对了，盘上却没有那一件：判不符
@@ -2789,7 +2917,7 @@ def run_cell(cell: Cell, base: Path) -> tuple[str, str, str]:
 # 而这一件天天在长 —— 抄一个没人重算的数，就是本册 §2.60 那把尺要抓的那一种病。
 BASELINE: tuple[Cell, ...] = (
     Cell(who="互斥", what="`--verify` 与 `--replay` 一起递：碰网络之前先拦", rc=1,
-         argv=("build", "--verify", "--replay") + CELL_TAIL,
+         argv=("build", "--verify", "--replay", "{T}/probe.json") + CELL_TAIL,
          has=("--verify 与 --replay 只能选一个",), lacks=("这一轮不出表。",)),
     Cell(who="max-lines 0", what="`--max-lines 0`：那张等于空表的数字在写盘之前就被拦下",
          rc=1, argv=("build", "--max-lines", "0") + CELL_TAIL,
