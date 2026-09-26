@@ -3156,11 +3156,207 @@ BASELINE: tuple[Cell, ...] = (
 )
 
 
+class GuardCase(NamedTuple):
+    """给闸出的一道题：这一串 argv 递进去，**必须**点名，而且必须喊出 `must` 里那几截话。
+
+    与 `Cell` 差在一件事：`Cell` 是「跑一格，对屏幕与盘上的期望」，`GuardCase` **根本不跑**。
+    它比的只有 `cell_guards` 那张嘴 —— 所以它没有 `rc`／`files`／`has`／`wrote` 那一整排
+    字段，那些字段在这里全没有意义（这一档不起进程、不碰盘、不出网）。
+
+    >>> GuardCase(who="举例", argv=("build",), must=("x",)).argv
+    ('build',)
+    """
+
+    who: str                                  # 题号：这道题摆的是哪一种坏法
+    argv: tuple[str, ...]                     # 递给 `cell_guards` 的原样一串
+    must: tuple[str, ...]                     # 闸的点名叫里必须有那几截（一句都不许多）
+
+
+# §2.86：闸自己那一档的题目本。九串的来路分两笔（17:54 那一遍现量，`/tmp/head286.out`）：
+# §2.84 那次普查（`/tmp/hole284.out`，15:52）量到的**六样危险摆法**里，有四样在这里原样各占一串
+# —— ①`--replay` 空着递＝第 6 串、②`--source` 指着仓库产物＝第 5 串、③`--try-reach` 指着仓库
+# 规则＝第 9 串、④`--旗=值` 那一式＝第 4 串；第五样「同一个旗标递两遍」在这里换成了 `--out`
+# （第 3 串，同一族、换了旗标名），第六样「`--source` 递两条、第二条在仓库」今天没进本子。
+# 剩下四串（第 1、2、7、8）在 §2.84 之前闸就点得名 —— 留着它们是因为题目本要盖的是闸的**每一扇**
+# 门，不只是它新学的那几样。同一遍量到：这九串递给 `HEAD`（`862cf38`，已含 §2.84 的三样补全）
+# 与盘上这一版，两版各点 9／9、**静默 0 串**。每串的 `must` 抄的是闸**印在屏幕上的原话**（不是
+# 旗标名，也不是账本里那句理由的副本 —— 见下面说明书里「为什么允许手抄」那一段）：17:55:49 那一遍
+# （`/tmp/must286.out`）把两样并排印了一遍，闸共点 16 条、16 条全落在某一截 `must` 里、一条不多。
+CELL_GUARD_CASES: tuple[GuardCase, ...] = (
+    GuardCase(who="什么都不递", argv=("build",),
+              must=("没递 --out", "没递 --config", "没递 --sources-file", "没递 --epg-file",
+                    "没递 --history", "没递 --skip-local", "没递 --no-epg",
+                    "没递 --no-egress-check")),
+    GuardCase(who="`--out` 指着仓库产物目录", argv=("build",) + CELL_ARGS_BASE
+              + ("--out", "data/output"),
+              must=("`--out` 没指进这一格的沙盒", "data/output")),
+    GuardCase(who="同一个 `--out` 递两遍、后写的在仓库", argv=("build",) + CELL_TAIL
+              + ("--out", "data/output"),
+              must=("`--out` 没指进这一格的沙盒", "data/output")),
+    GuardCase(who="`--旗=值` 那一式", argv=("build",) + CELL_ARGS_BASE + ("--out=data/output",),
+              must=("`--out` 没指进这一格的沙盒", "data/output")),
+    GuardCase(who="`--source` 指着仓库那份真产物", argv=("build",) + CELL_TAIL
+              + ("--source", "data/output/hunan.m3u"),
+              must=("`--source` 没指进这一格的沙盒", "data/output/hunan.m3u")),
+    GuardCase(who="`--replay` 空着递", argv=("build", "--replay") + CELL_TAIL,
+              must=("`--replay` 没指进这一格的沙盒", "递的是 空", "data/output/probe.json")),
+    GuardCase(who="递了 `--fresh`", argv=("build",) + CELL_TAIL + ("--fresh",),
+              must=("递了 --fresh",)),
+    GuardCase(who="单递 `--verify`、没配 `--replay`", argv=("build", "--verify") + CELL_TAIL,
+              must=("递了 --verify 又没配 --replay",)),
+    GuardCase(who="`--try-reach` 指着仓库那份候选规则", argv=("build",) + CELL_TAIL
+              + ("--try-reach", "config/reachability.yaml"),
+              must=("`--try-reach` 没指进这一格的沙盒", "config/reachability.yaml")),
+)
+
+
+def cell_guard_covers_ledger(cases: Iterable[GuardCase] = CELL_GUARD_CASES) -> list[str]:
+    """**考题本覆没覆到那三本账**：账本里每一个旗标名，至少被一串题的某截 `must` **整词**提到。
+
+    它与 `cell_ledger_covers_parser` 是一对姊妹：那一道问「账本 ↔ `build_parser()`」（闸有没有
+    漏掉一个真存在的旗标），这一道问「账本 ↔ 题目本」（考题有没有漏掉闸已经认的一扇门）。它钉的
+    是**这一档自己的来路**：`must` 是手抄的（上面「为什么允许手抄」那一段说清了什么时候允许），
+    而手抄唯一的代价就是「抄的人漏了一行」—— 账本**添**一条而没人跟着抄，`must` 那一条判据会红；
+    账本**减**一条而考题跟着少一截，今天没人看。这一道补的就是那半句。
+
+    「整词」那条不是装饰：`--source` 恰好是 `--sources-file` 的前缀。18:02 那一遍
+    （`/tmp/word286.out`：11 个旗标名、题目本 23 截 `must`）量到 `--source` 按整词提到 **1** 截、
+    按子串提到 **2** 截 —— 多出来那一截就是「没递 --sources-file」。下面第三条例子钉的正是这个差，
+    它与 §2.83 当年拒掉「别名子串匹配」是同一个道理：一个名字是另一个的前缀时，子串数会替人撒谎。
+
+    >>> cell_guard_covers_ledger()
+    []
+    >>> len(cell_guard_covers_ledger([GuardCase(who="只提一个旗标", argv=("build",),
+    ...                                         must=("没递 --out",))]))
+    10
+    >>> got = cell_guard_covers_ledger([GuardCase(who="只有子串", argv=("build",),
+    ...     must=("没递 --sources-file",))])
+    >>> any("`--source`" in x for x in got), any("--sources-file" in x for x in got)
+    (True, False)
+    >>> [n for n in ("run_cell", "cell_guards", "subprocess")     # 它连闸都不问，只比名单
+    ...  if n in cell_guard_covers_ledger.__code__.co_names]
+    []
+    """
+    got = [c for c in cases]
+    names = [f[0] for f in CELL_PATH_FLAGS] + [f[0] for f in CELL_SWITCHES] \
+        + [f[0] for f in CELL_LOCAL_PATH_FLAGS]
+    return [f"考题本没盖到：账本里的 `{n}` 没有任何一串题提到它"
+            f"（{len(got)} 串题的 must 里整词都找不到）"
+            for n in names
+            if not any(re.search(re.escape(n) + r"(?![-\w])", frag) for c in got for frag in c.must)]
+
+
+def cell_guard_cases(cases: Iterable[GuardCase] = CELL_GUARD_CASES,
+                     compliant: Iterable[Cell] = BASELINE) -> list[str]:
+    """**闸自己那一档**：把 `CELL_GUARD_CASES` 那九串一句句递给闸，看它点不点名。应该是空表。
+
+    这一档为什么必须存在：§2.84 量过「把 `cell_guards` 摘掉，`--self-test` 那一扇一把都听不见」
+    （十六把里只有 M9 那一把「不分子命令全查」响，因为那 17 格本来就全过闸 —— 闸坐在它们
+    **上游**，所以这一扇只看得见过火，看不见不及格）。那道口子是 §2.84 自己划的，而且是两句：
+    边界第（2）条「要让 `--self-test` 也能钉这道闸，缺一类格子」，下一步第（3）条「**造一类
+    『故意坏』的格子**，让 `--self-test` 也进这道闸的量程」。§2.85 接的是它的第（1）条（那道兜底），
+    第（3）条原样留在原地没人接 —— 本节接的就是它。先量那句话有多重，两件事都是量出来的不是想出来的：
+
+    **甲 那一类格子加不进 `BASELINE`。** 闸的拒是**整批**的（`self_test` 里一条不合规就
+    `return 2`），17:33 那一遍（`/tmp/census286c.out`）往 `BASELINE` 上添一格「故意坏」的读到
+    退 **2**、屏幕上 **0** 行 ✓、那句「扫了基线」的结论行**根本不印**、闸只点了那一格自己的
+    **8** 条 —— 也就是说那一格一加，`BASELINE` 里原本那 17 个从此不再跑，那三处写着
+    「17 格」的话（`selfcheck` 的两处与 `code_claims` 的一处）跟着一起变成假话。
+    所以这一档**自成一批**，不进 `BASELINE`。
+
+    **乙 这一档不能靠「跑一格看它被拦」来钉。** `run_cell` 那一侧有 §2.85 的兜底，但兜底
+    **只认路径**：同一遍普查里三串「路径全合规、只坏在出网旗标」的摆法被兜底放行、真走进了
+    `cmd_build`，其中单递 `--verify` 那一串被只记不放的线量到想出门 **6** 次（`127.0.0.1`、
+    `tvgslb.hn.chinamobile.com`、`www.baidu.com`、`www.qq.com`），`--fresh` 配一条启用的源
+    那一串想出门 **1** 次（`example.invalid`）。那两种摆法也正是 §2.84 记下的「以前没人钉」
+    那两把真漏 —— M6_摘fresh闸 对的是下面第 7 串、M10_摘末位没值 对的是第 6 串那句
+    「递的是 空」。所以这一档只问 `cell_guards` 那张嘴：**一次格子都不跑**。
+    下面那条例子把这件事钉成结构（`co_names` 里不许出现 `run_cell`）：它与 §2.85 给兜底装的
+    那条例子是同一条道理 —— 「这一档不会去干别人的活」不写进例子，就只是一句许愿。
+
+    **丙 这一档也不替兜底看门。** 电池最后一行是一把「两条腿一起摘」（`N01` 与 `N11` 同装）：
+    17:47 头一遍（`/tmp/mut286d.out`）、17:48 追问是哪一格（`/tmp/which286.out`）、18:01 整遍复跑
+    （`/tmp/mut286e.out`）三遍同读 —— `--self-test` 那 17 格照旧读到 **0** 次想出门，而 doctest
+    那一扇门读到 **3** 次 `raw.githubusercontent.com`：那三次来自 `run_cell` 说明书里那几串
+    「本该被兜底拒掉」的例子，两条腿都没了它们就走进 `cmd_build` 去抓节目单。闸好的时候这一档
+    是绿的，它看不见那一步。
+
+    判据三条，缺一算不对：这一串**得被点名**；`must` 里每一截都得出现在某一条点名叫里；
+    而闸点名的**每一条**都得能被某一截 `must` 对上 —— 第三条管的是「账上多了一条而没人预期」，
+    第二条管的是「账上少了一条」，两条合起来才敢让 `must` 是手抄的。最后本函数尾巴上还接了
+    第四道（`cell_guard_covers_ledger`）：那三本账里每一个旗标名都得被**在册那份**题目本提到 ——
+    它不读传进来的 `cases`，所以上面那几例「故意做坏的考题」不会被它污染。
+
+    为什么允许手抄：§2.42 那条「不抄第二份名单」管的是**代码自己要用那份名单**的场合
+    （抄了就等于造一处会忘记改的地方）；这里的 `must` 是**给闸出的考题**，与 `BASELINE` 里
+    那些 `has` 同一性质 —— 它不需要与账本自动同步，它需要的是「账本动了而没人改考题 ⇒ 这一档红」。
+    漂移那一族今天由两姊妹各看一头：「账本 ↔ `build_parser()`」归 `cell_ledger_covers_parser`，
+    「账本 ↔ 题目本」归本函数尾巴上那道（判据只认整词，`--source` 不算 `--sources-file` 的账）。
+
+    两个参数**都有默认值**，而默认值就是本节要钉的那两样东西。它们存在的唯一理由是「判据自己
+    得能被单独钉住」：18:01 那一遍电池（`/tmp/mut286e.out`）量到，把这一档自己的判据摘掉任何一处
+    —— N13 少喊／N14 多喊／N15 过火／N16 第四道的接线／N17 整词那条界线 —— `--self-test` 那一扇
+    **一律不响**（退 **0**），因为闸此刻是好的、摘判据不改变屏幕上的任何读数；响的全是 doctest
+    那一扇，红用例 **1／3／1／1／1** 例，而这五处红的例子全在这两份说明书里（N17 那一例在
+    `cell_guard_covers_ledger` 的第三例）。有了这两个口子，同一件事不必等一把坏刀才显形。
+
+    >>> cell_guard_cases()
+    []
+    >>> len(CELL_GUARD_CASES) >= 8 and all(c.must and c.argv for c in CELL_GUARD_CASES)
+    True
+    >>> len({c.who for c in CELL_GUARD_CASES}) == len(CELL_GUARD_CASES)   # 题号不许重复
+    True
+    >>> all(cell_guards([Cell(who=c.who, what="", rc=1, argv=c.argv)]) for c in CELL_GUARD_CASES)
+    True
+    >>> [n for n in ("run_cell", "self_test", "subprocess", "tempfile")    # 这一档一个格子都不跑
+    ...  if n in cell_guard_cases.__code__.co_names]
+    []
+    >>> bad = cell_guard_cases([GuardCase(who="考题本身", argv=("build", "--verify") + CELL_TAIL,
+    ...                                   must=("这句闸不会说的话",))])
+    >>> len(bad), "该点名的那句" in bad[0], "闸多喊了一条" in bad[1]
+    (2, True, True)
+    >>> bad2 = cell_guard_cases([GuardCase(who="多出来的一条", argv=("build",) + CELL_TAIL
+    ...                                     + ("--fresh", "--verify"), must=("递了 --fresh",))])
+    >>> len(bad2), "闸多喊了一条" in bad2[0]
+    (1, True)
+    >>> bad3 = cell_guard_cases([], compliant=(Cell(who="甲", what="没指进沙盒", rc=1,
+    ...                                              argv=("build",)),))
+    >>> len(bad3), bad3[0].startswith("闸过火：那一批 1 格里 1 格被冤枉")
+    (1, True)
+    >>> len(cell_guard_cases([GuardCase(who="只提一个旗标", argv=("build",),   # 第四道不读 `cases`
+    ...                                 must=("没递 --out",))]))               # 只 7 句「多喊」
+    7
+    >>> "cell_guard_covers_ledger" in cell_guard_cases.__code__.co_names       # 尾巴上那一道接上了
+    True
+    """
+    bad: list[str] = []
+    for case in cases:
+        named = cell_guards([Cell(who=case.who, what="", rc=1, argv=case.argv)])
+        if not named:
+            bad.append(f"闸自己：{case.who} —— 这一串闸一个字都没点，它以为这一串是合规的")
+            continue
+        for frag in case.must:
+            if not any(frag in line for line in named):
+                bad.append(f"闸自己：{case.who} —— 该点名的那句「{frag}」没出现（闸点了 {len(named)} 条）")
+        for line in named:
+            if not any(frag in line for frag in case.must):
+                bad.append(f"闸自己：{case.who} —— 闸多喊了一条没人预期的话：{line}")
+    batch = list(compliant)                # 先落成一串：`Iterable` 迭代两遍会空
+    wrong = [c for c in batch if cell_guards([c])]
+    if wrong:
+        bad.append(f"闸过火：那一批 {len(batch)} 格里 {len(wrong)} 格被冤枉"
+                   f" —— 头一格是「{wrong[0].who}」")
+    bad += cell_guard_covers_ledger()      # 读的是**在册那份**题目本，不是传进来的 `cases`
+    return bad
+
+
 def self_test(cells: tuple[Cell, ...] | None = None) -> int:
     """`--self-test`：逐格把 `BASELINE` 那一整片跑一遍，对**跑之前**写死的期望。
 
     顺序是定过的：过的一格一行先流水，不符期望的留在最后（跑整条基线的工具失败时只摊出
     末尾几行，把 ✗ 挤在 ✓ 中间，那句 ✗ 到人眼前就只剩一个「退 1」）。
+    §2.86 在这一扇最前面加了一档「闸自己」：它只问 `cell_guards` 那张嘴与那三本账的名字，
+    一次格子都不跑；干净时占流水第一行，不干净时摊在最后那一段里，**不算进「扫了基线 N 格」那个 N**。
 
     >>> len({c.who for c in BASELINE}) == len(BASELINE)      # 格子名不许重复（顿号那道闸管不着）
     True
@@ -3179,11 +3375,19 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
     if not cells:
         print("一格都没有：`BASELINE` 是空的。这不算过")
         return 2
+    g_bad = cell_guard_cases(compliant=cells)      # 过火那一半问的是**这一遍真要用到的那一批**
+    if not g_bad:
+        print(f"  ✓ {'闸自己':<18} {len(CELL_GUARD_CASES)} 串坏摆法各被点了名、"
+              f"这一批 {len(cells)} 格一个都没冤枉、那三本账里 "
+              f"{len(CELL_PATH_FLAGS) + len(CELL_SWITCHES) + len(CELL_LOCAL_PATH_FLAGS)} "
+              f"个旗标名题目本全提到（这一档只问闸那张嘴，一次格子都不跑）")
     guards = cell_guards(cells)
     if guards:
         print("这一片不跑，先把那几格改成指进沙盒、关上出网的门：")
         for g in guards:
             print(f"  · {g}")
+        for line in g_bad:            # 闸过火时那一档跟着摊出来，否则它被这一句挤到人眼看不见的地方
+            print(f"  ✗ {line}")
         return 2
     ran = bad = skipped = 0
     fails: list[tuple[Cell, str, str]] = []
@@ -3205,13 +3409,18 @@ def self_test(cells: tuple[Cell, ...] | None = None) -> int:
             print(f"  ✗ {cell.who:<18} {cell.what}\n      {why}")
             for line in text.strip().splitlines():
                 print(f"      | {line}")
+    if g_bad:
+        print(f"\n—— 闸自己这一档：{len(CELL_GUARD_CASES)} 串里 {len(g_bad)} 处不对"
+              "（那一档不跑格子，只对 `cell_guards` 那张嘴）——")
+        for line in g_bad:
+            print(f"  ✗ {line}")
     print(f"\n扫了基线 {len(cells)} 格：{bad} 格不符期望"
-          + (" —— 那几扇门还认得路" if ran and not bad else " —— 上面逐格点名了")
+          + (" —— 那几扇门还认得路" if ran and not bad and not g_bad else " —— 上面逐格点名了")
           + (f"（另有 {skipped} 格没验成）" if skipped else ""))
     if not ran:
         print("一格都没跑起来：临时目录建不起来，或者每一格都被 `run_cell` 跳过了。这不算过")
         return 2
-    return 1 if bad else 0
+    return 1 if (bad or g_bad) else 0
 
 
 SUBCOMMANDS = ("build",)
