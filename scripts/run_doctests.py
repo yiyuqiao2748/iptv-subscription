@@ -3205,23 +3205,33 @@ THIN_DOORS: frozenset[str] = frozenset({SELF_TEST_FLAG, DOCTEST_FLAG})
 
 
 def door_answered(argv: list[str]) -> str:
-    """按 `main` 那一串分发顺序，这一遍真正答的是哪一扇；一扇都不答时回空串。
+    """这一遍真正答的是哪一扇，一扇都不答时回空串 —— 2.78 起 `main` 就照这一位答。
 
-    为什么要有这一句而不直接在 `main` 里判断：`main` 里那四句 `if` 是**跑法**，
-    「哪一扇答」是它的一个读数。两处各写一遍是 §2.58 那一族，所以这一位是唯一的
-    读法出口。而它与 `main` 那一串是否真的同口径，今天只有**一格**钉得住 —— 21:01 现量
-    （变异台 K9：把 `--doctest` 那一支挪到四句最前，这一位一个字不动）：
-    `--across --doctest`／`--each --doctest` 两支回到静默退 0，满册 43 格里只红
-    `T5_那条界线归登记处` 一格、面 A 309 条全绿；`T1`—`T4` 仍绿，因为它们在门口就被
-    拦下、走不到那四句。这一位自己的 6 条用例钉的是**这一位的读数**，钉不住这一句配对。
+    为什么要有这一句而不直接在 `main` 里判断：2.77 之前 `main` 里那四句 `if` 是**跑法**，
+    「哪一扇答」是它的一个读数 —— 两处各写一遍是 §2.58 那一族，而那一族咬人的样子本节量过：
+    同一把刀在两遍里各砍一次（21:01 与 07:46，变异台 K9：把 `main` 里 `--doctest` 那一支
+    挪到四句最前、这一位一个字不动），满册 43 格里都只红 `T5_那条界线归登记处` 一格、
+    面 A 一条不红，`--across --doctest`／`--each --doctest` 两支回到**静默退 0**。
+    2.78 把第二处删了：`main` 现在只问这一位，「与 `main` 同口径」不再需要钉 ——
+    这一位就是口径本身，而「别把第二处写回去」由 `flag_readings` 钉着。刀此刻只能砍在这里，
+    而这一头今天比那一头多一层：换砍这一位里的两判（`answered_front`）两遍同形
+    （07:34 在 HEAD 那一棵、07:47 在本节改完那一棵）：面 A 2 条用例红＋ `T2`／`T5` 两格红。
     顺序也与 2.69 那条老账有关：其余九把尺里 `--doctest` 排在 `--self-test` 之前（同一棵
     树上 21:00 现量 27 次探测：两扇一起递的 18 次全静默，且 18 次答的都是 doctest，
     逐条见 `/tmp/probe277nine.log`），本件是反过来的 —— 本件这一句读的是 argv[0] 那一扇，
-    只有它不是那三扇之一时才轮到 `--doctest`。那一处口径不同本节不在这段里统一，
-    连同上面那条配对欠账一起记在 2.77 的边界里。
+    只有它不是那三扇之一时才轮到 `--doctest`。那一处口径不同本节不在这段里统一
+    （2.78 动的是本件这一头：上面那条配对欠账已经收掉，因为第二处没了；九把里那一处仍是它们自己的顺序）。
+
+    下面那三条「单独递一扇」的用例里有两条是本节添的（`--self-test`、`--across good`；
+    `--doctest` 那一条 2.77 就在）：这一位从「读数」变成「口径」之后，
+    认漏一扇的代价不再是屏幕上少印一句话，是那一扇**根本不跑**。
 
     >>> door_answered(["--doctest"])
     '--doctest'
+    >>> door_answered(["--self-test"])
+    '--self-test'
+    >>> door_answered(["--across", "good"])
+    '--across'
     >>> door_answered(["--self-test", "--doctest"])
     '--self-test'
     >>> door_answered(["--doctest", "--self-test"])
@@ -3238,6 +3248,60 @@ def door_answered(argv: list[str]) -> str:
     if DOCTEST_FLAG in argv:
         return DOCTEST_FLAG
     return ""
+
+
+ANSWER_READER = "door_answered"      # 「这一遍答哪一扇」那唯一的口径：`main` 只许问它一次
+
+
+def flag_readings(src: str, fn: str = "main") -> list[str]:
+    """`fn` 那一段函数体里，把 `argv` 当旗标读的地方有哪几种写法、各几处。
+
+    为什么要有它：2.77 欠的那条账是「同一份规矩在两个地方各写一遍」（§2.58）——
+    `main` 里那四句 `if` 自己读一遍 argv，`door_answered` 再读一遍，而这两遍可以各说各话
+    还不响：两遍现量同一把刀（21:01 与 07:46，`main_front`：把 `main` 里 `--doctest` 那一支
+    挪到四句最前、这一位一个字不动）都只红 `T5` 一格、面 A 一条不红。2.78 把第二处删了，于是欠账换了形状：不再是
+    「要钉住两处一致」（那需要一格去比较两份代码），而是**不许再写回第二处** ——
+    这一位钉的就是后者：`main` 的函数体里读旗标的地方只许剩下问 `door_answered` 那一次。
+
+    为什么它只是 doctest、不做成一格：这一位量的是**源码的形状**，不是一屏话。做成格子就得
+    在屏幕上印一句判决，那句话立刻进 `verdict_sites` 的名单、要一格钉它（§2.75 那道闸），
+    而钉它的还是同一个形状 —— 绕一圈回到原地。doctest 这一头没有这句话要印。
+
+    认三种写法：`argv[0]`（下标读；`argv[1:]` 那种切片**不算**，那是把整串交给别人的 parser）、
+    `'X' in argv`（成员读）、问那一位口径一次。读不到 `fn` 那一段时要说出来，不回空表冒充「没有」。
+
+    >>> flag_readings("def main(argv):\\n    if argv and argv[0] == '--x':\\n        return 1\\n    if '--y' in argv:\\n        return 0\\n")
+    ["`'X' in argv` 那一判 1 处", '`argv[0]` 那一判 1 处']
+    >>> flag_readings("def main(argv):\\n    a = door_answered(argv)\\n    return argv[1:]\\n")
+    ['问了 `door_answered` 1 处']
+    >>> flag_readings("def f():\\n    pass\\n")
+    ['没有 main 那一段：认不出来，别读成「没有」']
+    >>> flag_readings(self_copy())
+    ['问了 `door_answered` 1 处']
+    """
+    tree = _tree(src)
+    if tree is None:
+        return ["源码过不去：读不出形状"]
+    body = [f for f in ast.walk(tree)
+            if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == fn]
+    if not body:
+        return [f"没有 {fn} 那一段：认不出来，别读成「没有」"]
+    kinds: dict[str, int] = {}
+    for node in ast.walk(body[0]):
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+                and node.value.id == "argv" and not isinstance(node.slice, ast.Slice):
+            kind = "`argv[0]` 那一判"
+        elif isinstance(node, ast.Compare) \
+                and any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops) \
+                and any(isinstance(c, ast.Name) and c.id == "argv" for c in node.comparators):
+            kind = "`'X' in argv` 那一判"
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == ANSWER_READER:
+            kind = f"问了 `{ANSWER_READER}`"
+        else:
+            continue
+        kinds[kind] = kinds.get(kind, 0) + 1
+    return [f"{k} {n} 处" for k, n in sorted(kinds.items())]
 
 
 def door_clash(argv: list[str]) -> tuple[str, tuple[str, ...]] | None:
@@ -3353,33 +3417,41 @@ def main(argv: list[str]) -> int:
     # 递给它一个没收过的旗标，以前它会当成过滤器去匹配、匹配不到，然后回一句「检查 src/ 和
     # scripts/ 还在不在」—— 那句诊断是**错的**（目录好好的，是我参数给错了）。09-24 我自己
     # 踩过一次，见 2.56。
-    # 2.77 在这四句之前先问一句 `door_clash`：把字递在一扇**薄门**旁边（`--self-test`／
+    # 2.77 在这两句之前先问一句 `door_clash`：把字递在一扇**薄门**旁边（`--self-test`／
     # `--doctest` 的体内不看 argv），以前是**安静**的（退 0、答那一扇、那些字一个字不提）。
     # 这一句不许改变任何一扇单独递时的答法 —— 它只把「有人递了、这一遍没答」那一半接管过来；
     # 另一半（答的那扇自己收旗、递进来一个它也不收的字）本来就归下面那三句
-    # `refusal(argv[0], bad)` 管，两条出口各自一条界线，见 `THIN_DOORS` 上面那段。
+    # `refusal(answered, bad)` 管，两条出口各自一条界线，见 `THIN_DOORS` 上面那段。
     clash = door_clash(argv)
     if clash:
         print(clash_line(*clash), file=sys.stderr)
         return 2
-    if argv and argv[0] == SELF_TEST_FLAG:
+    # 2.78：下面这一串不再自己读 `argv`，只问 `door_answered` 那一位 —— 「这一遍答的是哪一扇」
+    # 在这一件里从此只有一处写法（以前 `main` 里那四句 `if` 与 `door_answered` 是同一份规矩
+    # 各写一遍，§2.58 那一族，而它咬人的样子量在 `flag_readings` 的说明书里）。
+    # 于是这四句的**先后**也失去了意义：`answered` 是一个值，四支各比一个不同的旗，
+    # 换任何两块的顺序都不改变行为（07:47 现量：`main_blocks_swap` 那一刀挪完
+    # 43 格全绿、315 条用例全绿，三对组合屏与干净树逐字同 ——
+    # 那一刀从此砍不出东西，这正是本节要的形状）。
+    answered = door_answered(argv)
+    if answered == SELF_TEST_FLAG:
         return self_test()
-    if argv and argv[0] == EACH_FLAG:
+    if answered == EACH_FLAG:
         opts, rest, bad = each_options(argv[1:])
         if bad:
-            print(refusal(argv[0], bad), file=sys.stderr)
+            print(refusal(answered, bad), file=sys.stderr)
             return 2
         return run_each(rest[0] if rest else "", **opts)
-    if argv and argv[0] == ACROSS_FLAG:
+    if answered == ACROSS_FLAG:
         # 同一扇门、同一套取舍：`--root=` 换树、位置参数当过滤器、认不出的字退 2 并点名。
         root, pattern, bad = own_options(argv[1:])
         if bad:
-            print(refusal(argv[0], bad), file=sys.stderr)
+            print(refusal(answered, bad), file=sys.stderr)
             return 2
         return run_across(pattern, root)
-    if DOCTEST_FLAG in argv:
+    if answered == DOCTEST_FLAG:
         # 这一旗以前只在收尾那一句 `doctest_gate(sys.argv[1:])` 里被认，于是「从别的件里调
-        # `main(['--doctest'])`」会一路走到下面的旗标登记处。搬进来之后**入口只有一处**
+        # `main(['--doctest'])`」会一路走到下面的旗标登记处。2.77 把它搬进这四句之后**入口只有一处**
         # （两扇门各认一次是 2.58 那一族），而量的永远是本件那一份用例 —— `run_own` 记过
         # 「不点名就量了调用方」，这一位用 `sys.modules[__name__]` 而不是 `__main__`，
         # 从沙盒里调与从命令行调读的是同一件。
